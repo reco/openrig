@@ -643,7 +643,8 @@ export class SeatHandoverService {
     // A composer-launched successor respawns into the seat's own pane, whose discovery row the
     // previous handover claimed for this same node; that claim carries over to the successor.
     const ownPaneClaim = input.reportedSource.mode !== "discovered"
-      && discovered.status === "claimed" && discovered.claimedNodeId === input.node.id;
+      && discovered.status === "claimed" && discovered.claimedNodeId === input.node.id
+      && discovered.tmuxSession === input.latestSession.session_name;
     if (discovered.status !== "active" && !ownPaneClaim) {
       return fail({
         ok: false,
