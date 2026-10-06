@@ -15,7 +15,7 @@
 import type { SeenStore, DeadLetterStore, DeadLetterEntry } from "./state-store.js";
 import type { InboundQueuePort } from "./queue-access.js";
 import { createHash } from "node:crypto";
-import { ADMITTED_EVENT_TYPES } from "./capabilities.js";
+import { ADMITTED_EVENT_TYPES, REACTION_EVENT_TYPES } from "./capabilities.js";
 import { escapeSlackText, parseConfirmAction, parseQuestionAction, redactSecrets } from "./message.js";
 import { formatHumanAnswers, unansweredQuestions, type RecordHumanAnswerResult } from "../../human-questions.js";
 
@@ -32,6 +32,9 @@ export interface SlackEvent {
   thread_ts?: string;
   channel?: string;
   files?: unknown[];
+  /** reaction_added: the emoji name and the message it was added to. */
+  reaction?: string;
+  item?: { type?: string; channel?: string; ts?: string };
   /** Internal history provenance, retained across dead-letter retry. */
   recoveredAfterGap?: boolean;
 }
@@ -50,6 +53,18 @@ export interface SlackBlockActions {
 export type ConfirmOffer = (input: { offerQitemId: string; actorSession: string }) =>
   | { ok: true; decisionQitemId: string; reading: string }
   | { ok: false; reason: string };
+
+/** Phase 1 — what a ✅ on a message decides, as classified against our own records. */
+export type ReactionTarget =
+  | { kind: "confirm"; offerQitemId: string; threadTs: string }
+  | { kind: "answer"; decisionQitemId: string; threadTs: string; text: string };
+
+export const CHECK_REACTION = "white_check_mark";
+
+/** Slack message ts is unique within a channel, so every inbound id uses both fields. */
+export function inboundQitemIdFor(channel: string | undefined, ts: string | undefined): string {
+  return `qitem-slack-inbound-${createHash("sha256").update(`${channel ?? "-"}:${ts ?? "-"}`).digest("hex").slice(0, 20)}`;
+}
 
 export type RecordHumanAnswer = (input: { qitemId: string; actorSession: string; questionId: string; optionId: string }) => RecordHumanAnswerResult;
 
@@ -141,6 +156,8 @@ export interface InboundDeps {
   recordHumanAnswer?: RecordHumanAnswer;
   /** Phase 1 — look up a clicked Confirm offer. */
   confirmOffer?: ConfirmOffer;
+  /** Phase 1 — classify the message an admitted human added ✅ to; null = it decides nothing. */
+  reactionTarget?: (input: { channel: string; messageTs: string; actorSession: string }) => ReactionTarget | null;
   /** #193 — clicks whose continuation (reply row + resolve) failed; retried with the event
    *  dead-letters. Absent → a failed click is only logged. */
   actionDeadLetter?: DeadLetterStore<SlackBlockActions>;
@@ -209,7 +226,7 @@ export class InboundRouter {
   }
 
   private inboundQitemId(ev: SlackEvent): string {
-    return `qitem-slack-inbound-${createHash("sha256").update(this.inboundEventId(ev)).digest("hex").slice(0, 20)}`;
+    return inboundQitemIdFor(ev.channel, ev.ts);
   }
 
   /**
@@ -418,23 +435,28 @@ export class InboundRouter {
       return { status: "refused", reason: "unregistered" };
     }
     const rootTs = clickedRootTs(payload);
-    const route = rootTs ? this.deps.resolveRoute?.({ type: "message", thread_ts: rootTs, channel: payload.channel?.id }) : undefined;
-    if (!rootTs || !route?.correlationQitemId) return { status: "ignored", reason: "unmapped-message" };
-    const offer = this.deps.confirmOffer?.({ offerQitemId, actorSession: who.source });
+    if (!rootTs) return { status: "ignored", reason: "unmapped-message" };
+    return this.confirm(who.source, offerQitemId, rootTs, payload.channel?.id, live);
+  }
+
+  private async confirm(actorSession: string, offerQitemId: string, rootTs: string, channel: string | undefined, live: boolean): Promise<{ status: InboundDisposition; reason?: string }> {
+    const route = this.deps.resolveRoute?.({ type: "message", thread_ts: rootTs, channel });
+    if (!route?.correlationQitemId) return { status: "ignored", reason: "unmapped-message" };
+    const offer = this.deps.confirmOffer?.({ offerQitemId, actorSession });
     if (!offer?.ok) return { status: "refused", reason: offer?.reason ?? "confirm-unavailable" };
     if (offer.decisionQitemId !== route.correlationQitemId) return { status: "ignored", reason: "offer-not-in-this-thread" };
     let resolution: "resolved" | "already-resolved" | "not-applicable" | undefined;
     try {
       await this.deps.queue.createQitem({
         qitemId: `qitem-slack-confirm-${createHash("sha256").update(offerQitemId).digest("hex").slice(0, 20)}`,
-        source: who.source,
+        source: actorSession,
         destination: route.destination,
         priority: "routine",
         tags: [...route.tags ?? ["founder-slack", "inbound"], "human-answer"],
         summary: "Founder via Slack: confirmed your reading",
         body: `Confirmed: ${offer.reading}\n\n---\nIn reply to: ${offer.decisionQitemId} (offer ${offerQitemId})\nRouted by openrig slack-inbound (Confirm click).`,
       });
-      resolution = await this.deps.resolveHumanReply?.({ qitemId: offer.decisionQitemId, actorSession: who.source, decision: offer.reading });
+      resolution = await this.deps.resolveHumanReply?.({ qitemId: offer.decisionQitemId, actorSession, decision: offer.reading });
     } catch (e) {
       this.deps.log?.(`confirm continuation failed offer=${offerQitemId}: ${(e as Error).message}`);
       return { status: "handler-failed", reason: "confirm-continuation-failed" };
@@ -442,12 +464,68 @@ export class InboundRouter {
     if (resolution !== "resolved") return { status: "ignored", reason: resolution ?? "resolve-unavailable" };
     if (live) {
       try {
-        await this.deps.acknowledgeAnswer?.({ channel: payload.channel?.id, threadTs: rootTs, text: escapeSlackText(redactSecrets(`Confirmed: ${offer.reading}`)) });
+        await this.deps.acknowledgeAnswer?.({ channel, threadTs: rootTs, text: escapeSlackText(redactSecrets(`Confirmed: ${offer.reading}`)) });
       } catch (e) {
         this.deps.log?.(`confirm acknowledgement failed offer=${offerQitemId}: ${(e as Error).message}`);
       }
     }
     return { status: "accepted", reason: "confirmed" };
+  }
+
+  /** Phase 1 — a ✅ from the asked human on their decision's root, their own reply in its
+   *  thread, or a Confirm offer. Deduplicated per (message, person); a failed continuation is
+   *  dead-lettered and retried like a typed reply. */
+  async routeReaction(ev: SlackEvent): Promise<{ status: InboundDisposition; reason?: string }> {
+    const r = await this.attemptReaction(ev, true);
+    if (r.status === "handler-failed") this.deps.deadLetter.append(ev, 1);
+    return r;
+  }
+
+  private async attemptReaction(ev: SlackEvent, live: boolean): Promise<{ status: InboundDisposition; reason?: string }> {
+    const channel = ev.item?.channel;
+    const messageTs = ev.item?.ts;
+    if (ev.reaction !== CHECK_REACTION || !channel || !messageTs) return { status: "ignored", reason: "not-a-check-on-a-message" };
+    const key = `reaction:${channel}:${messageTs}:${ev.user ?? "-"}`;
+    if (this.deps.seen.load().has(key) || this.inflight.has(key)) return { status: "ignored", reason: "dup" };
+    const who = this.deps.resolveSender(ev.user ?? "");
+    if (!who.admitted) {
+      this.deps.log?.(`reaction REFUSED — unregistered sender ${ev.user}: ${who.teaching}`);
+      return { status: "refused", reason: "unregistered" };
+    }
+    const target = this.deps.reactionTarget?.({ channel, messageTs, actorSession: who.source });
+    if (!target) return { status: "ignored", reason: "not-a-decision-message" };
+    this.inflight.add(key);
+    try {
+      const r = target.kind === "confirm"
+        ? await this.confirm(who.source, target.offerQitemId, target.threadTs, channel, live)
+        : await this.answerByReaction(who.source, target, channel, key);
+      if (r.status !== "handler-failed") this.deps.seen.mark(key, r.status);
+      return r;
+    } finally {
+      this.inflight.delete(key);
+    }
+  }
+
+  private async answerByReaction(actorSession: string, target: Extract<ReactionTarget, { kind: "answer" }>, channel: string, key: string): Promise<{ status: InboundDisposition; reason?: string }> {
+    const route = this.deps.resolveRoute?.({ type: "message", thread_ts: target.threadTs, channel });
+    if (route?.correlationQitemId !== target.decisionQitemId) return { status: "ignored", reason: "not-the-current-decision" };
+    let resolution: "resolved" | "already-resolved" | "not-applicable" | undefined;
+    try {
+      await this.deps.queue.createQitem({
+        qitemId: `qitem-slack-reaction-${createHash("sha256").update(key).digest("hex").slice(0, 20)}`,
+        source: actorSession,
+        destination: route.destination,
+        priority: "routine",
+        tags: [...route.tags ?? ["founder-slack", "inbound"], "human-answer"],
+        summary: `Founder via Slack: ✅ ${target.text.slice(0, 80)}`,
+        body: `${target.text}\n\n---\nIn reply to: ${target.decisionQitemId}\nRouted by openrig slack-inbound (✅ reaction).`,
+      });
+      resolution = await this.deps.resolveHumanReply?.({ qitemId: target.decisionQitemId, actorSession, decision: target.text });
+    } catch (e) {
+      this.deps.log?.(`reaction continuation failed qitem=${target.decisionQitemId}: ${(e as Error).message}`);
+      return { status: "handler-failed", reason: "reaction-continuation-failed" };
+    }
+    return resolution === "resolved" ? { status: "accepted", reason: "answered-by-reaction" } : { status: "ignored", reason: resolution ?? "resolve-unavailable" };
   }
 
   /**
@@ -478,6 +556,12 @@ export class InboundRouter {
     let landed = 0;
     const seen = this.deps.seen.load();
     for (const e of entries) {
+      if (e.ev.type === "reaction_added") {
+        const reacted = await this.attemptReaction(e.ev, false);
+        if (reacted.status === "accepted") landed++;
+        else if (reacted.status === "handler-failed") stillFailing.push({ ev: e.ev, at: e.at, attempts: e.attempts + 1 });
+        continue;
+      }
       if (e.ev.ts && seen.has(this.inboundEventId(e.ev))) continue; // already landed → recovered, drop from set
       const r = await this.attemptLand(e.ev);
       if (r.landed) landed++;
@@ -537,6 +621,7 @@ export async function handleEnvelope(
   }
   if (env.type !== "events_api") return { status: "ignored", reason: "envelope-type" };
   const ev = { ...env.payload?.event, recoveredAfterGap: undefined }; // only history admission supplies recovery provenance
+  if (ev.type && REACTION_EVENT_TYPES.includes(ev.type)) return router.routeReaction(ev);
   const decision = ingestDecision(ev);
   if (!decision.ingest) {
     // P28: name the branch that FIRED and the conversation it came from. Privacy rail — a channel

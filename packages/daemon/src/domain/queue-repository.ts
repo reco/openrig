@@ -3185,6 +3185,16 @@ export class QueueRepository {
     ).get(formatReplyToChoice({ kind: "thread", threadTs }), REPLY_TO_CHOICE_ACTOR) !== undefined;
   }
 
+  /** The qitem whose Slack post has this message ts, from the daemon's own posted receipts. */
+  postedQitemForMessage(messageTs: string): string | null {
+    if (!this.hasQueueTransitionsTable) return null;
+    const provenance = this.hasTransitionProvenanceColumn ? " AND identity_provenance IS NULL" : "";
+    const row = this.db.prepare(
+      `SELECT qitem_id FROM queue_transitions WHERE transition_note LIKE 'slack-owner-notification-posted %' AND (' ' || transition_note || ' ') LIKE ? AND actor_session = 'daemon@kernel'${provenance} LIMIT 1`,
+    ).get(`% message_ts=${messageTs} %`) as { qitem_id: string } | undefined;
+    return row?.qitem_id ?? null;
+  }
+
   private replyToFallbackFor(qitemId: string): string | null {
     const choice = this.replyToChoiceFor(qitemId);
     return choice?.kind === "fallback" ? describeReplyToFallback(choice) : null;

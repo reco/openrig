@@ -19,7 +19,8 @@ import { MissionControlWriteContract } from "../src/domain/mission-control/missi
 import { InboundReceiptStore } from "../src/domain/gateway/slack/state-store.js";
 
 const human = "human-founder@external";
-const registry = { ok: true as const, entities: [{ entityId: "human-founder", class: "human" as const, displayName: "Founder", address: human, connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:SLACK_BOT_TOKEN", role: "primary" as const, handle: "UFOUNDER" }], prefs: { deliveryClass: "A" as const } }] };
+const person = (entityId: string, handle: string) => ({ entityId, class: "human" as const, displayName: entityId, address: `${entityId}@external`, connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:SLACK_BOT_TOKEN", role: "primary" as const, handle }], prefs: { deliveryClass: "A" as const } });
+const registry = { ok: true as const, entities: [person("human-founder", "UFOUNDER"), person("human-other", "UOTHER")] };
 const request = { sourceSession: "author@rig", destinationSession: human, summary: "Ship the migration?", body: "Tell me whether to ship it this week.", evidenceRef: "/private/proof.md", nudge: false };
 
 describe("phase 1 reply semantics through the real Slack wire", () => {
@@ -190,6 +191,54 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       await expect(repo.create({ ...request, humanIntent: "decision", humanConfirm: "x" })).rejects.toMatchObject({ code: "invalid_human_confirm" });
       await expect(repo.create({ ...request, humanIntent: "update", humanConfirm: "x" })).rejects.toMatchObject({ code: "invalid_human_confirm" });
       await expect(repo.create({ ...request, humanIntent: "update", replyTo: decisionId, humanConfirm: "  " })).rejects.toMatchObject({ code: "invalid_human_confirm" });
+    });
+
+    async function react(messageTs: string, opts: { user?: string; reaction?: string; envelopeId?: string } = {}): Promise<{ status: string; reason?: string }> {
+      const envelopeId = opts.envelopeId ?? `e-react-${messageTs}-${opts.user ?? "UFOUNDER"}-${Math.random()}`;
+      socket.onmessage?.({ data: JSON.stringify({ envelope_id: envelopeId, type: "events_api", payload: { event: {
+        type: "reaction_added", user: opts.user ?? "UFOUNDER", reaction: opts.reaction ?? "white_check_mark",
+        item: { type: "message", channel: "C-TEST", ts: messageTs }, event_ts: `${Date.now() / 1000}`,
+      } } }) });
+      await vi.waitFor(() => expect(finals(envelopeId)).toHaveLength(1));
+      return finals(envelopeId)[0]!;
+    }
+
+    it("✅ on a Confirm offer resolves with the offer's reading", async () => {
+      const offer = await offerConfirm("Ship only the schema migration.");
+      expect(await react(offer.messageTs)).toMatchObject({ status: "accepted" });
+      expect(resolutions()).toHaveLength(1);
+      expect(resolutions()[0]?.transitionNote).toBe("direct human reply received: Ship only the schema migration.");
+    });
+
+    it("✅ on the human's own reply resolves with that reply's text", async () => {
+      await say("Ship the schema migration, hold the data one.", "2030.1");
+      expect(repo.getById(decisionId)?.state).toBe("pending");
+      expect(await react("2030.1")).toMatchObject({ status: "accepted" });
+      expect(resolutions()).toHaveLength(1);
+      expect(resolutions()[0]?.transitionNote).toBe("direct human reply received: Ship the schema migration, hold the data one.");
+    });
+
+    it("✅ on the root of a plain decision resolves it as approved", async () => {
+      expect(await react("1.1")).toMatchObject({ status: "accepted" });
+      expect(resolutions()[0]?.transitionNote).toBe("direct human reply received: approved");
+    });
+
+    it("resolves once across a replayed ✅, a second ✅ and an `answer:`", async () => {
+      expect(await react("1.1", { envelopeId: "e-r1" })).toMatchObject({ status: "accepted" });
+      socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-r1", type: "events_api", payload: { event: { type: "reaction_added", user: "UFOUNDER", reaction: "white_check_mark", item: { type: "message", channel: "C-TEST", ts: "1.1" } } } }) });
+      await react("1.1");
+      await say("answer: something else", "2031.1");
+      expect(resolutions()).toHaveLength(1);
+      expect(toSeat().filter((q) => q.tags?.includes("human-answer") && q.summary?.includes("✅"))).toHaveLength(1);
+    });
+
+    it("ignores other emoji, other people's ✅, and ✅ on someone else's message", async () => {
+      await say("Which one?", "2032.1");
+      expect(await react("1.1", { reaction: "thumbsup" })).toMatchObject({ status: "ignored" });
+      expect(await react("1.1", { user: "UOTHER" })).not.toMatchObject({ status: "accepted" });
+      expect(await react("2032.1", { user: "UOTHER" })).not.toMatchObject({ status: "accepted" });
+      expect(await react("9999.1")).toMatchObject({ status: "ignored" });
+      expect(repo.getById(decisionId)?.state).toBe("pending");
     });
 
     it("an empty `answer:` is conversation, not a resolution", async () => {

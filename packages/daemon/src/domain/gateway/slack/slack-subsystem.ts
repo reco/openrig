@@ -25,7 +25,7 @@ import { SeenStore, DeadLetterStore, InboundReceiptStore } from "./state-store.j
 import { makeQueuePorts } from "./queue-access.js";
 import { SlackOutboundDriver, OUTBOUND_OP, type OutboundPostPayload } from "./outbound-driver.js";
 import { subsystemSlackDeliver } from "./slack-delivery.js";
-import { InboundRouter, type SlackEvent, type SlackBlockActions, type InboundFilePort, type InboundFileResult, type StoredInboundFile, type FailedInboundFile } from "./inbound.js";
+import { InboundRouter, inboundQitemIdFor, type ReactionTarget, type SlackEvent, type SlackBlockActions, type InboundFilePort, type InboundFileResult, type StoredInboundFile, type FailedInboundFile } from "./inbound.js";
 import { makeInboundSenderResolver, type RegistrySurface } from "./inbound-admission.js";
 import { ThreadSeatMap, formatPostedStamp } from "./thread-seat-map.js";
 import { makeThreadRouteResolver } from "./thread-routing.js";
@@ -192,6 +192,40 @@ export function makeInboundFilePort(opts: {
       }
       return { stored, failed };
     },
+  };
+}
+
+const entityOf = (session: string | null | undefined): string => (session ?? "").split("@")[0] ?? "";
+
+/** Whether a decision (a direct human request, or a park) is addressed to this human. */
+function addressedTo(item: { destinationSession: string; state: string; blockedOn: string | null }, actorSession: string): boolean {
+  const actor = entityOf(actorSession);
+  return entityOf(item.destinationSession) === actor || (item.state === "blocked" && entityOf(item.blockedOn) === actor);
+}
+
+/** Phase 1 — classify the message a human added ✅ to, using only our own records: the
+ *  decision's root (a plain decision only), a Confirm offer we posted, or the human's own
+ *  reply in the decision's thread. */
+export function makeReactionTarget(queueRepo: QueueRepository, threadMap: ThreadSeatMap): (input: { channel: string; messageTs: string; actorSession: string }) => ReactionTarget | null {
+  return ({ channel, messageTs, actorSession }) => {
+    const root = threadMap.resolveByThread(messageTs);
+    if (root) {
+      const decision = queueRepo.getById(root.conversationId);
+      if (!decision || decision.humanIntent === "update" || decision.humanQuestions?.length || !addressedTo(decision, actorSession)) return null;
+      return { kind: "answer", decisionQitemId: decision.qitemId, threadTs: messageTs, text: "approved" };
+    }
+    const offerId = queueRepo.postedQitemForMessage(messageTs);
+    const offer = offerId ? queueRepo.getById(offerId) : null;
+    if (offer?.humanConfirm && offer.replyTo) {
+      const thread = threadMap.resolveByConversation(offer.replyTo);
+      return thread ? { kind: "confirm", offerQitemId: offer.qitemId, threadTs: thread.threadTs } : null;
+    }
+    const reply = queueRepo.getById(inboundQitemIdFor(channel, messageTs));
+    const conversation = reply?.tags?.find((t) => t.startsWith("reply-to:"))?.slice("reply-to:".length);
+    if (!reply || !conversation || reply.sourceSession !== actorSession) return null;
+    const thread = threadMap.resolveByConversation(conversation);
+    const text = reply.body.split("\n\n---\nSource: ")[0]?.trim();
+    return thread && text ? { kind: "answer", decisionQitemId: conversation, threadTs: thread.threadTs, text } : null;
   };
 }
 
@@ -582,6 +616,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       // a failed hand-back is retried with the event dead-letters, and each click is confirmed
       // in the decision's thread (a bot post, so inbound never ingests it).
       recordHumanAnswer: (input) => opts.queueRepo.recordHumanAnswer(input),
+      reactionTarget: makeReactionTarget(opts.queueRepo, threadMap),
       confirmOffer: ({ offerQitemId, actorSession }) => {
         const offer = opts.queueRepo.getById(offerQitemId);
         if (!offer?.humanConfirm || !offer.replyTo) return { ok: false, reason: "not-a-confirm-offer" };

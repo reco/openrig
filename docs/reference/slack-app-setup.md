@@ -63,9 +63,10 @@ groups:
   a member of, and reading channel details.
   `rig slack verify` checks these.
 - **Feature scopes**: `files:read` (download attachments people send), `files:write` (upload
-  attachments to Slack), and `app_mentions:read` (receive @-mentions of the app). `rig slack verify`
-  warns when one of these is missing (if Slack returns the granted scopes) but does not require
-  them, so a READY from verify does not prove attachments or mentions will work.
+  attachments to Slack), `app_mentions:read` (receive @-mentions of the app), and `reactions:read`
+  (receive a ✅ that answers a decision). `rig slack verify` warns when one of these is missing (if
+  Slack returns the granted scopes) but does not require them, so a READY from verify does not
+  prove attachments, mentions or reactions will work.
 
 If a feature scope was not granted, the effect differs by feature:
 
@@ -75,18 +76,31 @@ If a feature scope was not granted, the effect differs by feature:
   the failure appears only in the daemon log (`rig daemon logs`).
 - **Mentions** (`app_mentions:read`): Slack does not deliver `app_mention` events to the app.
   Only `rig slack verify` warns that the scope is missing; nothing reports the missing events.
+- **Reactions** (`reactions:read`): Slack does not deliver `reaction_added` events, so a ✅ answers
+  nothing. Use a button or an `answer:` reply instead.
 
-So after installing, compare the granted scopes Slack shows for the app with all six scopes that
+So after installing, compare the granted scopes Slack shows for the app with all seven scopes that
 `rig slack manifest --json` lists.
 
-The app subscribes to messages in public channels it is a member of (`message.channels`) and to
-mentions of the app (`app_mention`). It does not request direct-message or private-channel access.
+The app subscribes to messages in public channels it is a member of (`message.channels`), to
+mentions of the app (`app_mention`), and to reactions (`reaction_added`). It does not request direct-message or private-channel access.
 
 The manifest also turns on **Interactivity**, so the human can answer a decision's structured
 questions by clicking a button (`rig queue create --human-questions-file`). In Socket Mode the
 clicks arrive over the same socket, so no request URL is needed. An app created from an older
 manifest has Interactivity off: turn it on under **Interactivity & Shortcuts**, or the buttons
-will do nothing. A typed reply in the thread still answers the decision either way.
+will do nothing.
+
+How a decision is answered depends on `explicitAnswersOnly` in `slack-connector.json`:
+
+- **On (this build's default):** a typed reply in the decision's thread is conversation. It goes
+  to the asking seat, which can answer in the same thread (`rig queue create --human-intent update
+  --reply-to <decision>`), and it resolves nothing. The decision resolves on a button click, a
+  reply starting with `answer:`, a Confirm click on the seat's stated reading (`--confirm
+  <reading>`), or a ✅ from the asked human on the decision's root (a decision without buttons,
+  answered as "approved"), on their own reply in the thread (that reply's text), or on a Confirm
+  offer. It resolves once; later answers reach the seat as messages.
+- **Off:** any typed reply in the thread answers the decision.
 
 ## What the connector does with the tokens
 
