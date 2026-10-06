@@ -185,7 +185,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       const blocks = JSON.stringify(posts.at(-1)?.blocks);
       expect(posts.at(-1)?.thread_ts).toBe("1.1");
       expect(blocks).toContain(`or-confirm:${offer.qitemId}`);
-      expect(String(posts.at(-1)?.text)).toContain(`Confirm: ${reading}`);
+      expect(String(posts.at(-1)?.text)).toContain(`My reading:* ${reading}`);
 
       await say("yes", "2020.1");
       expect(repo.getById(decisionId)?.state).toBe("pending");

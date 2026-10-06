@@ -110,7 +110,8 @@ export const OPTION_ACTION_PREFIX = "or-opt:";
 export const CONFIRM_BLOCK_PREFIX = "or-confirm:";
 export const CONFIRM_ACTION_ID = "or-confirm";
 const TYPED_REPLY_HINT = "Or reply in this thread with your own answer.";
-const ANSWER_HINT = "To decide, reply in this thread starting with `answer:`. Other replies go to the asking seat as conversation.";
+const ANSWER_HINT = "👉 *To decide:* react ✅ to approve, or reply `answer: <your decision>`\n💬 Other replies go to the asking seat as conversation.";
+const QUESTION_ANSWER_HINT = "✍️ Or reply `answer: <your own answer>`\n💬 Other replies go to the asking seat as conversation.";
 
 /** Parse a clicked button back into its question and option ids; null if it is not ours. */
 export function parseQuestionAction(blockId: unknown, actionId: unknown): { questionId: string; optionId: string } | null {
@@ -129,15 +130,15 @@ export function parseConfirmAction(blockId: unknown, actionId: unknown): string 
 
 function buildConfirmBlocks(qitemId: string, reading: string, confirmed: boolean): { blocks: unknown[]; text: string } {
   if (confirmed) {
-    const text = bounded(`:white_check_mark: Confirmed: ${inert(reading)}`, SLACK_SECTION_CAP, "confirmed reading");
+    const text = bounded(`✅ Confirmed: ${inert(reading)}`, SLACK_SECTION_CAP, "confirmed reading");
     return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
   }
-  const text = bounded(`Confirm: ${inert(reading)}`, SLACK_SECTION_CAP, "confirm reading");
+  const text = bounded(`🤔 *My reading:* ${inert(reading)}`, SLACK_SECTION_CAP, "confirm reading");
   return {
     text,
     blocks: [
       { type: "section", text: { type: "mrkdwn", text } },
-      { type: "actions", block_id: `${CONFIRM_BLOCK_PREFIX}${qitemId}`, elements: [{ type: "button", action_id: CONFIRM_ACTION_ID, style: "primary", text: { type: "plain_text", text: "Confirm" } }] },
+      { type: "actions", block_id: `${CONFIRM_BLOCK_PREFIX}${qitemId}`, elements: [{ type: "button", action_id: CONFIRM_ACTION_ID, style: "primary", text: { type: "plain_text", text: "✅ Confirm" } }] },
     ],
   };
 }
@@ -276,7 +277,7 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
   const attachmentText = imageBlocks.map((b) => `Image: ${(b as { alt_text: string }).alt_text}`).join("\n");
   const evidence = buildEvidenceLink(opts.evidenceLink);
   const answerHint = opts.answerHint && q.humanIntent !== "update" ? ANSWER_HINT : null;
-  const questionParts = q.humanQuestions?.length ? buildQuestionBlocks(q.humanQuestions, answerHint ?? TYPED_REPLY_HINT) : null;
+  const questionParts = q.humanQuestions?.length ? buildQuestionBlocks(q.humanQuestions, answerHint ? QUESTION_ANSWER_HINT : TYPED_REPLY_HINT) : null;
   const plainHint = questionParts ? null : answerHint;
   const confirmParts = q.humanConfirm ? buildConfirmBlocks(q.qitemId, q.humanConfirm, opts.confirmed === true) : null;
   if (opts.extraBlocks?.length) {

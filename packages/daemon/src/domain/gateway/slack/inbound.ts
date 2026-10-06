@@ -491,13 +491,6 @@ export class InboundRouter {
       }
     }
     if (resolution !== "resolved") return { status: "ignored", reason: resolution ?? "resolve-unavailable" };
-    if (live) {
-      try {
-        await this.deps.acknowledgeAnswer?.({ channel, threadTs: rootTs, text: escapeSlackText(redactSecrets(`Confirmed: ${offer.reading}`)) });
-      } catch (e) {
-        this.deps.log?.(`confirm acknowledgement failed offer=${offerQitemId}: ${(e as Error).message}`);
-      }
-    }
     return { status: "accepted", reason: "confirmed" };
   }
 

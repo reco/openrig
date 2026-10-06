@@ -62,6 +62,14 @@ async function stateOf(deps: RequestLifecycleDeps, link: RequestLink): Promise<L
   return state === "done" || state === "canceled" ? state : "open";
 }
 
+function describeClose(reason: string): string {
+  if (reason === "linked-outcome-finished") return "the linked work is finished.";
+  if (reason === "canceled-by-seat") return "canceled by the asking seat.";
+  const human = /^canceled-by-human(?:: (.*))?$/s.exec(reason);
+  if (human) return human[1] ? `canceled (${human[1]})` : "canceled.";
+  return reason;
+}
+
 /** Close a request: its thread map rows, an unanswered direct request's row, a note on the row
  *  and a closing line in the thread. `canceled` marks the row canceled instead of done. */
 export async function closeRequest(deps: RequestLifecycleDeps, root: ThreadMapping, reason: string, actorSession: string, canceled = false): Promise<void> {
@@ -84,7 +92,7 @@ export async function closeRequest(deps: RequestLifecycleDeps, root: ThreadMappi
       nudge: true,
     });
   }
-  const posted = await deps.postInThread(root.channel, root.threadTs, escapeSlackText(redactSecrets(`Closed: ${reason.replaceAll("-", " ")}.`)));
+  const posted = await deps.postInThread(root.channel, root.threadTs, escapeSlackText(redactSecrets(`🔒 Closed: ${describeClose(reason)}`)));
   if (!posted) deps.log?.(`request ${root.conversationId} closed; the closing line was not posted`);
 }
 
@@ -102,7 +110,7 @@ async function remind(deps: RequestLifecycleDeps, root: ThreadMapping, days: num
     deps.queueRepo.update({ qitemId: root.conversationId, actorSession: "daemon@kernel", transitionNote: `${REQUEST_REMINDER_PREFIX} target=seat days=${days}` });
     return;
   }
-  const text = `Reminder: this is still waiting on you (${days} quiet days). To decide, reply in this thread starting with \`answer:\`, or reply \`cancel\` to close it.`;
+  const text = `⏰ *Still waiting on you* (${days} quiet days)\n• Reply \`answer: <your decision>\` to decide\n• Reply \`cancel\` to close it`;
   if (!(await deps.postInThread(root.channel, root.threadTs, text))) return;
   deps.queueRepo.update({ qitemId: root.conversationId, actorSession: "daemon@kernel", transitionNote: `${REQUEST_REMINDER_PREFIX} target=human days=${days}` });
 }
