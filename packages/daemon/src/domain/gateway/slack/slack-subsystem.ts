@@ -662,6 +662,13 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       recordHumanAnswer: (input) => opts.queueRepo.recordHumanAnswer(input),
       reactionTarget: makeReactionTarget(opts.queueRepo, threadMap),
       ...(bot ? {
+        retireQuestionButtons: async ({ channel, messageTs, qitemId }: { channel: string; messageTs: string; qitemId: string }) => {
+          const decision = opts.queueRepo.getById(qitemId);
+          if (!decision?.humanQuestions?.length) return;
+          const message = buildOutboundMessage(decision, { sourceLabel: cfg.sourceLabel, attribution: attributionFromSession(decision.sourceSession), answered: true });
+          const r = await updateChatMessage(bot, { channel, ts: messageTs, ...message }, opts.fetchImpl);
+          if (!r.ok) log(`question buttons not replaced qitem=${qitemId}: ${r.error}`);
+        },
         retireConfirmOffer: async ({ channel, messageTs, offerQitemId }: { channel: string; messageTs: string; offerQitemId: string }) => {
           const offer = opts.queueRepo.getById(offerQitemId);
           if (!offer) return;

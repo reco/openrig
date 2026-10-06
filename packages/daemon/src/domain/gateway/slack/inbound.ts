@@ -159,6 +159,8 @@ export interface InboundDeps {
   confirmOffer?: ConfirmOffer;
   /** Phase 1 — an explicit `cancel` in a request's thread; only the asked human's closes it. */
   cancelRequest?: (input: { conversationId: string; actorSession: string; reason: string }) => Promise<"closed" | "not-authorized" | "not-applicable">;
+  /** Phase 1 — replace a fully answered decision's button rows with its answers. Best-effort. */
+  retireQuestionButtons?: (input: { channel: string; messageTs: string; qitemId: string }) => Promise<void>;
   /** Phase 1 — replace a confirmed offer's button with its reading. Best-effort. */
   retireConfirmOffer?: (input: { channel: string; messageTs: string; offerQitemId: string }) => Promise<void>;
   /** Phase 1 — classify the message an admitted human added ✅ to; null = it decides nothing. */
@@ -443,6 +445,14 @@ export class InboundRouter {
       return { status: "refused", reason: "resolve-not-applicable" };
     }
     this.deps.log?.(`answers complete qitem=${qitemId} -> ${route.destination}`);
+    const channel = payload.channel?.id;
+    if (channel) {
+      try {
+        await this.deps.retireQuestionButtons?.({ channel, messageTs: payload.container?.message_ts ?? payload.message?.ts ?? rootTs, qitemId });
+      } catch (e) {
+        this.deps.log?.(`question buttons not replaced qitem=${qitemId}: ${(e as Error).message}`);
+      }
+    }
     if (resolution === "resolved") await acknowledge(escapeSlackText(redactSecrets(`All answered, sent back: ${lines.join("; ")}`)));
     return { status: "accepted", reason: "answers-complete" };
   }

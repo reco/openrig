@@ -239,6 +239,17 @@ describe("structured human questions (#193)", () => {
       expect(answer?.body).toContain("Ship this week?: Yes");
     });
 
+    it("replaces the button rows with the chosen answers once every question is answered", async () => {
+      await click("db", "pg");
+      expect(posts.filter((p) => p.ts === "1.1")).toEqual([]);
+      await click("ship", "yes");
+      const edits = posts.filter((p) => p.ts === "1.1");
+      expect(edits).toHaveLength(1);
+      expect(JSON.stringify(edits[0]?.blocks)).not.toContain("or-opt:");
+      expect(String(edits[0]?.text)).toContain("✅ Which database?: Postgres");
+      expect(String(edits[0]?.text)).toContain("✅ Ship this week?: Yes");
+    });
+
     it("lands exactly one reply when the final click is replayed or clicked again", async () => {
       await click("db", "pg");
       await click("ship", "no", { actionTs: "2000.1" });

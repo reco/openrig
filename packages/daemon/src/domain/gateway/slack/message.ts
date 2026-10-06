@@ -4,7 +4,7 @@
 // 40,000 truncation; top-level text is the screen-reader/notification fallback)
 // https://docs.slack.dev/reference/block-kit/blocks/section-block/ (3,000)
 // https://docs.slack.dev/reference/block-kit/blocks/ (50 blocks)
-import { MAX_OPTION_LABEL, type HumanQuestion } from "../../human-questions.js";
+import { MAX_OPTION_LABEL, formatHumanAnswers, type HumanAnswers, type HumanQuestion } from "../../human-questions.js";
 
 export const SLACK_TEXT_CAP = 3900; // Our conservative complete-fallback budget, not Slack’s hard limit.
 export const SLACK_SECTION_CAP = 3000;
@@ -18,6 +18,7 @@ export interface QitemLike {
   destinationSession?: string | null;
   /** #193 — structured questions, rendered as one button row per question. */
   humanQuestions?: readonly HumanQuestion[] | null;
+  humanAnswers?: HumanAnswers | null;
   humanIntent?: "decision" | "update" | null;
   /** Phase 1 — a reading the human confirms with one click (an update replying to a decision). */
   humanConfirm?: string | null;
@@ -58,6 +59,8 @@ export interface OutboundMessageOpts {
   answerHint?: boolean;
   /** Phase 1: the offer was confirmed; its button is replaced by the confirmed reading. */
   confirmed?: boolean;
+  /** Phase 1: every question is answered; the button rows are replaced by the answers. */
+  answered?: boolean;
 }
 
 /** A1.2 — the four attribution fields. */
@@ -141,6 +144,11 @@ function buildConfirmBlocks(qitemId: string, reading: string, confirmed: boolean
       { type: "actions", block_id: `${CONFIRM_BLOCK_PREFIX}${qitemId}`, elements: [{ type: "button", action_id: CONFIRM_ACTION_ID, style: "primary", text: { type: "plain_text", text: "✅ Confirm" } }] },
     ],
   };
+}
+
+function buildAnsweredBlocks(questions: readonly HumanQuestion[], answers: HumanAnswers): { blocks: unknown[]; text: string } {
+  const lines = formatHumanAnswers(questions, answers).map((line) => bounded(`✅ ${inert(line)}`, SLACK_SECTION_CAP, "answer"));
+  return { text: lines.join("\n"), blocks: lines.map((text) => ({ type: "section", text: { type: "mrkdwn", text } })) };
 }
 
 /** #193 — the questions as blocks (a section, then a button row, per question) plus the
@@ -277,7 +285,9 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
   const attachmentText = imageBlocks.map((b) => `Image: ${(b as { alt_text: string }).alt_text}`).join("\n");
   const evidence = buildEvidenceLink(opts.evidenceLink);
   const answerHint = opts.answerHint && q.humanIntent !== "update" ? ANSWER_HINT : null;
-  const questionParts = q.humanQuestions?.length ? buildQuestionBlocks(q.humanQuestions, answerHint ? QUESTION_ANSWER_HINT : TYPED_REPLY_HINT) : null;
+  const questionParts = !q.humanQuestions?.length ? null
+    : opts.answered ? buildAnsweredBlocks(q.humanQuestions, q.humanAnswers ?? {})
+    : buildQuestionBlocks(q.humanQuestions, answerHint ? QUESTION_ANSWER_HINT : TYPED_REPLY_HINT);
   const plainHint = questionParts ? null : answerHint;
   const confirmParts = q.humanConfirm ? buildConfirmBlocks(q.qitemId, q.humanConfirm, opts.confirmed === true) : null;
   if (opts.extraBlocks?.length) {
