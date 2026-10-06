@@ -35,6 +35,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
   let updates: Array<Record<string, unknown>>;
   let seen: Array<Record<string, unknown>>;
   let unseen: Array<Record<string, unknown>>;
+  let eyes: Set<string>;
   let wire: ReturnType<typeof buildSlackGatewayWire>;
   const stops: Array<() => void> = [];
   const reply = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
@@ -55,6 +56,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
     updates = [];
     seen = [];
     unseen = [];
+    eyes = new Set();
     const contract = new MissionControlWriteContract({ db, eventBus: bus, queueRepo: repo, actionLog: new MissionControlActionLog(db) });
     const realResolve = makeHumanReplyResolver(repo, contract);
     wire = buildSlackGatewayWire({
@@ -72,8 +74,8 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       fetchImpl: async (url, init) => {
         if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
         if (url.endsWith("chat.update")) { updates.push(JSON.parse(String(init?.body))); return reply({ ok: true }); }
-        if (url.endsWith("reactions.add")) { seen.push(JSON.parse(String(init?.body))); return reply({ ok: true }); }
-        if (url.endsWith("reactions.remove")) { unseen.push(JSON.parse(String(init?.body))); return reply({ ok: true }); }
+        if (url.endsWith("reactions.add")) { const b = JSON.parse(String(init?.body)); seen.push(b); eyes.add(b.timestamp); return reply({ ok: true }); }
+        if (url.endsWith("reactions.remove")) { const b = JSON.parse(String(init?.body)); unseen.push(b); eyes.delete(b.timestamp); return reply({ ok: true }); }
         posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
       },
     });
@@ -559,6 +561,26 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(await react(rootTs, { reaction: "-1" })).toMatchObject({ status: "accepted" });
       const ask = repo.list({ limit: 100 }).find((q) => q.tags?.includes("human-feedback"));
       expect(ask?.destinationSession).toBe("worker@rig");
+    });
+
+    it("a seat answer that posts before the 👀 lands still leaves no 👀", async () => {
+      const original = repo.create.bind(repo);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const spy = vi.spyOn(repo, "create").mockImplementation(async (input) => {
+        const row = await original(input);
+        if (input.tags?.includes("conversation")) await gate;
+        return row;
+      });
+      const pending = say("Quick clarification", "5400.1");
+      try {
+        await vi.waitFor(() => expect(toSeat()).toHaveLength(1));
+        const answer = await repo.create({ ...request, humanIntent: "update", summary: "The schema one", body: "Only the schema migration.", replyTo: decisionId });
+        await deliver(answer.qitemId);
+        release();
+        await pending;
+        expect(eyes.has("5400.1")).toBe(false);
+      } finally { release(); await pending; spy.mockRestore(); }
     });
 
     it("a pasted Source line in the human's text does not redirect the 👀 removal", async () => {

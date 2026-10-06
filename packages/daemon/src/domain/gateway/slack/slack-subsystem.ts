@@ -416,7 +416,9 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     const r = await removeReaction(bot, { channel: message.channel, timestamp: message.ts, name: "eyes" }, opts.fetchImpl);
     if (!r.ok) log(`👀 not removed ts=${message.ts}: ${r.error}`);
   };
+  const threadAnsweredAt = new Map<string, string>(); // conversation -> last seat answer in its thread
   const unmarkThread = (conversationId: string): void => {
+    threadAnsweredAt.set(conversationId, new Date().toISOString());
     const rows = opts.queueRepo.db
       .prepare(`SELECT tags FROM queue_items WHERE tags LIKE ? AND tags LIKE '%"founder-slack"%'`)
       .all(`%"reply-to:${conversationId}"%`) as Array<{ tags: string | null }>;
@@ -732,7 +734,9 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
           if (!r.ok) log(`👀 not added ts=${ts}: ${r.error}`);
           // The seat may have handled the row while the 👀 was on its way: take it off again.
           const row = opts.queueRepo.getById(qitemId);
-          if (row && handled(row.state)) await unmarkReceived(row.tags);
+          const conversation = row?.tags?.find((t) => t.startsWith("reply-to:"))?.slice("reply-to:".length);
+          const answeredAt = conversation ? threadAnsweredAt.get(conversation) : undefined;
+          if (row && (handled(row.state) || (answeredAt && answeredAt >= row.tsCreated))) await unmarkReceived(row.tags);
         },
         retireQuestionButtons: async ({ channel, messageTs, qitemId }: { channel: string; messageTs: string; qitemId: string }) => {
           const decision = opts.queueRepo.getById(qitemId);
