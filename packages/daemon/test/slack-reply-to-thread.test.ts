@@ -183,6 +183,7 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
         inboundMaxConnects: 1,
         fetchImpl: async (url, init) => {
           if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
+          if (/reactions\.(add|remove)$/.test(url)) return reply({ ok: true });
           posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
         },
       });

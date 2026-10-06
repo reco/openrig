@@ -16,7 +16,7 @@ import type { SeenStore, DeadLetterStore, DeadLetterEntry } from "./state-store.
 import type { InboundQueuePort } from "./queue-access.js";
 import { createHash } from "node:crypto";
 import { ADMITTED_EVENT_TYPES, REACTION_EVENT_TYPES } from "./capabilities.js";
-import { escapeSlackText, parseConfirmAction, parseQuestionAction, redactSecrets } from "./message.js";
+import { escapeSlackText, parseConfirmAction, parseQuestionAction, redactSecrets, type ConfirmOutcome } from "./message.js";
 import { formatHumanAnswers, unansweredQuestions, type RecordHumanAnswerResult } from "../../human-questions.js";
 
 export interface SlackEvent {
@@ -57,9 +57,12 @@ export type ConfirmOffer = (input: { offerQitemId: string; actorSession: string 
 /** Phase 1 — what a ✅ on a message decides, as classified against our own records. */
 export type ReactionTarget =
   | { kind: "confirm"; offerQitemId: string; threadTs: string }
-  | { kind: "answer"; decisionQitemId: string; threadTs: string; text: string };
+  | { kind: "answer"; decisionQitemId: string; threadTs: string; text: string; ack?: boolean };
 
 export const CHECK_REACTION = "white_check_mark";
+/** The received Slack message's identity on its inbound row, written by the gateway only. */
+export const SLACK_MESSAGE_TAG = "slack-message:";
+const FEEDBACK_REACTIONS: Record<string, "+1" | "-1"> = { "+1": "+1", thumbsup: "+1", "-1": "-1", thumbsdown: "-1" };
 
 /** Slack message ts is unique within a channel, so every inbound id uses both fields. */
 export function inboundQitemIdFor(channel: string | undefined, ts: string | undefined): string {
@@ -159,10 +162,17 @@ export interface InboundDeps {
   confirmOffer?: ConfirmOffer;
   /** Phase 1 — an explicit `cancel` in a request's thread; only the asked human's closes it. */
   cancelRequest?: (input: { conversationId: string; actorSession: string; reason: string }) => Promise<"closed" | "not-authorized" | "not-applicable">;
+  /** Phase 1 — show the human their message was received (a 👀 on it). Best-effort. */
+  markReceived?: (input: { channel: string; ts: string; qitemId: string }) => Promise<void>;
   /** Phase 1 — replace a fully answered decision's button rows with its answers. Best-effort. */
   retireQuestionButtons?: (input: { channel: string; messageTs: string; qitemId: string }) => Promise<void>;
   /** Phase 1 — replace a confirmed offer's button with its reading. Best-effort. */
-  retireConfirmOffer?: (input: { channel: string; messageTs: string; offerQitemId: string; outcome: "confirmed" | "not-used" }) => Promise<void>;
+  retireConfirmOffer?: (input: { channel: string; messageTs: string; offerQitemId: string; outcome: ConfirmOutcome }) => Promise<void>;
+  /** Phase 1 — replace an acknowledged request's ✅ prompt. Best-effort. */
+  retireAck?: (input: { channel: string; messageTs: string; qitemId: string }) => Promise<void>;
+  /** Phase 1 — record 👍/👎 on one of our messages from its asked human; 👎 also asks the seat
+   *  for an alternative. Feedback never decides anything. */
+  recordFeedback?: (input: { channel: string; messageTs: string; actorSession: string; reaction: "+1" | "-1"; key: string }) => Promise<"recorded" | "not-applicable">;
   /** Phase 1 — record that this offer's click resolved its decision (so only it shows Confirmed). */
   markConfirmWon?: (offerQitemId: string) => void;
   /** Phase 1 — classify the message an admitted human added ✅ to; null = it decides nothing. */
@@ -316,7 +326,7 @@ export class InboundRouter {
           source: who.source, // the REGISTERED human's canonical ref (human-class), never a raw platform id
           destination: route.destination,
           priority: "routine",
-          tags: [...route.tags ?? ["founder-slack", "inbound"], ...replyTags],
+          tags: [...route.tags ?? ["founder-slack", "inbound"], ...replyTags, `${SLACK_MESSAGE_TAG}${ev.channel ?? "-"}:${ts}`],
           summary,
           body,
         });
@@ -347,6 +357,13 @@ export class InboundRouter {
         }
       }
       this.deps.seen.mark(eventId, "landed"); // durable qitem exists → safe to mark
+      if (ev.channel && this.deps.markReceived) {
+        try {
+          await this.deps.markReceived({ channel: ev.channel, ts, qitemId });
+        } catch (e) {
+          this.deps.log?.(`received mark failed ts=${ts}: ${(e as Error).message}`);
+        }
+      }
       this.deps.log?.(`qitem ${qitemId} -> ${route.destination} (ts=${ts})`);
       return { landed: true, qitemId, correlationQitemId: route.correlationQitemId, replyResolution };
     } finally {
@@ -495,7 +512,7 @@ export class InboundRouter {
   private async confirmInTurn(actorSession: string, offerQitemId: string, route: { destination: string; tags?: string[] }, channel: string | undefined, offerTs: string | undefined): Promise<{ status: InboundDisposition; reason?: string }> {
     const offer = this.deps.confirmOffer?.({ offerQitemId, actorSession });
     if (!offer?.ok) return { status: "refused", reason: offer?.reason ?? "confirm-unavailable" };
-    const retire = async (outcome: "confirmed" | "not-used") => {
+    const retire = async (outcome: ConfirmOutcome) => {
       if (!channel || !offerTs) return;
       try {
         await this.deps.retireConfirmOffer?.({ channel, messageTs: offerTs, offerQitemId, outcome });
@@ -545,6 +562,8 @@ export class InboundRouter {
   private async attemptReaction(ev: SlackEvent, live: boolean): Promise<{ status: InboundDisposition; reason?: string }> {
     const channel = ev.item?.channel;
     const messageTs = ev.item?.ts;
+    const feedback = FEEDBACK_REACTIONS[ev.reaction ?? ""];
+    if (feedback && channel && messageTs) return this.feedback(ev, channel, messageTs, feedback);
     if (ev.reaction !== CHECK_REACTION || !channel || !messageTs) return { status: "ignored", reason: "not-a-check-on-a-message" };
     const key = `reaction:${channel}:${messageTs}:${ev.user ?? "-"}`;
     if (this.deps.seen.load().has(key) || this.inflight.has(key)) return { status: "ignored", reason: "dup" };
@@ -559,7 +578,7 @@ export class InboundRouter {
     try {
       const r = target.kind === "confirm"
         ? await this.confirm(who.source, target.offerQitemId, target.threadTs, channel, live, messageTs)
-        : await this.answerByReaction(who.source, target, channel, key);
+        : await this.answerByReaction(who.source, target, channel, key, messageTs);
       if (r.status !== "handler-failed") this.deps.seen.mark(key, r.status);
       return r;
     } finally {
@@ -567,7 +586,25 @@ export class InboundRouter {
     }
   }
 
-  private async answerByReaction(actorSession: string, target: Extract<ReactionTarget, { kind: "answer" }>, channel: string, key: string): Promise<{ status: InboundDisposition; reason?: string }> {
+  private async feedback(ev: SlackEvent, channel: string, messageTs: string, reaction: "+1" | "-1"): Promise<{ status: InboundDisposition; reason?: string }> {
+    const key = `feedback:${channel}:${messageTs}:${ev.user ?? "-"}:${reaction}`;
+    if (this.deps.seen.load().has(key) || this.inflight.has(key)) return { status: "ignored", reason: "dup" };
+    const who = this.deps.resolveSender(ev.user ?? "");
+    if (!who.admitted) return { status: "refused", reason: "unregistered" };
+    this.inflight.add(key);
+    try {
+      const r = await this.deps.recordFeedback?.({ channel, messageTs, actorSession: who.source, reaction, key });
+      this.deps.seen.mark(key, r ?? "not-applicable");
+      return r === "recorded" ? { status: "accepted", reason: `feedback-${reaction}` } : { status: "ignored", reason: "not-our-request" };
+    } catch (e) {
+      this.deps.log?.(`feedback not recorded ts=${messageTs}: ${(e as Error).message}`);
+      return { status: "handler-failed", reason: "feedback-failed" };
+    } finally {
+      this.inflight.delete(key);
+    }
+  }
+
+  private async answerByReaction(actorSession: string, target: Extract<ReactionTarget, { kind: "answer" }>, channel: string, key: string, messageTs: string): Promise<{ status: InboundDisposition; reason?: string }> {
     const route = this.deps.resolveRoute?.({ type: "message", thread_ts: target.threadTs, channel });
     if (route?.correlationQitemId !== target.decisionQitemId) return { status: "ignored", reason: "not-the-current-decision" };
     let resolution: "resolved" | "already-resolved" | "not-applicable" | undefined;
@@ -585,6 +622,13 @@ export class InboundRouter {
     } catch (e) {
       this.deps.log?.(`reaction continuation failed qitem=${target.decisionQitemId}: ${(e as Error).message}`);
       return { status: "handler-failed", reason: "reaction-continuation-failed" };
+    }
+    if (resolution === "resolved" && target.ack) {
+      try {
+        await this.deps.retireAck?.({ channel, messageTs, qitemId: target.decisionQitemId });
+      } catch (e) {
+        this.deps.log?.(`ack prompt not replaced qitem=${target.decisionQitemId}: ${(e as Error).message}`);
+      }
     }
     return resolution === "resolved" ? { status: "accepted", reason: "answered-by-reaction" } : { status: "ignored", reason: resolution ?? "resolve-unavailable" };
   }

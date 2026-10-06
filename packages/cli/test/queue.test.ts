@@ -226,6 +226,12 @@ describe("rig queue CLI", () => {
     expect(calls.find((c) => c.path === "/api/queue/create")?.body).toMatchObject({ humanIntent: "update", replyTo: "qitem-earlier" });
   });
 
+  it("create --human-intent ack sends a decision that only asks for an acknowledgement", async () => {
+    const { deps, calls } = makeDeps();
+    await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "human-founder@external", "--body", "Restarted.", "--human-intent", "ack", "--json"]);
+    expect(calls.find((c) => c.path === "/api/queue/create")?.body).toMatchObject({ humanIntent: "decision", humanAck: true });
+  });
+
   it("create --confirm sends the reading as humanConfirm", async () => {
     const { deps, calls } = makeDeps();
     await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "human-founder@external", "--body", "My reading.", "--human-intent", "update", "--reply-to", "qitem-decision", "--confirm", "Ship the schema migration only.", "--json"]);

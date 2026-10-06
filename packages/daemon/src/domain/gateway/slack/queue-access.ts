@@ -24,6 +24,7 @@ export interface QueueItem {
   replyTo?: string | null;
   humanQuestions?: HumanQuestion[] | null;
   humanConfirm?: string | null;
+  humanAck?: boolean | null;
   summary?: string | null;
   body?: string | null;
   evidenceRef?: string | null;
@@ -94,6 +95,7 @@ function project(q: RepoQueueItem, transition: QueueTransition, entities: readon
     replyTo: q.replyTo ?? null,
     humanQuestions: q.humanQuestions ?? null,
     humanConfirm: q.humanConfirm ?? null,
+    humanAck: q.humanAck ?? null,
     summary: (r.summary as string | null) ?? null,
     body: (r.body as string | null) ?? null,
     evidenceRef: (r.evidenceRef as string | null) ?? null,

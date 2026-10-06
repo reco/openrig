@@ -34,6 +34,7 @@ export interface OutboundPostPayload {
   replyTo?: string | null;
   humanQuestions?: import("../../human-questions.js").HumanQuestion[] | null;
   humanConfirm?: string | null;
+  humanAck?: boolean | null;
   summary?: string | null;
   body?: string | null;
   destinationSession?: string | null;
@@ -140,6 +141,7 @@ function toPayload(q: QueueItem): OutboundPostPayload {
     replyTo: q.replyTo,
     humanQuestions: q.humanQuestions,
     humanConfirm: q.humanConfirm,
+    humanAck: q.humanAck,
     summary: q.summary,
     body: q.body,
     destinationSession: q.destinationSession,

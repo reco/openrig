@@ -156,7 +156,7 @@ describe("phase 1 request lifecycle sweep", () => {
       at(3.1); await sweep(); await sweep();
       expect(threadPosts).toHaveLength(1);
       expect(threadPosts[0]).toMatchObject({ threadTs: "1.1" });
-      expect(threadPosts[0]?.text).toContain("answer:");
+      expect(threadPosts[0]?.text).toContain("cancel");
       at(5); await sweep();
       expect(threadPosts).toHaveLength(1);
       at(6.2); await sweep();

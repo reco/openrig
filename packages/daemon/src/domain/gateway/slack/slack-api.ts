@@ -367,6 +367,26 @@ export async function fetchRecentMessageTexts(
   return incomplete("reconcile pagination exceeded its 10-page bound");
 }
 
+/** Add a reaction as the app (`reactions.add`; needs reactions:write). */
+export async function addReaction(
+  token: string,
+  input: { channel: string; timestamp: string; name: string },
+  fetchImpl: FetchImpl = defaultFetch,
+): Promise<{ ok: boolean; error?: string }> {
+  const r = await callWebApi("reactions.add", token, input, fetchImpl);
+  return { ok: r.ok || r.error === "already_reacted", error: r.error };
+}
+
+/** Remove the app's own reaction (`reactions.remove`); an absent reaction counts as removed. */
+export async function removeReaction(
+  token: string,
+  input: { channel: string; timestamp: string; name: string },
+  fetchImpl: FetchImpl = defaultFetch,
+): Promise<{ ok: boolean; error?: string }> {
+  const r = await callWebApi("reactions.remove", token, input, fetchImpl);
+  return { ok: r.ok || r.error === "no_reaction", error: r.error };
+}
+
 /** Replace one of our posted messages (`chat.update`; chat:write covers the app's own posts). */
 export async function updateChatMessage(
   token: string,

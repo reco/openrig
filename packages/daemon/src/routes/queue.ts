@@ -174,6 +174,7 @@ export function queueRoutes(): Hono {
         : err.code === "invalid_human_questions" ? 400
         : err.code === "invalid_human_confirm" ? 400
         : err.code === "invalid_request_link" ? 400
+        : err.code === "invalid_human_ack" ? 400
         // OPR.0.5.1 slice-51-06 D2: summary/evidence_ref on a non-park transition — a client
         // input error surfaced as a structured 400 (the daemon rejects before any mutation).
         : err.code === "summary_evidence_not_persistable" ? 400
@@ -466,6 +467,7 @@ export function queueRoutes(): Hono {
       replyTo?: string | null;
       humanQuestions?: HumanQuestion[] | null; // shape validated by the repository (invalid_human_questions)
       humanConfirm?: string | null;
+      humanAck?: boolean;
       links?: string[];
       summary?: string | null;
       evidenceRef?: string | null;
@@ -535,6 +537,7 @@ export function queueRoutes(): Hono {
         replyTo: body.replyTo,
         humanQuestions: body.humanQuestions,
         humanConfirm: body.humanConfirm,
+        humanAck: body.humanAck === true,
         summary: body.summary,
         evidenceRef: body.evidenceRef,
         nudge: (body as { nudge?: boolean }).nudge,

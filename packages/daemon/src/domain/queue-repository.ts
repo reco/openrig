@@ -186,6 +186,8 @@ export interface QueueItem {
   /** Phase 1 — the reading this update offers its human to confirm; a click resolves the
    *  decision it replies to with exactly this text. */
   humanConfirm?: string | null;
+  /** Phase 1 — the request only needs the human to acknowledge it with a ✅; no buttons. */
+  humanAck?: boolean;
   /** Short human-readable subject; null for callers that omit it. */
   summary: string | null;
   /** OPR.0.4.4.19 FR-5 — pointer to the durable artifact a human judges
@@ -240,6 +242,7 @@ interface QueueItemRow {
   human_questions?: string | null;
   human_answers?: string | null;
   human_confirm?: string | null;
+  human_ack?: number | null;
   summary: string | null;
   evidence_ref: string | null;
   closure_reason: string | null;
@@ -306,6 +309,8 @@ export interface QueueCreateInput {
   /** Phase 1 — on a decision, the approve button's call to action ("Build it"); on an update
    *  replying to a decision, the seat's reading to confirm. A click resolves with this text. */
   humanConfirm?: string | null;
+  /** Phase 1 — a decision that only asks for an acknowledgement (✅); it carries no buttons. */
+  humanAck?: boolean | null;
   summary?: string | null;
   /** OPR.0.4.4.19 FR-5 — optional durable-artifact pointer. Persisted when
    *  present; required at the domain layer only for human-routed items. */
@@ -710,6 +715,7 @@ export class QueueRepository {
   private readonly hasReplyToColumn: boolean;
   private readonly hasHumanQuestionsColumn: boolean;
   private readonly hasHumanConfirmColumn: boolean;
+  private readonly hasHumanAckColumn: boolean;
   private readonly hasEvidenceRefColumn: boolean;
   private readonly hasMintingGenColumn: boolean;
   private readonly hasClaimedGenColumn: boolean;
@@ -774,6 +780,7 @@ export class QueueRepository {
     this.hasReplyToColumn = detectQueueColumn(db, "reply_to");
     this.hasHumanQuestionsColumn = detectQueueColumn(db, "human_questions");
     this.hasHumanConfirmColumn = detectQueueColumn(db, "human_confirm");
+    this.hasHumanAckColumn = detectQueueColumn(db, "human_ack");
     this.hasEvidenceRefColumn = detectQueueColumn(db, "evidence_ref");
     this.hasQueueTransitionsTable = detectTable(db, "queue_transitions");
     const transitionColumns = this.hasQueueTransitionsTable
@@ -1589,6 +1596,13 @@ export class QueueRepository {
       humanQuestions = parsed.questions;
     }
     if (input.humanConfirm != null) this.validateHumanConfirm(input.humanConfirm, input);
+    if (input.humanAck) {
+      const fail = (message: string) => new QueueRepositoryError("invalid_human_ack", message);
+      if (input.humanIntent === "update") throw fail("an acknowledgement request is a decision kind; it cannot be an update.");
+      if (!isHumanSeatSessionRef(input.destinationSession)) throw fail("an acknowledgement request needs a human destination.");
+      if (input.humanConfirm != null || input.humanQuestions != null) throw fail("an acknowledgement request carries no buttons: drop --confirm and --human-questions-file.");
+      if (!this.hasHumanAckColumn) throw fail("acknowledgement requests require the current queue schema; it was not saved.");
+    }
     const id = input.qitemId ?? newQitemId();
     const ts = new Date().toISOString();
     const priority = input.priority ?? "routine";
@@ -1633,6 +1647,9 @@ export class QueueRepository {
     }
     if (input.humanConfirm != null) {
       this.db.prepare("UPDATE queue_items SET human_confirm = ? WHERE qitem_id = ?").run(input.humanConfirm, id);
+    }
+    if (input.humanAck) {
+      this.db.prepare("UPDATE queue_items SET human_ack = 1 WHERE qitem_id = ?").run(id);
     }
     this.persistMintingGeneration(id, input.sourceSession);
     const notification = this.classifyOwnerNotification({
@@ -3158,6 +3175,11 @@ export class QueueRepository {
     })();
   }
 
+  /** The bus queue changes are published on (read-only subscribers such as the Slack gateway). */
+  get events(): EventBus {
+    return this.eventBus;
+  }
+
   getById(qitemId: string): QueueItem | null {
     const row = this.db
       .prepare("SELECT * FROM queue_items WHERE qitem_id = ?")
@@ -4003,6 +4025,7 @@ export class QueueRepository {
       humanQuestions: row.human_questions ? (JSON.parse(row.human_questions) as HumanQuestion[]) : null,
       humanAnswers: row.human_answers ? (JSON.parse(row.human_answers) as HumanAnswers) : null,
       humanConfirm: row.human_confirm ?? null,
+      humanAck: row.human_ack === 1,
       closureReason: row.closure_reason as ClosureReason | null,
       closureTarget: row.closure_target,
       closureRequiredAt: row.closure_required_at,

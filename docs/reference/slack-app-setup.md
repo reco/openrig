@@ -63,10 +63,12 @@ groups:
   a member of, and reading channel details.
   `rig slack verify` checks these.
 - **Feature scopes**: `files:read` (download attachments people send), `files:write` (upload
-  attachments to Slack), `app_mentions:read` (receive @-mentions of the app), and `reactions:read`
-  (receive a ✅ that answers a decision). `rig slack verify` warns when one of these is missing (if
+  attachments to Slack), `app_mentions:read` (receive @-mentions of the app), `reactions:read`
+  (receive a ✅ that answers a decision), `reactions:write` (put 👀 on each received message until the
+  seat has handled it), and `groups:history` / `groups:read` (use a private
+  channel: its messages, history and membership check). `rig slack verify` warns when one of these is missing (if
   Slack returns the granted scopes) but does not require them, so a READY from verify does not
-  prove attachments, mentions or reactions will work.
+  prove attachments, mentions, reactions or a private channel will work.
 
 If a feature scope was not granted, the effect differs by feature:
 
@@ -78,12 +80,17 @@ If a feature scope was not granted, the effect differs by feature:
   Only `rig slack verify` warns that the scope is missing; nothing reports the missing events.
 - **Reactions** (`reactions:read`): Slack does not deliver `reaction_added` events, so a ✅ answers
   nothing. Use a button or an `answer:` reply instead.
+- **Private channel** (`groups:history`, `groups:read`): Slack delivers no messages from a private
+  channel, history recovery fails there, and `rig slack verify` cannot confirm the app is a member.
+  A public channel needs neither scope.
 
-So after installing, compare the granted scopes Slack shows for the app with all seven scopes that
+So after installing, compare the granted scopes Slack shows for the app with all ten scopes that
 `rig slack manifest --json` lists.
 
-The app subscribes to messages in public channels it is a member of (`message.channels`), to
-mentions of the app (`app_mention`), and to reactions (`reaction_added`). It does not request direct-message or private-channel access.
+The app subscribes to messages in public and private channels it is a member of
+(`message.channels`, `message.groups`), to mentions of the app (`app_mention`), and to reactions
+(`reaction_added`). It does not request direct-message access. For a private channel, invite the
+app to it (`/invite @<app name>`); Slack does not let an app join a private channel by itself.
 
 The manifest also turns on **Interactivity**, so the human can answer a decision's structured
 questions by clicking a button (`rig queue create --human-questions-file`). In Socket Mode the
@@ -95,11 +102,14 @@ How a decision is answered depends on `explicitAnswersOnly` in `slack-connector.
 
 - **On (this build's default):** a typed reply in the decision's thread is conversation. It goes
   to the asking seat, which can answer in the same thread (`rig queue create --human-intent update
-  --reply-to <decision>`), and it resolves nothing. The decision resolves on a button click
+  --reply-to <decision>`), and it resolves nothing. Every decision shows buttons: the seat's
+  action (or "Confirm"), or option buttons; typing is always possible and reaches the seat. An acknowledgement request
+  (`--human-intent ack`) has no buttons and resolves on the asked human's ✅. 👍 and 👎 on any
+  bot message are recorded as feedback and never decide. The decision resolves on a button click
   (including an approve button carrying the seat's call to action, `--confirm "Build it"` on the
   decision), a reply starting with `answer:`, a Confirm click on the seat's stated reading
   (`--confirm <reading>` on an update replying to the decision), or a ✅ from the asked human on
-  the decision's root (only on a decision with no buttons at all, answered as "acknowledged and agreed"), on their own reply in the thread (that reply's text), or on a Confirm
+  an acknowledgement request's root (answered as "acknowledged"), on their own reply in the thread (that reply's text), or on a Confirm
   offer. It resolves once; later answers reach the seat as messages.
   Answering does not close the request: its thread stays open until the outcome the seat linked
   (`rig queue update --link pr:<url>|issue:<url>|qitem:<id>`) is finished, or the asked human
