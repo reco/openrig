@@ -511,6 +511,16 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(decisions).toEqual(["Merge the fix now."]);
     });
 
+    it("a private channel's thread reply and ✅ behave like a public channel's", async () => {
+      socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-group", type: "events_api", payload: { event: { type: "message", channel_type: "group", user: "UFOUNDER", text: "Private question?", ts: "2300.1", thread_ts: "1.1", channel: "C-TEST" } } }) });
+      await vi.waitFor(() => expect(finals("e-group")).toHaveLength(1));
+      expect(toSeat().find((q) => q.body.includes("Private question?"))?.tags).toContain("conversation");
+      const ack = await repo.create({ ...request, summary: "Private ack", humanIntent: "decision", humanAck: true });
+      await deliver(ack.qitemId);
+      expect(await react(`${posts.length}.1`)).toMatchObject({ status: "accepted" });
+      expect(repo.getById(ack.qitemId)?.state).toBe("done");
+    });
+
     it("an empty `answer:` is conversation, not a resolution", async () => {
       await say("answer:   ", "2005.1");
       expect(repo.getById(decisionId)?.state).toBe("pending");

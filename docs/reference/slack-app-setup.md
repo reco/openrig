@@ -63,10 +63,11 @@ groups:
   a member of, and reading channel details.
   `rig slack verify` checks these.
 - **Feature scopes**: `files:read` (download attachments people send), `files:write` (upload
-  attachments to Slack), `app_mentions:read` (receive @-mentions of the app), and `reactions:read`
-  (receive a ✅ that answers a decision). `rig slack verify` warns when one of these is missing (if
+  attachments to Slack), `app_mentions:read` (receive @-mentions of the app), `reactions:read`
+  (receive a ✅ that answers a decision), and `groups:history` / `groups:read` (use a private
+  channel: its messages, history and membership check). `rig slack verify` warns when one of these is missing (if
   Slack returns the granted scopes) but does not require them, so a READY from verify does not
-  prove attachments, mentions or reactions will work.
+  prove attachments, mentions, reactions or a private channel will work.
 
 If a feature scope was not granted, the effect differs by feature:
 
@@ -78,12 +79,17 @@ If a feature scope was not granted, the effect differs by feature:
   Only `rig slack verify` warns that the scope is missing; nothing reports the missing events.
 - **Reactions** (`reactions:read`): Slack does not deliver `reaction_added` events, so a ✅ answers
   nothing. Use a button or an `answer:` reply instead.
+- **Private channel** (`groups:history`, `groups:read`): Slack delivers no messages from a private
+  channel, history recovery fails there, and `rig slack verify` cannot confirm the app is a member.
+  A public channel needs neither scope.
 
-So after installing, compare the granted scopes Slack shows for the app with all seven scopes that
+So after installing, compare the granted scopes Slack shows for the app with all nine scopes that
 `rig slack manifest --json` lists.
 
-The app subscribes to messages in public channels it is a member of (`message.channels`), to
-mentions of the app (`app_mention`), and to reactions (`reaction_added`). It does not request direct-message or private-channel access.
+The app subscribes to messages in public and private channels it is a member of
+(`message.channels`, `message.groups`), to mentions of the app (`app_mention`), and to reactions
+(`reaction_added`). It does not request direct-message access. For a private channel, invite the
+app to it (`/invite @<app name>`); Slack does not let an app join a private channel by itself.
 
 The manifest also turns on **Interactivity**, so the human can answer a decision's structured
 questions by clicking a button (`rig queue create --human-questions-file`). In Socket Mode the

@@ -38,13 +38,13 @@ describe("shipped Slack app manifest — canonical sources", () => {
   it("subscribes to events for exactly the payload types the inbound gate admits", () => {
     const admittedByBehavior = setOf(PROBE_TYPES.filter(admits));
     const subscribedPayloadTypes = setOf(Object.entries(EVENT_SUBSCRIPTIONS)
-      .filter(([, m]) => bundle.events.includes(m.subscription)).map(([type]) => type));
+      .filter(([, ms]) => ms.every((m) => bundle.events.includes(m.subscription))).map(([type]) => type));
     expect(admittedByBehavior).toEqual(subscribedPayloadTypes);
     expect(setOf(bundle.manifest.settings.event_subscriptions.bot_events)).toEqual(setOf(bundle.events));
   });
 
   it("requests the scope Slack requires for every subscribed event", () => {
-    for (const m of Object.values(EVENT_SUBSCRIPTIONS)) {
+    for (const m of Object.values(EVENT_SUBSCRIPTIONS).flat()) {
       if (bundle.events.includes(m.subscription)) expect(scopeSet.has(m.scope)).toBe(true);
     }
   });
@@ -66,6 +66,12 @@ describe("shipped Slack app manifest — canonical sources", () => {
     expect(bundle.url.slice(prefix.length)).not.toMatch(/[\s\n:]/);
   });
 
+  it("works in private channels: message.groups with groups:history, and groups:read for verify", () => {
+    expect(bundle.events).toEqual(expect.arrayContaining(["message.channels", "message.groups", "reaction_added"]));
+    expect(scopeSet.has("groups:history")).toBe(true);
+    expect(scopeSet.has("groups:read")).toBe(true);
+  });
+
   it("carries no private instance, host, rig, seat or workspace identifiers", () => {
     const text = bundle.yaml + bundle.url + JSON.stringify(bundle);
     for (const forbidden of [/esoteric/i, /v-openrig/i, /mm2/i, /openrig-build/i, /\/Users\//, /kernel/i, /@[a-z0-9-]+\b/i, /\bT0[A-Z0-9]{6,}\b/]) {
@@ -81,12 +87,12 @@ describe("shipped Slack app manifest — mutation controls", () => {
   });
 
   it("refuses a subscribed event whose scope is not requested", () => {
-    expect(() => buildSlackAppManifest({ ...CANONICAL_MANIFEST_SOURCES, featureScopes: ["files:read", "files:write"] }))
+    expect(() => buildSlackAppManifest({ ...CANONICAL_MANIFEST_SOURCES, featureScopes: ["files:read", "files:write", "groups:history", "groups:read", "reactions:read"] }))
       .toThrow(/needs scope "app_mentions:read"/);
   });
 
   it("changes the scope set when a feature scope is dropped (the equality test would fail)", () => {
-    const narrowed = buildSlackAppManifest({ ...CANONICAL_MANIFEST_SOURCES, featureScopes: ["files:write", "app_mentions:read", "reactions:read"] });
+    const narrowed = buildSlackAppManifest({ ...CANONICAL_MANIFEST_SOURCES, featureScopes: ["files:write", "app_mentions:read", "reactions:read", "groups:history", "groups:read"] });
     expect(setOf(narrowed.scopes)).not.toEqual(setOf(buildSlackAppManifest().scopes));
   });
 
