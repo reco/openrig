@@ -125,11 +125,11 @@ when the human replies `cancel`. A request quiet for `staleReminderDays` (defaul
 3) reminds the human while unanswered and you once answered; reminders close
 nothing.
 
-Write Slack mrkdwn, not plain prose: a *bold* lead line or label, `inline code`
-for commands, paths and identifiers, triple-backtick blocks for multi-line code
-or output, _italic_, ~strike~, and one blank line between list items and
-sections. Give the request a `--summary`: it is the bold headline (without one,
-the body starts the message). Only `&`, `<` and `>` are escaped, so this
+Write Slack mrkdwn, not plain prose: bold item labels, `inline code` for
+commands, paths and identifiers, triple-backtick blocks for multi-line code or
+output, _italic_, ~strike~, and one blank line between list items and sections.
+The `--summary` is the one heading (without one, the body starts the message);
+the body never adds or repeats a bold heading, and bold is only for item labels. Only `&`, `<` and `>` are escaped, so this
 formatting arrives intact.
 
 A **decision** with a few clear choices can carry `--human-questions-file <path>`:
