@@ -219,6 +219,32 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(toSeat().some((q) => q.summary?.includes("confirmed your reading"))).toBe(false);
     });
 
+    it("two overlapping clicks on one offer leave it Confirmed", async () => {
+      const offer = await offerConfirm("Ship widget A.");
+      await Promise.all([
+        click(`or-confirm:${offer.qitemId}`, "or-confirm", offer.messageTs, "UFOUNDER", "3400.1"),
+        click(`or-confirm:${offer.qitemId}`, "or-confirm", offer.messageTs, "UFOUNDER", "3400.2"),
+      ]);
+      expect(decisions).toEqual(["Ship widget A."]);
+      const edits = updates.filter((u) => u.ts === offer.messageTs);
+      expect(String(edits.at(-1)?.text)).toContain("Confirmed: Ship widget A.");
+      expect(edits.some((u) => String(u.text).includes("Not used"))).toBe(false);
+    });
+
+    it("two offers clicked at once: one wins, the other is Not used and sends nothing", async () => {
+      const a = await offerConfirm("Ship widget A.");
+      const b = await offerConfirm("Ship widget B.");
+      await Promise.all([
+        click(`or-confirm:${a.qitemId}`, "or-confirm", a.messageTs, "UFOUNDER", "3500.1"),
+        click(`or-confirm:${b.qitemId}`, "or-confirm", b.messageTs, "UFOUNDER", "3500.2"),
+      ]);
+      expect(decisions).toHaveLength(1);
+      expect(toSeat().filter((q) => q.summary?.includes("confirmed your reading"))).toHaveLength(1);
+      const texts = [a, b].map((o) => String(updates.filter((u) => u.ts === o.messageTs).at(-1)?.text));
+      expect(texts.filter((t) => t.includes("Confirmed")).length).toBe(1);
+      expect(texts.filter((t) => t.includes("Not used")).length).toBe(1);
+    });
+
     it("of two offers only the clicked winner says Confirmed", async () => {
       const a = await offerConfirm("Ship widget A.");
       const b = await offerConfirm("Ship widget B.");

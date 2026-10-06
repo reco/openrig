@@ -182,6 +182,7 @@ export interface InboundDeps {
 
 export class InboundRouter {
   private readonly inflight = new Set<string>(); // same-channel message identity double-dispatch guard
+  private readonly confirmChains = new Map<string, Promise<unknown>>(); // one Confirm at a time per decision
   private retryPass: Promise<{ retried: number; landed: number }> | undefined;
   constructor(private readonly deps: InboundDeps) {}
 
@@ -479,6 +480,21 @@ export class InboundRouter {
     const offer = this.deps.confirmOffer?.({ offerQitemId, actorSession });
     if (!offer?.ok) return { status: "refused", reason: offer?.reason ?? "confirm-unavailable" };
     if (offer.decisionQitemId !== route.correlationQitemId) return { status: "ignored", reason: "offer-not-in-this-thread" };
+    const previous = this.confirmChains.get(offer.decisionQitemId) ?? Promise.resolve();
+    const run = previous.catch(() => {}).then(() => this.confirmInTurn(actorSession, offerQitemId, route, channel, offerTs));
+    this.confirmChains.set(offer.decisionQitemId, run);
+    try {
+      return await run;
+    } finally {
+      if (this.confirmChains.get(offer.decisionQitemId) === run) this.confirmChains.delete(offer.decisionQitemId);
+    }
+  }
+
+  /** Runs only after any earlier Confirm on the same decision finished, so `decided` and `won`
+   *  are read after that click's resolve and mark. */
+  private async confirmInTurn(actorSession: string, offerQitemId: string, route: { destination: string; tags?: string[] }, channel: string | undefined, offerTs: string | undefined): Promise<{ status: InboundDisposition; reason?: string }> {
+    const offer = this.deps.confirmOffer?.({ offerQitemId, actorSession });
+    if (!offer?.ok) return { status: "refused", reason: offer?.reason ?? "confirm-unavailable" };
     const retire = async (outcome: "confirmed" | "not-used") => {
       if (!channel || !offerTs) return;
       try {
