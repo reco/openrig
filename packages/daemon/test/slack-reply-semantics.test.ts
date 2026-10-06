@@ -107,11 +107,11 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(DEFAULT_CONFIG.staleReminderDays).toBe(3);
     });
 
-    it("gives a plain decision Confirm and Not now buttons and no footer", () => {
+    it("gives a plain decision one Confirm button and no footer", () => {
       const blocks = JSON.stringify(posts[0]?.blocks);
       expect(blocks).toContain(`or-confirm:${decisionId}`);
       expect(blocks).toContain('"text":"Confirm"');
-      expect(blocks).toContain('"text":"Not now"');
+      expect(blocks).not.toContain("Not now");
       expect(String(posts[0]?.text)).not.toContain("answer:");
     });
 
@@ -120,17 +120,6 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(decisions).toEqual(["confirmed"]);
       expect(String(updates.find((u) => u.ts === "1.1")?.text)).toContain("Decided: *Confirm*");
       expect(JSON.stringify(updates.find((u) => u.ts === "1.1")?.blocks)).not.toContain("or-confirm");
-    });
-
-    it("Not now records not now, asks the seat for something different, and shows the decision", async () => {
-      expect(await click(`or-confirm:${decisionId}`, "or-not-now", "1.1", "UFOUNDER", "3600.2")).toMatchObject({ status: "accepted" });
-      expect(decisions).toEqual(["not now"]);
-      const row = toSeat().find((q) => q.tags?.includes("human-answer"));
-      expect(row?.summary).toContain("Not now");
-      expect(row?.body).toContain(`--reply-to ${decisionId}`);
-      expect(String(updates.find((u) => u.ts === "1.1")?.text)).toContain("Decided: *Not now*");
-      expect(await click(`or-confirm:${decisionId}`, "or-confirm", "1.1", "UFOUNDER", "3600.3")).not.toMatchObject({ status: "accepted" });
-      expect(decisions).toEqual(["not now"]);
     });
 
     const ackRequest = async () => {

@@ -100,14 +100,13 @@ Answer it in the same thread with `--human-intent update --reply-to
 `--confirm "<your reading>"` on that update; never treat prose such as "yes" as
 approval. Pick the kind that fits:
 - an action to approve (merge a PR, close an issue): a decision with
-  `--confirm "<the action>"`; it shows that button and "Not now";
-- a plan or long text to approve: a plain decision; it shows "Confirm" and
-  "Not now";
+  `--confirm "<the action>"`; it shows that one button;
+- a plan or long text to approve: a plain decision; it shows "Confirm";
 - a choice: `--human-questions-file` option buttons;
 - information to acknowledge: `--human-intent ack`; no buttons, the human
   reacts ✅ ("acknowledged"); you keep working meanwhile.
-"Not now" resolves the decision as "not now": propose something different in
-its thread. 👍/👎 on any of your messages is feedback, never a decision; on 👎
+On every kind the human may type instead; that reaches you as conversation.
+👍/👎 on any of your messages is feedback, never a decision; on 👎
 you get a row: propose an alternative, do not ask why. For a yes/go decision,
 put the action on a button with
 `--confirm "<call to action>"` on the decision itself (e.g. "Build it", "Write the

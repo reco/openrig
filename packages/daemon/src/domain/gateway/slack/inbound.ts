@@ -16,7 +16,7 @@ import type { SeenStore, DeadLetterStore, DeadLetterEntry } from "./state-store.
 import type { InboundQueuePort } from "./queue-access.js";
 import { createHash } from "node:crypto";
 import { ADMITTED_EVENT_TYPES, REACTION_EVENT_TYPES } from "./capabilities.js";
-import { NOT_NOW_DECISION, NOT_NOW_LABEL, escapeSlackText, parseConfirmAction, parseQuestionAction, redactSecrets, type ConfirmChoice, type ConfirmOutcome } from "./message.js";
+import { escapeSlackText, parseConfirmAction, parseQuestionAction, redactSecrets, type ConfirmOutcome } from "./message.js";
 import { formatHumanAnswers, unansweredQuestions, type RecordHumanAnswerResult } from "../../human-questions.js";
 
 export interface SlackEvent {
@@ -51,7 +51,7 @@ export interface SlackBlockActions {
 
 /** Phase 1 — the decision a Confirm offer replies to and its stated reading, for the asked human only. */
 export type ConfirmOffer = (input: { offerQitemId: string; actorSession: string }) =>
-  | { ok: true; decisionQitemId: string; reading: string; decided: boolean; wonChoice: ConfirmChoice | null; isDecision: boolean }
+  | { ok: true; decisionQitemId: string; reading: string; decided: boolean; won: boolean }
   | { ok: false; reason: string };
 
 /** Phase 1 — what a ✅ on a message decides, as classified against our own records. */
@@ -170,7 +170,7 @@ export interface InboundDeps {
    *  for an alternative. Feedback never decides anything. */
   recordFeedback?: (input: { channel: string; messageTs: string; actorSession: string; reaction: "+1" | "-1"; key: string }) => Promise<"recorded" | "not-applicable">;
   /** Phase 1 — record that this offer's click resolved its decision (so only it shows Confirmed). */
-  markConfirmWon?: (offerQitemId: string, choice: ConfirmChoice) => void;
+  markConfirmWon?: (offerQitemId: string) => void;
   /** Phase 1 — classify the message an admitted human added ✅ to; null = it decides nothing. */
   reactionTarget?: (input: { channel: string; messageTs: string; actorSession: string }) => ReactionTarget | null;
   /** #193 — clicks whose continuation (reply row + resolve) failed; retried with the event
@@ -398,8 +398,8 @@ export class InboundRouter {
 
   private async attemptAction(payload: SlackBlockActions, live: boolean): Promise<{ status: InboundDisposition; reason?: string }> {
     const action = payload.actions?.[0];
-    const confirmClick = parseConfirmAction(action?.block_id, action?.action_id);
-    if (confirmClick) return this.attemptConfirm(payload, confirmClick.offerQitemId, confirmClick.choice, live);
+    const offerQitemId = parseConfirmAction(action?.block_id, action?.action_id);
+    if (offerQitemId) return this.attemptConfirm(payload, offerQitemId, live);
     const picked = parseQuestionAction(action?.block_id, action?.action_id);
     if (!picked) return { status: "ignored", reason: "not-a-question-button" };
     const who = this.deps.resolveSender(payload.user?.id ?? "");
@@ -469,7 +469,7 @@ export class InboundRouter {
   /** Phase 1 — a Confirm click resolves the decision its offer replies to with exactly the
    *  offer's stored reading. The reply row id derives from the offer, so a replayed click finds
    *  the same row, and the resolve transition happens at most once. */
-  private async attemptConfirm(payload: SlackBlockActions, offerQitemId: string, choice: ConfirmChoice, live: boolean): Promise<{ status: InboundDisposition; reason?: string }> {
+  private async attemptConfirm(payload: SlackBlockActions, offerQitemId: string, live: boolean): Promise<{ status: InboundDisposition; reason?: string }> {
     const who = this.deps.resolveSender(payload.user?.id ?? "");
     if (!who.admitted) {
       this.deps.log?.(`confirm REFUSED — unregistered sender ${payload.user?.id}: ${who.teaching}`);
@@ -477,17 +477,17 @@ export class InboundRouter {
     }
     const rootTs = clickedRootTs(payload);
     if (!rootTs) return { status: "ignored", reason: "unmapped-message" };
-    return this.confirm(who.source, offerQitemId, rootTs, payload.channel?.id, live, payload.container?.message_ts ?? payload.message?.ts, choice);
+    return this.confirm(who.source, offerQitemId, rootTs, payload.channel?.id, live, payload.container?.message_ts ?? payload.message?.ts);
   }
 
-  private async confirm(actorSession: string, offerQitemId: string, rootTs: string, channel: string | undefined, live: boolean, offerTs?: string, choice: ConfirmChoice = "confirm"): Promise<{ status: InboundDisposition; reason?: string }> {
+  private async confirm(actorSession: string, offerQitemId: string, rootTs: string, channel: string | undefined, live: boolean, offerTs?: string): Promise<{ status: InboundDisposition; reason?: string }> {
     const route = this.deps.resolveRoute?.({ type: "message", thread_ts: rootTs, channel });
     if (!route?.correlationQitemId) return { status: "ignored", reason: "unmapped-message" };
     const offer = this.deps.confirmOffer?.({ offerQitemId, actorSession });
     if (!offer?.ok) return { status: "refused", reason: offer?.reason ?? "confirm-unavailable" };
     if (offer.decisionQitemId !== route.correlationQitemId) return { status: "ignored", reason: "offer-not-in-this-thread" };
     const previous = this.confirmChains.get(offer.decisionQitemId) ?? Promise.resolve();
-    const run = previous.catch(() => {}).then(() => this.confirmInTurn(actorSession, offerQitemId, route, channel, offerTs, choice));
+    const run = previous.catch(() => {}).then(() => this.confirmInTurn(actorSession, offerQitemId, route, channel, offerTs));
     this.confirmChains.set(offer.decisionQitemId, run);
     try {
       return await run;
@@ -498,11 +498,9 @@ export class InboundRouter {
 
   /** Runs only after any earlier Confirm on the same decision finished, so `decided` and `won`
    *  are read after that click's resolve and mark. */
-  private async confirmInTurn(actorSession: string, offerQitemId: string, route: { destination: string; tags?: string[] }, channel: string | undefined, offerTs: string | undefined, choice: ConfirmChoice): Promise<{ status: InboundDisposition; reason?: string }> {
+  private async confirmInTurn(actorSession: string, offerQitemId: string, route: { destination: string; tags?: string[] }, channel: string | undefined, offerTs: string | undefined): Promise<{ status: InboundDisposition; reason?: string }> {
     const offer = this.deps.confirmOffer?.({ offerQitemId, actorSession });
     if (!offer?.ok) return { status: "refused", reason: offer?.reason ?? "confirm-unavailable" };
-    if (choice === "not-now" && !offer.isDecision) return { status: "refused", reason: "not-now-only-on-decisions" };
-    const outcomeOf = (won: ConfirmChoice): ConfirmOutcome => (won === "not-now" ? "declined" : "confirmed");
     const retire = async (outcome: ConfirmOutcome) => {
       if (!channel || !offerTs) return;
       try {
@@ -512,10 +510,9 @@ export class InboundRouter {
       }
     };
     if (offer.decided) {
-      await retire(offer.wonChoice ? outcomeOf(offer.wonChoice) : "not-used");
-      return { status: "ignored", reason: offer.wonChoice ? "already-decided-here" : "decided-by-another-answer" };
+      await retire(offer.won ? "confirmed" : "not-used");
+      return { status: "ignored", reason: offer.won ? "already-confirmed" : "decided-by-another-answer" };
     }
-    const decision = choice === "not-now" ? NOT_NOW_DECISION : offer.reading;
     let resolution: "resolved" | "already-resolved" | "not-applicable" | undefined;
     try {
       await this.deps.queue.createQitem({
@@ -524,24 +521,22 @@ export class InboundRouter {
         destination: route.destination,
         priority: "routine",
         tags: [...route.tags ?? ["founder-slack", "inbound"], "human-answer"],
-        summary: choice === "not-now" ? `Founder via Slack: ${NOT_NOW_LABEL}` : "Founder via Slack: confirmed your reading",
-        body: choice === "not-now"
-          ? `${NOT_NOW_LABEL} on: ${offer.reading}\nPropose something different in its thread: rig queue create --human-intent update --reply-to ${offer.decisionQitemId} (with --confirm for a new button).\n\n---\nIn reply to: ${offer.decisionQitemId}\nRouted by openrig slack-inbound (${NOT_NOW_LABEL} click).`
-          : `Confirmed: ${offer.reading}\n\n---\nIn reply to: ${offer.decisionQitemId} (offer ${offerQitemId})\nRouted by openrig slack-inbound (Confirm click).`,
+        summary: "Founder via Slack: confirmed your reading",
+        body: `Confirmed: ${offer.reading}\n\n---\nIn reply to: ${offer.decisionQitemId} (offer ${offerQitemId})\nRouted by openrig slack-inbound (Confirm click).`,
       });
-      resolution = await this.deps.resolveHumanReply?.({ qitemId: offer.decisionQitemId, actorSession, decision });
+      resolution = await this.deps.resolveHumanReply?.({ qitemId: offer.decisionQitemId, actorSession, decision: offer.reading });
     } catch (e) {
       this.deps.log?.(`confirm continuation failed offer=${offerQitemId}: ${(e as Error).message}`);
       return { status: "handler-failed", reason: "confirm-continuation-failed" };
     }
     if (resolution === "resolved") {
-      this.deps.markConfirmWon?.(offerQitemId, choice);
-      await retire(outcomeOf(choice));
+      this.deps.markConfirmWon?.(offerQitemId);
+      await retire("confirmed");
     } else if (resolution === "already-resolved") {
       await retire("not-used");
     }
     if (resolution !== "resolved") return { status: "ignored", reason: resolution ?? "resolve-unavailable" };
-    return { status: "accepted", reason: choice === "not-now" ? "declined" : "confirmed" };
+    return { status: "accepted", reason: "confirmed" };
   }
 
   /** Phase 1 — a ✅ from the asked human on their decision's root, their own reply in its

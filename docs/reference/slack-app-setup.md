@@ -96,7 +96,7 @@ How a decision is answered depends on `explicitAnswersOnly` in `slack-connector.
 - **On (this build's default):** a typed reply in the decision's thread is conversation. It goes
   to the asking seat, which can answer in the same thread (`rig queue create --human-intent update
   --reply-to <decision>`), and it resolves nothing. Every decision shows buttons: the seat's
-  action (or "Confirm") plus "Not now", or option buttons. An acknowledgement request
+  action (or "Confirm"), or option buttons; typing is always possible and reaches the seat. An acknowledgement request
   (`--human-intent ack`) has no buttons and resolves on the asked human's ✅. 👍 and 👎 on any
   bot message are recorded as feedback and never decide. The decision resolves on a button click
   (including an approve button carrying the seat's call to action, `--confirm "Build it"` on the

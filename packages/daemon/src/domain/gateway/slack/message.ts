@@ -118,16 +118,12 @@ export const QUESTION_BLOCK_PREFIX = "or-q:";
 export const OPTION_ACTION_PREFIX = "or-opt:";
 export const CONFIRM_BLOCK_PREFIX = "or-confirm:";
 export const CONFIRM_ACTION_ID = "or-confirm";
-export const NOT_NOW_ACTION_ID = "or-not-now";
-export type ConfirmChoice = "confirm" | "not-now";
-export type ConfirmOutcome = "confirmed" | "declined" | "not-used";
+export type ConfirmOutcome = "confirmed" | "not-used";
 const ACK_PROMPT = "React ✅ when seen.";
 const TYPED_REPLY_HINT = "Or reply in this thread with your own answer.";
 /** Phase 1: a decision that brings no buttons of its own gets this one. */
 export const DEFAULT_CONFIRM_LABEL = "Confirm";
 export const DEFAULT_CONFIRM_DECISION = "confirmed";
-export const NOT_NOW_LABEL = "Not now";
-export const NOT_NOW_DECISION = "not now";
 export const ACK_DECISION = "acknowledged";
 
 /** Parse a clicked button back into its question and option ids; null if it is not ours. */
@@ -140,18 +136,12 @@ export function parseQuestionAction(blockId: unknown, actionId: unknown): { ques
 }
 
 /** The offer qitem a clicked Confirm button names; null if the click is not a Confirm. */
-export function parseConfirmAction(blockId: unknown, actionId: unknown): { offerQitemId: string; choice: ConfirmChoice } | null {
-  if (typeof blockId !== "string" || !blockId.startsWith(CONFIRM_BLOCK_PREFIX)) return null;
-  const choice = actionId === CONFIRM_ACTION_ID ? "confirm" : actionId === NOT_NOW_ACTION_ID ? "not-now" : null;
-  const offerQitemId = blockId.slice(CONFIRM_BLOCK_PREFIX.length);
-  return choice && offerQitemId ? { offerQitemId, choice } : null;
+export function parseConfirmAction(blockId: unknown, actionId: unknown): string | null {
+  if (actionId !== CONFIRM_ACTION_ID || typeof blockId !== "string" || !blockId.startsWith(CONFIRM_BLOCK_PREFIX)) return null;
+  return blockId.slice(CONFIRM_BLOCK_PREFIX.length) || null;
 }
 
 function buildConfirmBlocks(qitemId: string, reading: string, outcome: ConfirmOutcome | undefined, approve: boolean): { blocks: unknown[]; text: string } {
-  if (outcome === "declined") {
-    const text = bounded(`Decided: *${NOT_NOW_LABEL}*`, SLACK_SECTION_CAP, "declined");
-    return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
-  }
   if (outcome === "not-used") {
     const text = bounded(`Not used: the decision was already made another way. (${approve ? "Button" : "Reading"}: ${inert(reading)})`, SLACK_SECTION_CAP, "unused offer");
     return { text, blocks: [{ type: "context", elements: [{ type: "mrkdwn", text }] }] };
@@ -164,11 +154,8 @@ function buildConfirmBlocks(qitemId: string, reading: string, outcome: ConfirmOu
   if (approve) {
     const label = bounded(inert(reading), MAX_OPTION_LABEL, "approve button label");
     return {
-      text: `Click "${label}" or "${NOT_NOW_LABEL}" to decide.`,
-      blocks: [{ type: "actions", block_id: `${CONFIRM_BLOCK_PREFIX}${qitemId}`, elements: [
-        { type: "button", action_id: CONFIRM_ACTION_ID, style: "primary", text: { type: "plain_text", text: label } },
-        { type: "button", action_id: NOT_NOW_ACTION_ID, text: { type: "plain_text", text: NOT_NOW_LABEL } },
-      ] }],
+      text: `Click "${label}" to decide.`,
+      blocks: [{ type: "actions", block_id: `${CONFIRM_BLOCK_PREFIX}${qitemId}`, elements: [{ type: "button", action_id: CONFIRM_ACTION_ID, style: "primary", text: { type: "plain_text", text: label } }] }],
     };
   }
   if (confirmed) {
