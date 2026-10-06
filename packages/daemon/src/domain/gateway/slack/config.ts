@@ -37,6 +37,8 @@ export interface SlackConnectorConfig {
   /** Phase 1: a typed thread reply is conversation; only a button, an `answer:` reply or a ✅
    *  resolves a decision. False keeps the #96 contract: any typed reply answers the decision. */
   explicitAnswersOnly: boolean;
+  /** Phase 1: an open request quiet this many days gets a reminder; reminders never close. */
+  staleReminderDays: number;
 }
 
 export const DEFAULT_CONFIG: SlackConnectorConfig = {
@@ -51,6 +53,7 @@ export const DEFAULT_CONFIG: SlackConnectorConfig = {
   minimumLevelThatPosts: "NOTICE",
   minimumLevelThatInterrupts: "ALERT",
   explicitAnswersOnly: true,
+  staleReminderDays: 3,
 };
 
 function validateLevel(field: string, value: unknown): asserts value is OwnerNotificationLevel {
@@ -62,6 +65,9 @@ function validateLevel(field: string, value: unknown): asserts value is OwnerNot
 function validateConfig(cfg: SlackConnectorConfig): void {
   validateLevel("minimumLevelThatPosts", cfg.minimumLevelThatPosts);
   validateLevel("minimumLevelThatInterrupts", cfg.minimumLevelThatInterrupts);
+  if (typeof cfg.staleReminderDays !== "number" || !(cfg.staleReminderDays > 0)) {
+    throw new Error(`staleReminderDays must be a positive number of days (got ${String(cfg.staleReminderDays)})`);
+  }
 }
 
 export function configPathFor(home?: string): string {

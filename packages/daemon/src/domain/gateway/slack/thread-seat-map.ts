@@ -109,6 +109,21 @@ export class ThreadSeatMap {
     return row ? project(row) : null;
   }
 
+  /** Phase 1 — the open requests: one row per conversation with an open root, its newest root. */
+  listOpenConversations(): ThreadMapping[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM thread_seat_map WHERE state = 'open' ORDER BY ${NEWEST_ROOT_FIRST}`)
+      .all() as Record<string, unknown>[];
+    const seen = new Set<string>();
+    return rows.map(project).filter((m) => !seen.has(m.conversationId) && seen.add(m.conversationId));
+  }
+
+  closeConversation(conversationId: string): void {
+    this.db
+      .prepare(`UPDATE thread_seat_map SET state = 'closed', closed_at = ? WHERE conversation_id = ? AND state = 'open'`)
+      .run(this.now().toISOString(), conversationId);
+  }
+
   close(threadTs: string): void {
     this.db
       .prepare(`UPDATE thread_seat_map SET state = 'closed', closed_at = ? WHERE thread_ts = ?`)

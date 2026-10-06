@@ -220,6 +220,8 @@ export interface BodyPreview {
 // emits a partial/invalid UTF-8 sequence. `bodyTruncated` is CODE-POINT-count
 // based (codePointCount > N). `bodyBytes` is the honest TRUE total UTF-8 byte
 // length of the FULL body (never the truncated size).
+const collectLink = (value: string, previous: string[]): string[] => [...previous, value];
+
 export function previewBody(
   body: string,
   maxCodePoints = SHOW_BODY_PREVIEW_MAX_CODEPOINTS
@@ -460,6 +462,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--human-intent <intent>", "decision (default) or update: a quiet informational delivery, never an approval request")
     .option("--human-detail-file <path>", "One explicitly authored supplemental thread reply; keep the complete action/options in --body-file")
     .option("--reply-to <qitemId>", "Post this update into an earlier qitem's Slack thread (requires --human-intent update; posts as a new top-level message instead if that thread can't be used, e.g. it is missing, or it still has an open human decision while slack explicitAnswersOnly is off; --verify reports why)")
+    .option("--link <kind:ref>", "Link this request to its outcome, kind:ref with kind pr|issue|qitem (repeatable). The request's Slack thread closes once every linked outcome is finished (PR merged or closed, issue closed, qitem done or canceled)", collectLink, [] as string[])
     .option("--confirm <reading>", "Offer the human a Confirm button for your reading of their answer (requires --human-intent update and --reply-to <decision>); a click resolves that decision with exactly this text")
     .option("--human-questions-file <path>", "#193: JSON array of 1-4 questions for a decision, each {id, question, options: [{id, label, recommended?}]} with 2-4 options; Slack shows them as buttons")
     .option("--evidence-ref <path>", "OPR.0.4.4.19 FR-5: pointer to the durable artifact a human judges (e.g. a PROOF.md path). Required by the daemon when the item is human-routed; optional otherwise.")
@@ -487,6 +490,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       replyTo?: string;
       humanQuestionsFile?: string;
       confirm?: string;
+      link?: string[];
       summary?: string;
       evidenceRef?: string;
       host?: string;
@@ -623,6 +627,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
           replyTo: opts.replyTo,
           humanQuestions,
           humanConfirm: opts.confirm,
+          ...(opts.link?.length ? { links: opts.link } : {}),
           summary: opts.summary,
           evidenceRef: opts.evidenceRef,
           priority: opts.priority,
@@ -723,6 +728,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--summary <text>", "OPR.0.4.4.19 FR-6: park-time summary persisted onto the item (human-seat parks only)")
     .option("--evidence-ref <path>", "OPR.0.4.4.19 FR-6: park-time durable-artifact pointer persisted onto the item (human-seat parks only)")
     .option("--note <text>", "Transition note for the audit log")
+    .option("--link <kind:ref>", "Link this request to its outcome, kind:ref with kind pr|issue|qitem (repeatable). The request's Slack thread closes once every linked outcome is finished (PR merged or closed, issue closed, qitem done or canceled)", collectLink, [] as string[])
     .option("--json", "JSON output for agents")
     .action(async (qitemId: string, opts: {
       actor?: string;
@@ -736,6 +742,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       summary?: string;
       evidenceRef?: string;
       note?: string;
+      link?: string[];
       json?: boolean;
     }) => {
       // P21 I3 reconcile: the actor is DERIVED from the seat env (X-OpenRig-Session, stamped by
@@ -755,6 +762,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
           summary: opts.summary,
           evidenceRef: opts.evidenceRef,
           transitionNote: opts.note,
+          ...(opts.link?.length ? { links: opts.link } : {}),
         });
         await printQueueItemResult(client, qitemId, opts.json ?? false, res.data, res.status);
       });

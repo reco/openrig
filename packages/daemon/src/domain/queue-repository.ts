@@ -70,6 +70,15 @@ export function isBlockerLive(state: string): boolean {
  *  keeping as provenance) is never a live gate. */
 export const MAX_HUMAN_CONFIRM = 2000;
 
+/** Phase 1 — what a human request's outcome is linked to: a PR, an issue, or queue work. */
+export interface RequestLink { kind: "pr" | "issue" | "qitem"; ref: string }
+export const REQUEST_LINK_PREFIX = "request-link";
+
+export function parseRequestLinkNote(note: string): RequestLink | null {
+  const m = /^request-link kind=(pr|issue|qitem) ref=(\S+)$/.exec(note);
+  return m ? { kind: m[1] as RequestLink["kind"], ref: m[2]! } : null;
+}
+
 export function hasLiveHumanGate(item: {
   humanIntent?: string | null;
   state: string;
@@ -3183,6 +3192,54 @@ export class QueueRepository {
     return this.db.prepare(
       `SELECT 1 FROM queue_transitions WHERE transition_note = ? AND actor_session = ?${provenance} LIMIT 1`,
     ).get(formatReplyToChoice({ kind: "thread", threadTs }), REPLY_TO_CHOICE_ACTOR) !== undefined;
+  }
+
+  /** Phase 1 — link a request to its outcome. Each `kind:ref` is validated, then recorded as
+   *  one typed transition; the request closes once every linked outcome is finished. */
+  addRequestLinks(input: { qitemId: string; actorSession: string; links: string[]; identityProvenance?: QueueUpdateInput["identityProvenance"] }): RequestLink[] {
+    if (!this.getById(input.qitemId)) throw new QueueRepositoryError("invalid_request_link", `qitem ${input.qitemId} not found.`);
+    const links = this.validateRequestLinks(input.links);
+    for (const link of links) {
+      this.update({
+        qitemId: input.qitemId,
+        actorSession: input.actorSession,
+        transitionNote: `${REQUEST_LINK_PREFIX} kind=${link.kind} ref=${link.ref}`,
+        ...(input.identityProvenance ? { identityProvenance: input.identityProvenance } : {}),
+      });
+    }
+    return links;
+  }
+
+  validateRequestLinks(raws: string[]): RequestLink[] {
+    const fail = (message: string) => new QueueRepositoryError("invalid_request_link", message);
+    return raws.map((raw) => {
+      const m = /^(pr|issue|qitem):(\S+)$/.exec(raw.trim());
+      if (!m) throw fail(`link "${raw}" must be pr:<url>, issue:<url> or qitem:<id>.`);
+      const link: RequestLink = { kind: m[1] as RequestLink["kind"], ref: m[2]! };
+      if (link.kind === "qitem" && !this.getById(link.ref)) throw fail(`linked qitem ${link.ref} not found.`);
+      if (link.kind !== "qitem" && !/^https:\/\/\S+$/.test(link.ref)) throw fail(`${link.kind} link "${link.ref}" must be an https URL.`);
+      return link;
+    });
+  }
+
+  requestLinks(qitemId: string): RequestLink[] {
+    const links = this.transitionLog.listForQitem(qitemId).flatMap((t) => {
+      const link = parseRequestLinkNote(t.transitionNote ?? "");
+      return link ? [link] : [];
+    });
+    return links.filter((link, i) => links.findIndex((l) => l.kind === link.kind && l.ref === link.ref) === i);
+  }
+
+  /** Phase 1 — the latest activity on a request: its own transitions, and rows created in
+   *  its thread (human replies tagged reply-to, seat updates replying to it). */
+  requestActivityAt(qitemId: string): string | null {
+    const row = this.db.prepare(
+      `SELECT MAX(ts) AS at FROM (
+         SELECT ts FROM queue_transitions WHERE qitem_id = ?
+         UNION ALL SELECT ts_created AS ts FROM queue_items WHERE tags LIKE ?${this.hasReplyToColumn ? " OR reply_to = ?" : ""}
+       )`,
+    ).get(...[qitemId, `%"reply-to:${qitemId}"%`, ...(this.hasReplyToColumn ? [qitemId] : [])]) as { at: string | null } | undefined;
+    return row?.at ?? null;
   }
 
   /** The qitem whose Slack post has this message ts, from the daemon's own posted receipts. */

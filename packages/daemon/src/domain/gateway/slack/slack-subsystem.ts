@@ -29,6 +29,7 @@ import { InboundRouter, inboundQitemIdFor, type ReactionTarget, type SlackEvent,
 import { makeInboundSenderResolver, type RegistrySurface } from "./inbound-admission.js";
 import { ThreadSeatMap, formatPostedStamp } from "./thread-seat-map.js";
 import { makeThreadRouteResolver } from "./thread-routing.js";
+import { closeRequest, githubLinkState, sweepRequests, type LinkState, type RequestLifecycleDeps, type RequestLink } from "./request-lifecycle.js";
 import { startSocketInbound, type SocketInboundHandle, type WsLike } from "./socket-inbound.js";
 import { loadHumanRegistry, resolveSlackHandle } from "../human-registry.js";
 import { hasLiveHumanGate, type QueueRepository } from "../../queue-repository.js";
@@ -65,6 +66,9 @@ export interface SlackWireOpts {
   inboundRetryIntervalMs?: number;
   inboundMaxConnects?: number;
   registry?: RegistrySurface;
+  /** Phase 1 request sweep cadence and PR/issue state source (tests inject both). */
+  requestSweepIntervalMs?: number;
+  linkState?: (link: RequestLink) => Promise<LinkState>;
   resolveHumanReply?: (input: { qitemId: string; actorSession: string; decision: string }) => Promise<"resolved" | "already-resolved" | "not-applicable">;
 }
 
@@ -356,6 +360,20 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     return choice;
   };
 
+  const lifecycle: RequestLifecycleDeps = {
+    queueRepo: opts.queueRepo,
+    threadMap,
+    staleReminderDays: cfg.staleReminderDays,
+    linkState: opts.linkState ?? githubLinkState,
+    postInThread: async (channel, threadTs, text) => {
+      if (!bot) return false;
+      const r = await postChatMessage(bot, { channel, thread_ts: threadTs, text }, opts.fetchImpl);
+      if (!r.ok) log(`request lifecycle post failed thread=${threadTs}: ${r.error}`);
+      return r.ok;
+    },
+    log,
+  };
+
   // Late-bound so deliver can release the driver's in-flight guard (built after the wire).
   let releaseRef: (qitemId: string) => void = () => {};
 
@@ -589,6 +607,17 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       log,
     });
     releaseRef = (q) => driver.release(q);
+    let sweepTimer: ReturnType<typeof setInterval> | undefined;
+    let sweeping = false;
+    starts.push(() => {
+      sweepTimer = setInterval(() => {
+        if (sweeping) return;
+        sweeping = true;
+        void sweepRequests(lifecycle).finally(() => { sweeping = false; });
+      }, opts.requestSweepIntervalMs ?? 10 * 60_000);
+      sweepTimer.unref?.();
+    });
+    stops.push(() => clearInterval(sweepTimer));
     starts.push(() => {
       driver.start();
       log("slack outbound driver started (subsystem path)");
@@ -617,6 +646,14 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       // in the decision's thread (a bot post, so inbound never ingests it).
       recordHumanAnswer: (input) => opts.queueRepo.recordHumanAnswer(input),
       reactionTarget: makeReactionTarget(opts.queueRepo, threadMap),
+      cancelRequest: async ({ conversationId, actorSession, reason }) => {
+        const root = threadMap.resolveByConversation(conversationId);
+        const item = opts.queueRepo.getById(conversationId);
+        if (!root || root.state !== "open" || !item) return "not-applicable";
+        if (!addressedTo(item, actorSession)) return "not-authorized";
+        await closeRequest(lifecycle, root, reason ? `canceled-by-human: ${reason}` : "canceled-by-human", actorSession, true);
+        return "closed";
+      },
       confirmOffer: ({ offerQitemId, actorSession }) => {
         const offer = opts.queueRepo.getById(offerQitemId);
         if (!offer?.humanConfirm || !offer.replyTo) return { ok: false, reason: "not-a-confirm-offer" };

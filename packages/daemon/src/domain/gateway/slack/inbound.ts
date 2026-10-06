@@ -116,6 +116,7 @@ export interface InboundFileResult { stored: StoredInboundFile[]; failed: Failed
 export interface InboundFilePort { transfer(files: unknown[], eventTs: string, eventChannel?: string): Promise<InboundFileResult> }
 
 const EXPLICIT_ANSWER = /^\s*answer:\s*([\s\S]*?)\s*$/i;
+const EXPLICIT_CANCEL = /^\s*cancel\b\s*:?\s*([\s\S]*?)\s*$/i;
 
 /** The decision text of an explicit `answer:` reply, or null when the text is not one. */
 export function explicitAnswer(text: string | undefined): string | null {
@@ -156,6 +157,8 @@ export interface InboundDeps {
   recordHumanAnswer?: RecordHumanAnswer;
   /** Phase 1 — look up a clicked Confirm offer. */
   confirmOffer?: ConfirmOffer;
+  /** Phase 1 — an explicit `cancel` in a request's thread; only the asked human's closes it. */
+  cancelRequest?: (input: { conversationId: string; actorSession: string; reason: string }) => Promise<"closed" | "not-authorized" | "not-applicable">;
   /** Phase 1 — classify the message an admitted human added ✅ to; null = it decides nothing. */
   reactionTarget?: (input: { channel: string; messageTs: string; actorSession: string }) => ReactionTarget | null;
   /** #193 — clicks whose continuation (reply row + resolve) failed; retried with the event
@@ -215,9 +218,16 @@ export class InboundRouter {
     return String(ev.text ?? "").trim() || "[file reply]";
   }
 
-  private replyTags(correlationQitemId: string | undefined, decision: string | null): string[] {
+  private replyTags(correlationQitemId: string | undefined, decision: string | null, cancel: string | null): string[] {
     if (!correlationQitemId || !this.deps.explicitAnswersOnly) return [];
-    return [decision ? "human-answer" : "conversation"];
+    return [decision ? "human-answer" : "conversation", ...(cancel !== null ? ["cancel-request"] : [])];
+  }
+
+  /** The reason of an explicit `cancel` reply in a request's thread, or null when it is not one. */
+  private replyCancel(ev: SlackEvent, correlationQitemId: string | undefined): string | null {
+    if (!correlationQitemId || !this.deps.explicitAnswersOnly) return null;
+    const m = EXPLICIT_CANCEL.exec(ev.text ?? "");
+    return m ? (m[1] ?? "") : null;
   }
 
   /** Slack message ts is unique within a channel, so every inbound id uses both fields. */
@@ -289,7 +299,8 @@ export class InboundRouter {
       // S10 — deterministic route (thread map) when wired; static destination otherwise.
       const route = this.deps.resolveRoute?.(ev) ?? { destination: this.deps.destination };
       const decision = this.replyDecision(ev, route.correlationQitemId);
-      const replyTags = this.replyTags(route.correlationQitemId, decision);
+      const cancel = this.replyCancel(ev, route.correlationQitemId);
+      const replyTags = this.replyTags(route.correlationQitemId, decision, cancel);
       const { summary, body } = this.summaryOf(ev, transfer, route.correlationQitemId, replyTags.includes("conversation"));
       let qitemId: string;
       try {
@@ -316,6 +327,15 @@ export class InboundRouter {
           });
         } catch (e) {
           this.deps.log?.(`human reply continuation failed qitem=${route.correlationQitemId} ts=${ts}: ${(e as Error).message}`);
+          return { landed: false, qitemId, reason: "resolve_failed", correlationQitemId: route.correlationQitemId };
+        }
+      }
+      if (route.correlationQitemId && cancel !== null && this.deps.cancelRequest) {
+        try {
+          const canceled = await this.deps.cancelRequest({ conversationId: route.correlationQitemId, actorSession: who.source, reason: cancel });
+          this.deps.log?.(`cancel request ${route.correlationQitemId} by ${who.source}: ${canceled}`);
+        } catch (e) {
+          this.deps.log?.(`cancel continuation failed qitem=${route.correlationQitemId} ts=${ts}: ${(e as Error).message}`);
           return { landed: false, qitemId, reason: "resolve_failed", correlationQitemId: route.correlationQitemId };
         }
       }

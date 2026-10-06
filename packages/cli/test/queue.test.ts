@@ -232,6 +232,14 @@ describe("rig queue CLI", () => {
     expect(calls.find((c) => c.path === "/api/queue/create")?.body).toMatchObject({ replyTo: "qitem-decision", humanConfirm: "Ship the schema migration only." });
   });
 
+  it("create and update send each repeated --link", async () => {
+    const { deps, calls } = makeDeps();
+    await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "human-founder@external", "--body", "Ship?", "--link", "pr:https://github.com/reco/openrig/pull/1", "--link", "qitem:qitem-work", "--json"]);
+    expect(calls.find((c) => c.path === "/api/queue/create")?.body).toMatchObject({ links: ["pr:https://github.com/reco/openrig/pull/1", "qitem:qitem-work"] });
+    await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "update", "qitem-decision", "--link", "issue:https://github.com/reco/openrig/issues/2", "--json"]);
+    expect(calls.find((c) => c.path === "/api/queue/qitem-decision/update")?.body).toMatchObject({ links: ["issue:https://github.com/reco/openrig/issues/2"] });
+  });
+
   it("delivery verification names a --reply-to fallback to a top-level post", async () => {
     const result = await waitForDeliveryOutcome(
       { get: async <T>() => ({ status: 200, data: { deliveryOutcome: "posted", replyTo: "qitem-earlier", replyToFallback: "root-missing (qitem-earlier)" } as T }) },

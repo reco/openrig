@@ -17,6 +17,7 @@ import { resolveSlackHandle } from "../src/domain/gateway/human-registry.js";
 import { MissionControlActionLog } from "../src/domain/mission-control/mission-control-action-log.js";
 import { MissionControlWriteContract } from "../src/domain/mission-control/mission-control-write-contract.js";
 import { InboundReceiptStore } from "../src/domain/gateway/slack/state-store.js";
+import { ThreadSeatMap } from "../src/domain/gateway/slack/thread-seat-map.js";
 
 const human = "human-founder@external";
 const person = (entityId: string, handle: string) => ({ entityId, class: "human" as const, displayName: entityId, address: `${entityId}@external`, connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:SLACK_BOT_TOKEN", role: "primary" as const, handle }], prefs: { deliveryClass: "A" as const } });
@@ -51,6 +52,8 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       wsFactory: () => { const ws: WsLike = { send: () => {}, close: () => {}, onopen: null, onmessage: null, onclose: null, onerror: null }; sockets.push(ws); return ws; },
       inboundMaxConnects: 1,
       inboundRetryIntervalMs: 50,
+      requestSweepIntervalMs: 50,
+      linkState: async () => "merged",
       fetchImpl: async (url, init) => {
         if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
         posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
@@ -69,11 +72,12 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
 
   const finals = (envelopeId: string) => new InboundReceiptStore(join(home, "state", "slack-inbound-receipts.jsonl")).readAll()
     .filter((r) => r.envelopeId === envelopeId && r.status !== "received");
-  async function say(text: string, ts: string, envelopeId = `e-${ts}`): Promise<void> {
+  async function sayAs(user: string, text: string, ts: string, envelopeId = `e-${ts}`): Promise<void> {
     const before = finals(envelopeId).length;
-    socket.onmessage?.({ data: JSON.stringify({ envelope_id: envelopeId, type: "events_api", payload: { event: { type: "message", user: "UFOUNDER", text, ts, thread_ts: "1.1", channel: "C-TEST" } } }) });
+    socket.onmessage?.({ data: JSON.stringify({ envelope_id: envelopeId, type: "events_api", payload: { event: { type: "message", user, text, ts, thread_ts: "1.1", channel: "C-TEST" } } }) });
     await vi.waitFor(() => expect(finals(envelopeId).length).toBe(before + 1));
   }
+  const say = (text: string, ts: string, envelopeId?: string) => sayAs("UFOUNDER", text, ts, envelopeId);
   async function deliver(qitemId: string): Promise<void> {
     const alert = (await makeQueuePorts(repo, { loadHumanRegistry: () => registry }).listHumanAlerts({})).find((q) => q.qitemId === qitemId);
     expect(alert).toBeDefined();
@@ -86,8 +90,9 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
   describe("explicitAnswersOnly (the default)", () => {
     beforeEach(() => start(true));
 
-    it("is on by default", () => {
+    it("is on by default, with 3-day stale reminders", () => {
       expect(DEFAULT_CONFIG.explicitAnswersOnly).toBe(true);
+      expect(DEFAULT_CONFIG.staleReminderDays).toBe(3);
     });
 
     it("tells the human how to decide in the decision post", () => {
@@ -239,6 +244,28 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(await react("2032.1", { user: "UOTHER" })).not.toMatchObject({ status: "accepted" });
       expect(await react("9999.1")).toMatchObject({ status: "ignored" });
       expect(repo.getById(decisionId)?.state).toBe("pending");
+    });
+
+    it("`cancel` from the asked human closes the request; from anyone else it is conversation", async () => {
+      await sayAs("UOTHER", "cancel", "2040.1");
+      expect(repo.getById(decisionId)?.state).toBe("pending");
+      await say("Cancel: we dropped this", "2041.1");
+      expect(repo.getById(decisionId)?.state).toBe("canceled");
+      expect(new ThreadSeatMap(db).resolveByThread("1.1")?.state).toBe("closed");
+      expect(posts.some((p) => p.thread_ts === "1.1" && /closed/i.test(String(p.text)))).toBe(true);
+      expect(resolutions()).toEqual([]);
+    });
+
+    it("the running wire closes a request once its linked PR merges", async () => {
+      repo.addRequestLinks({ qitemId: decisionId, actorSession: "author@rig", links: ["pr:https://github.com/reco/openrig/pull/1"] });
+      await vi.waitFor(() => expect(new ThreadSeatMap(db).resolveByThread("1.1")?.state).toBe("closed"));
+      expect(repo.getById(decisionId)?.state).toBe("done");
+    });
+
+    it("escapes the human's cancel reason in the closing line", async () => {
+      await say("cancel: <!channel> not needed", "2042.1");
+      const closing = posts.find((p) => p.thread_ts === "1.1" && /closed/i.test(String(p.text)));
+      expect(String(closing?.text)).not.toContain("<!channel>");
     });
 
     it("an empty `answer:` is conversation, not a resolution", async () => {

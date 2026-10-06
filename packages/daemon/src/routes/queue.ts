@@ -173,6 +173,7 @@ export function queueRoutes(): Hono {
         : err.code === "reply_to_not_found" ? 400
         : err.code === "invalid_human_questions" ? 400
         : err.code === "invalid_human_confirm" ? 400
+        : err.code === "invalid_request_link" ? 400
         // OPR.0.5.1 slice-51-06 D2: summary/evidence_ref on a non-park transition — a client
         // input error surfaced as a structured 400 (the daemon rejects before any mutation).
         : err.code === "summary_evidence_not_persistable" ? 400
@@ -465,6 +466,7 @@ export function queueRoutes(): Hono {
       replyTo?: string | null;
       humanQuestions?: HumanQuestion[] | null; // shape validated by the repository (invalid_human_questions)
       humanConfirm?: string | null;
+      links?: string[];
       summary?: string | null;
       evidenceRef?: string | null;
       nudge?: boolean;
@@ -516,6 +518,7 @@ export function queueRoutes(): Hono {
     }
 
     try {
+      if (body.links?.length) getRepo(c).validateRequestLinks(body.links);
       const item = await getRepo(c).create({
         qitemId: body.qitemId,
         sourceSession,
@@ -537,6 +540,7 @@ export function queueRoutes(): Hono {
         nudge: (body as { nudge?: boolean }).nudge,
         identityProvenance: resolveRecordedProvenance(c, identity), // P21 §4 era-stamp: transport:v1 if the header proved it here, else claimed:v1 (resolveRecordedProvenance degrades)
       });
+      if (body.links?.length) getRepo(c).addRequestLinks({ qitemId: item.qitemId, actorSession: item.sourceSession, links: body.links, identityProvenance: resolveRecordedProvenance(c, identity) });
       const advisory = destinationAdvisory(c, item.destinationSession);
       return c.json({ ...item, ...(advisory ? { advisories: [advisory] } : {}) }, 201);
     } catch (err) {
@@ -614,6 +618,7 @@ export function queueRoutes(): Hono {
       wakeAfterSeconds?: number;
       summary?: string | null;
       evidenceRef?: string | null;
+      links?: string[];
     }>().catch(() => ({} as never));
     // P21 I3 — the actor is the transport-derived sender (X-OpenRig-Session), NEVER a body claim.
     // P18 deliver-and-label: absent header + a body actor → claimed:v1; absent + no body → 400
@@ -624,6 +629,15 @@ export function queueRoutes(): Hono {
     const actorSession = identity.session;
 
     try {
+      const links = body.links ?? [];
+      if (links.length > 0) getRepo(c).validateRequestLinks(links);
+      const { links: _links, actorSession: _actor, ...mutation } = body;
+      const onlyLinks = links.length > 0 && Object.values(mutation).every((v) => v === undefined);
+      const recordLinks = () => links.length > 0 && getRepo(c).addRequestLinks({ qitemId, actorSession, links, identityProvenance: resolveRecordedProvenance(c, identity) });
+      if (onlyLinks) {
+        recordLinks();
+        return c.json(getRepo(c).getById(qitemId));
+      }
       const item = getRepo(c).update({
         qitemId,
         actorSession,
@@ -641,6 +655,7 @@ export function queueRoutes(): Hono {
         evidenceRef: body.evidenceRef,
         identityProvenance: resolveRecordedProvenance(c, identity), // P21 §4 era-stamp: transport:v1 if the header proved it here, else claimed:v1 (resolveRecordedProvenance degrades)
       });
+      recordLinks();
       return c.json(item);
     } catch (err) {
       return errorResponse(c, err);
