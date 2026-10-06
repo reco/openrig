@@ -57,8 +57,9 @@ export interface OutboundMessageOpts {
   reconcileMarker?: string;
   /** Phase 1: a decision tells its human that only an `answer:` reply decides. */
   answerHint?: boolean;
-  /** Phase 1: the offer was confirmed; its button is replaced by the confirmed reading. */
-  confirmed?: boolean;
+  /** Phase 1: the offer's button is replaced by its outcome: confirmed, or not used because the
+   *  decision was made another way. */
+  confirmOutcome?: "confirmed" | "not-used";
   /** Phase 1: every question is answered; the button rows are replaced by the answers. */
   answered?: boolean;
 }
@@ -131,7 +132,12 @@ export function parseConfirmAction(blockId: unknown, actionId: unknown): string 
   return blockId.slice(CONFIRM_BLOCK_PREFIX.length) || null;
 }
 
-function buildConfirmBlocks(qitemId: string, reading: string, confirmed: boolean, approve: boolean): { blocks: unknown[]; text: string } {
+function buildConfirmBlocks(qitemId: string, reading: string, outcome: "confirmed" | "not-used" | undefined, approve: boolean): { blocks: unknown[]; text: string } {
+  if (outcome === "not-used") {
+    const text = bounded(`↩️ Not used: the decision was already made another way. (${approve ? "Button" : "Reading"}: ${inert(reading)})`, SLACK_SECTION_CAP, "unused offer");
+    return { text, blocks: [{ type: "context", elements: [{ type: "mrkdwn", text }] }] };
+  }
+  const confirmed = outcome === "confirmed";
   if (confirmed && approve) {
     const text = bounded(`✅ ${inert(reading)}`, SLACK_SECTION_CAP, "approved call to action");
     return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
@@ -300,7 +306,7 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
     : opts.answered ? buildAnsweredBlocks(q.humanQuestions, q.humanAnswers ?? {})
     : buildQuestionBlocks(q.humanQuestions, answerHint ? QUESTION_ANSWER_HINT : TYPED_REPLY_HINT);
   const plainHint = questionParts ? null : answerHint && q.humanConfirm && q.humanIntent !== "update" ? QUESTION_ANSWER_HINT : answerHint;
-  const confirmParts = q.humanConfirm ? buildConfirmBlocks(q.qitemId, q.humanConfirm, opts.confirmed === true, q.humanIntent !== "update") : null;
+  const confirmParts = q.humanConfirm ? buildConfirmBlocks(q.qitemId, q.humanConfirm, opts.confirmOutcome, q.humanIntent !== "update") : null;
   if (opts.extraBlocks?.length) {
     throw new HumanMessageShapeError("Extra blocks have no complete accessible fallback. Use mediaRefs for images or author supplemental human detail.");
   }

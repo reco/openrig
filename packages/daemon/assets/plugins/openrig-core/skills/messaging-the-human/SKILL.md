@@ -102,8 +102,10 @@ approval. For a yes/go decision, put the action on a button with
 `--confirm "<call to action>"` on the decision itself (e.g. "Build it", "Write the
 issue"); a click approves with exactly that text. The decision resolves, once,
 on a button click, a reply starting with `answer:`, a Confirm click (with
-exactly your stated reading), or a ✅ from the asked human (on the decision's
-first message that means "acknowledged and agreed"). Answering does not close the request. Link its outcome with
+exactly your stated reading), or a ✅ from the asked human (on the first message
+of a decision without any buttons, that means "acknowledged and agreed"; with an
+approve button or questions, ✅ there does nothing). After a click, the buttons
+turn into the outcome; an offer that lost to another answer shows "Not used". Answering does not close the request. Link its outcome with
 `--link pr:<url>`, `--link issue:<url>` or `--link qitem:<id>` on `rig queue
 update` or `create`: the thread closes once every linked outcome is finished, or
 when the human replies `cancel`. A request quiet for `staleReminderDays` (default

@@ -51,7 +51,7 @@ export interface SlackBlockActions {
 
 /** Phase 1 — the decision a Confirm offer replies to and its stated reading, for the asked human only. */
 export type ConfirmOffer = (input: { offerQitemId: string; actorSession: string }) =>
-  | { ok: true; decisionQitemId: string; reading: string }
+  | { ok: true; decisionQitemId: string; reading: string; decided: boolean; won: boolean }
   | { ok: false; reason: string };
 
 /** Phase 1 — what a ✅ on a message decides, as classified against our own records. */
@@ -162,7 +162,9 @@ export interface InboundDeps {
   /** Phase 1 — replace a fully answered decision's button rows with its answers. Best-effort. */
   retireQuestionButtons?: (input: { channel: string; messageTs: string; qitemId: string }) => Promise<void>;
   /** Phase 1 — replace a confirmed offer's button with its reading. Best-effort. */
-  retireConfirmOffer?: (input: { channel: string; messageTs: string; offerQitemId: string }) => Promise<void>;
+  retireConfirmOffer?: (input: { channel: string; messageTs: string; offerQitemId: string; outcome: "confirmed" | "not-used" }) => Promise<void>;
+  /** Phase 1 — record that this offer's click resolved its decision (so only it shows Confirmed). */
+  markConfirmWon?: (offerQitemId: string) => void;
   /** Phase 1 — classify the message an admitted human added ✅ to; null = it decides nothing. */
   reactionTarget?: (input: { channel: string; messageTs: string; actorSession: string }) => ReactionTarget | null;
   /** #193 — clicks whose continuation (reply row + resolve) failed; retried with the event
@@ -477,6 +479,18 @@ export class InboundRouter {
     const offer = this.deps.confirmOffer?.({ offerQitemId, actorSession });
     if (!offer?.ok) return { status: "refused", reason: offer?.reason ?? "confirm-unavailable" };
     if (offer.decisionQitemId !== route.correlationQitemId) return { status: "ignored", reason: "offer-not-in-this-thread" };
+    const retire = async (outcome: "confirmed" | "not-used") => {
+      if (!channel || !offerTs) return;
+      try {
+        await this.deps.retireConfirmOffer?.({ channel, messageTs: offerTs, offerQitemId, outcome });
+      } catch (e) {
+        this.deps.log?.(`confirm button not replaced offer=${offerQitemId}: ${(e as Error).message}`);
+      }
+    };
+    if (offer.decided) {
+      await retire(offer.won ? "confirmed" : "not-used");
+      return { status: "ignored", reason: offer.won ? "already-confirmed" : "decided-by-another-answer" };
+    }
     let resolution: "resolved" | "already-resolved" | "not-applicable" | undefined;
     try {
       await this.deps.queue.createQitem({
@@ -493,12 +507,11 @@ export class InboundRouter {
       this.deps.log?.(`confirm continuation failed offer=${offerQitemId}: ${(e as Error).message}`);
       return { status: "handler-failed", reason: "confirm-continuation-failed" };
     }
-    if ((resolution === "resolved" || resolution === "already-resolved") && channel && offerTs) {
-      try {
-        await this.deps.retireConfirmOffer?.({ channel, messageTs: offerTs, offerQitemId });
-      } catch (e) {
-        this.deps.log?.(`confirm button not replaced offer=${offerQitemId}: ${(e as Error).message}`);
-      }
+    if (resolution === "resolved") {
+      this.deps.markConfirmWon?.(offerQitemId);
+      await retire("confirmed");
+    } else if (resolution === "already-resolved") {
+      await retire("not-used");
     }
     if (resolution !== "resolved") return { status: "ignored", reason: resolution ?? "resolve-unavailable" };
     return { status: "accepted", reason: "confirmed" };

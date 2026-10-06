@@ -24,13 +24,13 @@ import { resolveSecret } from "./secrets.js";
 import { SeenStore, DeadLetterStore, InboundReceiptStore } from "./state-store.js";
 import { makeQueuePorts } from "./queue-access.js";
 import { SlackOutboundDriver, OUTBOUND_OP, type OutboundPostPayload } from "./outbound-driver.js";
-import { subsystemSlackDeliver } from "./slack-delivery.js";
+import { evidenceAttachment, subsystemSlackDeliver } from "./slack-delivery.js";
 import { InboundRouter, inboundQitemIdFor, type ReactionTarget, type SlackEvent, type SlackBlockActions, type InboundFilePort, type InboundFileResult, type StoredInboundFile, type FailedInboundFile } from "./inbound.js";
 import { makeInboundSenderResolver, type RegistrySurface } from "./inbound-admission.js";
 import { ThreadSeatMap, formatPostedStamp } from "./thread-seat-map.js";
 import { attributionFromSession, buildOutboundMessage } from "./message.js";
 import { makeThreadRouteResolver } from "./thread-routing.js";
-import { closeRequest, gateOpenedAt, githubLinkState, isRequestHuman, sweepRequests, type LinkState, type RequestLifecycleDeps, type RequestLink } from "./request-lifecycle.js";
+import { closeRequest, currentGateResolved, gateOpenedAt, githubLinkState, isRequestHuman, sweepRequests, type LinkState, type RequestLifecycleDeps, type RequestLink } from "./request-lifecycle.js";
 import { startSocketInbound, type SocketInboundHandle, type WsLike } from "./socket-inbound.js";
 import { loadHumanRegistry, resolveSlackHandle } from "../human-registry.js";
 import { hasLiveHumanGate, type QueueRepository } from "../../queue-repository.js";
@@ -199,6 +199,8 @@ export function makeInboundFilePort(opts: {
     },
   };
 }
+
+const CONFIRM_WON_NOTE = "slack-confirm-won";
 
 /** Phase 1 — classify the message a human added ✅ to, using only our own records: the
  *  decision's root (a plain decision only), a Confirm offer we posted, or the human's own
@@ -373,6 +375,13 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     }
     return choice;
   };
+
+  // A replaced post keeps everything the original showed except its buttons.
+  const repostInputs = (row: { sourceSession: string; evidenceRef?: string | null; summary: string | null }) => ({
+    sourceLabel: cfg.sourceLabel,
+    attribution: attributionFromSession(row.sourceSession),
+    ...evidenceAttachment(undefined, row.evidenceRef, row.summary),
+  });
 
   const lifecycle: RequestLifecycleDeps = {
     queueRepo: opts.queueRepo,
@@ -661,18 +670,21 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       // in the decision's thread (a bot post, so inbound never ingests it).
       recordHumanAnswer: (input) => opts.queueRepo.recordHumanAnswer(input),
       reactionTarget: makeReactionTarget(opts.queueRepo, threadMap),
+      markConfirmWon: (offerQitemId) => {
+        opts.queueRepo.update({ qitemId: offerQitemId, actorSession: "daemon@kernel", transitionNote: CONFIRM_WON_NOTE });
+      },
       ...(bot ? {
         retireQuestionButtons: async ({ channel, messageTs, qitemId }: { channel: string; messageTs: string; qitemId: string }) => {
           const decision = opts.queueRepo.getById(qitemId);
           if (!decision?.humanQuestions?.length) return;
-          const message = buildOutboundMessage(decision, { sourceLabel: cfg.sourceLabel, attribution: attributionFromSession(decision.sourceSession), answered: true });
+          const message = buildOutboundMessage(decision, { ...repostInputs(decision), answered: true });
           const r = await updateChatMessage(bot, { channel, ts: messageTs, ...message }, opts.fetchImpl);
           if (!r.ok) log(`question buttons not replaced qitem=${qitemId}: ${r.error}`);
         },
-        retireConfirmOffer: async ({ channel, messageTs, offerQitemId }: { channel: string; messageTs: string; offerQitemId: string }) => {
+        retireConfirmOffer: async ({ channel, messageTs, offerQitemId, outcome }: { channel: string; messageTs: string; offerQitemId: string; outcome: "confirmed" | "not-used" }) => {
           const offer = opts.queueRepo.getById(offerQitemId);
           if (!offer) return;
-          const message = buildOutboundMessage(offer, { sourceLabel: cfg.sourceLabel, attribution: attributionFromSession(offer.sourceSession), confirmed: true });
+          const message = buildOutboundMessage(offer, { ...repostInputs(offer), confirmOutcome: outcome });
           const r = await updateChatMessage(bot, { channel, ts: messageTs, ...message }, opts.fetchImpl);
           if (!r.ok) log(`confirm button not replaced offer=${offerQitemId}: ${r.error}`);
         },
@@ -688,10 +700,11 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         const offer = opts.queueRepo.getById(offerQitemId);
         if (!offer?.humanConfirm) return { ok: false, reason: "not-a-confirm-offer" };
         if (offer.destinationSession !== actorSession) return { ok: false, reason: "not-the-asked-human" };
-        if (offer.humanIntent !== "update") return { ok: true, decisionQitemId: offer.qitemId, reading: offer.humanConfirm };
-        if (!offer.replyTo) return { ok: false, reason: "not-a-confirm-offer" };
-        if (offer.tsCreated < gateOpenedAt(opts.queueRepo, offer.replyTo)) return { ok: false, reason: "offer-from-an-earlier-gate" };
-        return { ok: true, decisionQitemId: offer.replyTo, reading: offer.humanConfirm };
+        const decisionQitemId = offer.humanIntent !== "update" ? offer.qitemId : offer.replyTo;
+        if (!decisionQitemId) return { ok: false, reason: "not-a-confirm-offer" };
+        if (offer.humanIntent === "update" && offer.tsCreated < gateOpenedAt(opts.queueRepo, decisionQitemId)) return { ok: false, reason: "offer-from-an-earlier-gate" };
+        const won = opts.queueRepo.transitionLog.listForQitem(offer.qitemId).some((t) => t.transitionNote === CONFIRM_WON_NOTE && t.actorSession === "daemon@kernel" && t.identityProvenance === null);
+        return { ok: true, decisionQitemId, reading: offer.humanConfirm, decided: currentGateResolved(opts.queueRepo, decisionQitemId), won };
       },
       actionDeadLetter: new DeadLetterStore<SlackBlockActions>(path.join(stateDir(opts.home), "slack-inbound-action-deadletter.jsonl")),
       ...(bot ? {

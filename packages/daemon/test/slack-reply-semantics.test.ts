@@ -208,6 +208,38 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(String(updates[0]?.text)).toContain("Is this right?");
     });
 
+    it("a click on an offer after a different answer says Not used, never Confirmed", async () => {
+      const offer = await offerConfirm("Ship widget A this week.");
+      await say("answer: No, do not ship", "2200.1");
+      expect(await click(`or-confirm:${offer.qitemId}`, "or-confirm", offer.messageTs)).not.toMatchObject({ status: "accepted" });
+      expect(decisions).toEqual(["No, do not ship"]);
+      const edit = updates.find((u) => u.ts === offer.messageTs);
+      expect(String(edit?.text)).toContain("Not used");
+      expect(String(edit?.text)).not.toContain("Confirmed");
+      expect(toSeat().some((q) => q.summary?.includes("confirmed your reading"))).toBe(false);
+    });
+
+    it("of two offers only the clicked winner says Confirmed", async () => {
+      const a = await offerConfirm("Ship widget A.");
+      const b = await offerConfirm("Ship widget B.");
+      await click(`or-confirm:${a.qitemId}`, "or-confirm", a.messageTs);
+      await click(`or-confirm:${b.qitemId}`, "or-confirm", b.messageTs);
+      expect(decisions).toEqual(["Ship widget A."]);
+      expect(String(updates.find((u) => u.ts === a.messageTs)?.text)).toContain("Confirmed: Ship widget A.");
+      expect(String(updates.find((u) => u.ts === b.messageTs)?.text)).toContain("Not used");
+    });
+
+    it("keeps the evidence link when it replaces a button", async () => {
+      const cta = await repo.create({ ...request, summary: "Approve the spec?", evidenceRef: "https://example.com/widget-spec", humanIntent: "decision", humanConfirm: "Build it" });
+      await deliver(cta.qitemId);
+      const root = `${posts.length}.1`;
+      expect(String(posts.at(-1)?.text)).toContain("https://example.com/widget-spec");
+      await click(`or-confirm:${cta.qitemId}`, "or-confirm", root, "UFOUNDER", "3300.1", root);
+      const edit = updates.find((u) => u.ts === root);
+      expect(String(edit?.text)).toContain("https://example.com/widget-spec");
+      expect(JSON.stringify(edit?.blocks)).toContain("https://example.com/widget-spec");
+    });
+
     it("replaces the Confirm button after a ✅ on the offer too", async () => {
       const offer = await offerConfirm("Ship widget A this week.");
       await react(offer.messageTs);
