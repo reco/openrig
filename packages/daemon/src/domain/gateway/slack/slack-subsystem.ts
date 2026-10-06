@@ -286,7 +286,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const deriveReplyToChoice = (p: OutboundPostPayload): ReplyToChoice => {
     let item = p.replyTo ? opts.queueRepo.getById(p.replyTo) : null;
     for (let depth = 0; item && depth < MAX_REPLY_TO_CHAIN; depth++) {
-      if (hasLiveHumanGate(item)) return { kind: "fallback", reason: "reference-has-live-gate", qitemId: item.qitemId };
+      if (!cfg.explicitAnswersOnly && hasLiveHumanGate(item)) return { kind: "fallback", reason: "reference-has-live-gate", qitemId: item.qitemId };
       const root = threadMap.resolveByConversation(item.qitemId);
       if (root) {
         if (root.state === "closed") return { kind: "fallback", reason: "root-closed", threadTs: root.threadTs };

@@ -29,6 +29,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
   let socket: WsLike;
   let posts: Array<Record<string, unknown>>;
   let decisionId: string;
+  let wire: ReturnType<typeof buildSlackGatewayWire>;
   const stops: Array<() => void> = [];
   const reply = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 
@@ -43,7 +44,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
     posts = [];
     const sockets: WsLike[] = [];
     const contract = new MissionControlWriteContract({ db, eventBus: bus, queueRepo: repo, actionLog: new MissionControlActionLog(db) });
-    const wire = buildSlackGatewayWire({
+    wire = buildSlackGatewayWire({
       home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
       resolveHumanReply: makeHumanReplyResolver(repo, contract),
       wsFactory: () => { const ws: WsLike = { send: () => {}, close: () => {}, onopen: null, onmessage: null, onclose: null, onerror: null }; sockets.push(ws); return ws; },
@@ -71,6 +72,12 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
     const before = finals(envelopeId).length;
     socket.onmessage?.({ data: JSON.stringify({ envelope_id: envelopeId, type: "events_api", payload: { event: { type: "message", user: "UFOUNDER", text, ts, thread_ts: "1.1", channel: "C-TEST" } } }) });
     await vi.waitFor(() => expect(finals(envelopeId).length).toBe(before + 1));
+  }
+  async function deliver(qitemId: string): Promise<void> {
+    const alert = (await makeQueuePorts(repo, { loadHumanRegistry: () => registry }).listHumanAlerts({})).find((q) => q.qitemId === qitemId);
+    expect(alert).toBeDefined();
+    wire.dispatcher.dispatch("post_message", human, alert);
+    await vi.waitFor(() => expect(repo.getById(qitemId)?.deliveryOutcome).toBe("posted"));
   }
   const toSeat = () => repo.list({ limit: 100 }).filter((q) => q.destinationSession === "author@rig");
   const resolutions = () => repo.transitionLog.listForQitem(decisionId).filter((t) => t.ownerNotificationKind === "human-decision-resolved");
@@ -113,6 +120,25 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       const answers = toSeat().filter((q) => q.tags?.includes("human-answer"));
       expect(answers).toHaveLength(2);
       expect(answers.map((q) => q.body).join("\n")).toContain("ship the schema migration only");
+    });
+
+    it("clarifying question, the seat's answer in the same thread, then an explicit approval", async () => {
+      await say("Which migration, the schema one or the data one?", "2010.1");
+      const seatReply = await repo.create({ ...request, humanIntent: "update", summary: "The schema one", body: "Only the schema migration; data follows next week.", replyTo: decisionId });
+      await deliver(seatReply.qitemId);
+      expect(posts.at(-1)?.thread_ts).toBe("1.1");
+      expect(repo.getById(seatReply.qitemId)?.replyToFallback).toBeNull();
+      expect(repo.getById(decisionId)?.state).toBe("pending");
+
+      await say("answer: ship the schema migration", "2011.1");
+      expect(repo.getById(decisionId)?.state).toBe("done");
+      expect(resolutions()).toHaveLength(1);
+      expect(resolutions()[0]?.transitionNote).toContain("ship the schema migration");
+    });
+
+    it("tells the seat that a conversation reply resolves nothing and how to answer in the thread", async () => {
+      await say("Which one?", "2012.1");
+      expect(toSeat()[0]?.body).toContain(`--reply-to ${decisionId}`);
     });
 
     it("an empty `answer:` is conversation, not a resolution", async () => {

@@ -152,7 +152,7 @@ export class InboundRouter {
   private retryPass: Promise<{ retried: number; landed: number }> | undefined;
   constructor(private readonly deps: InboundDeps) {}
 
-  private summaryOf(ev: SlackEvent, transfer?: InboundFileResult | null, correlationQitemId?: string): { summary: string; body: string } {
+  private summaryOf(ev: SlackEvent, transfer?: InboundFileResult | null, correlationQitemId?: string, conversation = false): { summary: string; body: string } {
     const text = String(ev.text ?? "");
     const meta = `slack channel=${ev.channel} user=${ev.user} ts=${ev.ts}`;
     // OPR.0.5.6.2 — attachments ride the row BODY by LOCAL path (Slack owns
@@ -180,7 +180,7 @@ export class InboundRouter {
     const headline = text.trim() ? text : firstFileName ? `[file] ${firstFileName}` : text;
     return {
       summary: `${ev.recoveredAfterGap ? "[Recovered after gap] " : ""}Founder via Slack: ${headline.slice(0, 90)}`,
-      body: `${sections.filter((s) => s.length > 0).join("\n\n")}\n\n---\nSource: ${meta}${correlationQitemId ? `\nIn reply to: ${correlationQitemId}` : ""}\nRouted by openrig slack-inbound. Default destination per config; re-route via queue as needed.`,
+      body: `${sections.filter((s) => s.length > 0).join("\n\n")}\n\n---\nSource: ${meta}${correlationQitemId ? `\nIn reply to: ${correlationQitemId}` : ""}${conversation ? `\nConversation: this reply does not resolve ${correlationQitemId}. Answer in its thread with rig queue create --human-intent update --reply-to ${correlationQitemId}.` : ""}\nRouted by openrig slack-inbound. Default destination per config; re-route via queue as needed.`,
     };
   }
 
@@ -265,7 +265,8 @@ export class InboundRouter {
       // S10 — deterministic route (thread map) when wired; static destination otherwise.
       const route = this.deps.resolveRoute?.(ev) ?? { destination: this.deps.destination };
       const decision = this.replyDecision(ev, route.correlationQitemId);
-      const { summary, body } = this.summaryOf(ev, transfer, route.correlationQitemId);
+      const replyTags = this.replyTags(route.correlationQitemId, decision);
+      const { summary, body } = this.summaryOf(ev, transfer, route.correlationQitemId, replyTags.includes("conversation"));
       let qitemId: string;
       try {
         qitemId = await this.deps.queue.createQitem({
@@ -273,7 +274,7 @@ export class InboundRouter {
           source: who.source, // the REGISTERED human's canonical ref (human-class), never a raw platform id
           destination: route.destination,
           priority: "routine",
-          tags: [...route.tags ?? ["founder-slack", "inbound"], ...this.replyTags(route.correlationQitemId, decision)],
+          tags: [...route.tags ?? ["founder-slack", "inbound"], ...replyTags],
           summary,
           body,
         });
