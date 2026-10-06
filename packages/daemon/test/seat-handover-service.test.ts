@@ -508,6 +508,19 @@ describe("SeatHandoverService", () => {
     expect(successorBinding.codexConfigProfile).toBe("prod-sandboxed");
   });
 
+  it("a second fresh handover in the same pane rebinds the seat's own claimed discovery row", async () => {
+    const { node } = seedSeat({ runtime: "codex" });
+    const handover = () => service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh", operator: "orch-lead@seat-rig" });
+
+    expect((await handover()).ok).toBe(true);
+    const row = db.prepare("SELECT status, claimed_node_id FROM discovered_sessions WHERE tmux_session = ?").get("dev-impl@seat-rig") as { status: string; claimed_node_id: string };
+    expect(row).toEqual({ status: "claimed", claimed_node_id: node.id });
+
+    const second = await handover();
+    expect(second).not.toMatchObject({ code: "discovered_not_active" });
+    expect(second).toMatchObject({ ok: true });
+  });
+
   it("composes the full cycle for a fresh source: create -> deliver -> verify -> rebind", async () => {
     const { node } = seedSeat({ runtime: "codex" });
 

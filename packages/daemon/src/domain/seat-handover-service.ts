@@ -640,7 +640,11 @@ export class SeatHandoverService {
         guidance: "Run discovery and list active discovered sessions before retrying.",
       });
     }
-    if (discovered.status !== "active") {
+    // A composer-launched successor respawns into the seat's own pane, whose discovery row the
+    // previous handover claimed for this same node; that claim carries over to the successor.
+    const ownPaneClaim = input.reportedSource.mode !== "discovered"
+      && discovered.status === "claimed" && discovered.claimedNodeId === input.node.id;
+    if (discovered.status !== "active" && !ownPaneClaim) {
       return fail({
         ok: false,
         code: "discovered_not_active",
