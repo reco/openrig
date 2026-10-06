@@ -241,6 +241,7 @@ describe("rig queue CLI", () => {
     const { deps } = makeDeps();
     await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "human-founder@external", "--body", "FYI: done.", "--json"]);
     expect(err.mock.calls.flat().join("\n")).toMatch(/Confirm button.*--human-intent update/s);
+    expect(err.mock.calls.flat().join("\n")).not.toMatch(/--human-intent ack/);
     err.mockClear();
     await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "human-founder@external", "--body", "FYI: done.", "--human-intent", "update", "--json"]);
     expect(err.mock.calls.flat().join("\n")).not.toMatch(/Confirm button/);
