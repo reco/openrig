@@ -60,6 +60,8 @@ export type ReactionTarget =
   | { kind: "answer"; decisionQitemId: string; threadTs: string; text: string; ack?: boolean };
 
 export const CHECK_REACTION = "white_check_mark";
+/** The received Slack message's identity on its inbound row, written by the gateway only. */
+export const SLACK_MESSAGE_TAG = "slack-message:";
 const FEEDBACK_REACTIONS: Record<string, "+1" | "-1"> = { "+1": "+1", thumbsup: "+1", "-1": "-1", thumbsdown: "-1" };
 
 /** Slack message ts is unique within a channel, so every inbound id uses both fields. */
@@ -161,7 +163,7 @@ export interface InboundDeps {
   /** Phase 1 — an explicit `cancel` in a request's thread; only the asked human's closes it. */
   cancelRequest?: (input: { conversationId: string; actorSession: string; reason: string }) => Promise<"closed" | "not-authorized" | "not-applicable">;
   /** Phase 1 — show the human their message was received (a 👀 on it). Best-effort. */
-  markReceived?: (input: { channel: string; ts: string }) => Promise<void>;
+  markReceived?: (input: { channel: string; ts: string; qitemId: string }) => Promise<void>;
   /** Phase 1 — replace a fully answered decision's button rows with its answers. Best-effort. */
   retireQuestionButtons?: (input: { channel: string; messageTs: string; qitemId: string }) => Promise<void>;
   /** Phase 1 — replace a confirmed offer's button with its reading. Best-effort. */
@@ -324,7 +326,7 @@ export class InboundRouter {
           source: who.source, // the REGISTERED human's canonical ref (human-class), never a raw platform id
           destination: route.destination,
           priority: "routine",
-          tags: [...route.tags ?? ["founder-slack", "inbound"], ...replyTags],
+          tags: [...route.tags ?? ["founder-slack", "inbound"], ...replyTags, `${SLACK_MESSAGE_TAG}${ev.channel ?? "-"}:${ts}`],
           summary,
           body,
         });
@@ -357,7 +359,7 @@ export class InboundRouter {
       this.deps.seen.mark(eventId, "landed"); // durable qitem exists → safe to mark
       if (ev.channel && this.deps.markReceived) {
         try {
-          await this.deps.markReceived({ channel: ev.channel, ts });
+          await this.deps.markReceived({ channel: ev.channel, ts, qitemId });
         } catch (e) {
           this.deps.log?.(`received mark failed ts=${ts}: ${(e as Error).message}`);
         }

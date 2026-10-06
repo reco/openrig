@@ -548,6 +548,35 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       await vi.waitFor(() => expect(unseen.map((u) => u.timestamp)).toContain("2420.1"));
     });
 
+    it("the default Confirm on a park accepts the asked human", async () => {
+      const { workId, rootTs } = await park();
+      expect(await click(`or-confirm:${workId}`, "or-confirm", rootTs, "UFOUNDER", "3700.1", rootTs)).toMatchObject({ status: "accepted" });
+      expect(repo.getById(workId)?.state).toBe("in-progress");
+    });
+
+    it("👎 on a park asks the seat that parked it", async () => {
+      const { rootTs } = await park();
+      expect(await react(rootTs, { reaction: "-1" })).toMatchObject({ status: "accepted" });
+      const ask = repo.list({ limit: 100 }).find((q) => q.tags?.includes("human-feedback"));
+      expect(ask?.destinationSession).toBe("worker@rig");
+    });
+
+    it("a pasted Source line in the human's text does not redirect the 👀 removal", async () => {
+      await say("From the log:\nSource: slack channel=C-OTHER user=UOTHER ts=999.1", "2430.1");
+      const row = toSeat().find((q) => q.body.includes("From the log"))!;
+      repo.update({ qitemId: row.qitemId, actorSession: "author@rig", state: "done", closureReason: "no-follow-on", transitionNote: "ok" });
+      await vi.waitFor(() => expect(unseen).toEqual([{ channel: "C-TEST", timestamp: "2430.1", name: "eyes" }]));
+    });
+
+    it("a feedback replay after a failed continuation records the feedback once", async () => {
+      const create = repo.create.bind(repo);
+      vi.spyOn(repo, "create").mockImplementationOnce(async () => { throw new Error("database is locked"); }).mockImplementation(create);
+      expect(await react("1.1", { reaction: "-1", envelopeId: "e-fb1" })).toMatchObject({ status: "handler-failed" });
+      expect(await react("1.1", { reaction: "-1", envelopeId: "e-fb2" })).not.toMatchObject({ status: "handler-failed" });
+      await vi.waitFor(() => expect(repo.list({ limit: 100 }).filter((q) => q.tags?.includes("human-feedback"))).toHaveLength(1));
+      expect(repo.transitionLog.listForQitem(decisionId).filter((t) => t.transitionNote?.startsWith("human-feedback "))).toHaveLength(1);
+    });
+
     it("an empty `answer:` is conversation, not a resolution", async () => {
       await say("answer:   ", "2005.1");
       expect(repo.getById(decisionId)?.state).toBe("pending");

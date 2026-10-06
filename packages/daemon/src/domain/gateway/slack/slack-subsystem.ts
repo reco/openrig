@@ -25,7 +25,7 @@ import { SeenStore, DeadLetterStore, InboundReceiptStore } from "./state-store.j
 import { makeQueuePorts } from "./queue-access.js";
 import { SlackOutboundDriver, OUTBOUND_OP, type OutboundPostPayload } from "./outbound-driver.js";
 import { evidenceAttachment, subsystemSlackDeliver } from "./slack-delivery.js";
-import { InboundRouter, inboundQitemIdFor, type ReactionTarget, type SlackEvent, type SlackBlockActions, type InboundFilePort, type InboundFileResult, type StoredInboundFile, type FailedInboundFile } from "./inbound.js";
+import { InboundRouter, inboundQitemIdFor, SLACK_MESSAGE_TAG, type ReactionTarget, type SlackEvent, type SlackBlockActions, type InboundFilePort, type InboundFileResult, type StoredInboundFile, type FailedInboundFile } from "./inbound.js";
 import { makeInboundSenderResolver, type RegistrySurface } from "./inbound-admission.js";
 import { ThreadSeatMap, formatPostedStamp } from "./thread-seat-map.js";
 import { ACK_DECISION, attributionFromSession, buildOutboundMessage, DEFAULT_CONFIRM_DECISION } from "./message.js";
@@ -403,23 +403,26 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   };
 
   // Phase 1 — the 👀 on a received human message comes off once the seat has handled it: its row
-  // is closed, or the seat answered in that thread. The row body carries the message's identity.
-  const receivedMessage = (body: string): { channel: string; ts: string } | null => {
-    const m = /\nSource: slack channel=(\S+) user=\S+ ts=(\S+)/.exec(body);
-    return m ? { channel: m[1]!, ts: m[2]! } : null;
+  // is closed, or the seat answered in that thread. The gateway tags each inbound row with the
+  // message it came from (never parsed from the human's text).
+  const receivedMessage = (tags: readonly string[] | null | undefined): { channel: string; ts: string } | null => {
+    const ref = tags?.find((t) => t.startsWith(SLACK_MESSAGE_TAG))?.slice(SLACK_MESSAGE_TAG.length);
+    const sep = ref?.lastIndexOf(":") ?? -1;
+    return ref && sep > 0 ? { channel: ref.slice(0, sep), ts: ref.slice(sep + 1) } : null;
   };
-  const unmarkReceived = (body: string): void => {
-    const message = receivedMessage(body);
+  const unmarkReceived = async (tags: readonly string[] | null | undefined): Promise<void> => {
+    const message = receivedMessage(tags);
     if (!bot || !message) return;
-    void removeReaction(bot, { channel: message.channel, timestamp: message.ts, name: "eyes" }, opts.fetchImpl)
-      .then((r) => { if (!r.ok) log(`👀 not removed ts=${message.ts}: ${r.error}`); });
+    const r = await removeReaction(bot, { channel: message.channel, timestamp: message.ts, name: "eyes" }, opts.fetchImpl);
+    if (!r.ok) log(`👀 not removed ts=${message.ts}: ${r.error}`);
   };
   const unmarkThread = (conversationId: string): void => {
     const rows = opts.queueRepo.db
-      .prepare(`SELECT body FROM queue_items WHERE tags LIKE ? AND tags LIKE '%"founder-slack"%'`)
-      .all(`%"reply-to:${conversationId}"%`) as Array<{ body: string }>;
-    for (const row of rows) unmarkReceived(row.body);
+      .prepare(`SELECT tags FROM queue_items WHERE tags LIKE ? AND tags LIKE '%"founder-slack"%'`)
+      .all(`%"reply-to:${conversationId}"%`) as Array<{ tags: string | null }>;
+    for (const row of rows) void unmarkReceived(row.tags ? (JSON.parse(row.tags) as string[]) : null);
   };
+  const handled = (state: string | undefined): boolean => ["done", "canceled", "handed-off", "failed", "denied"].includes(state ?? "");
 
   // Late-bound so deliver can release the driver's in-flight guard (built after the wire).
   let releaseRef: (qitemId: string) => void = () => {};
@@ -706,12 +709,15 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         const qitemId = opts.queueRepo.postedQitemForMessage(messageTs) ?? root?.conversationId;
         const item = qitemId ? opts.queueRepo.getById(qitemId) : null;
         if (!root || !item || !isRequestHuman(root, actorSession)) return "not-applicable";
-        opts.queueRepo.update({ qitemId: item.qitemId, actorSession, transitionNote: `human-feedback reaction=${reaction} message_ts=${messageTs}` });
+        const note = `human-feedback reaction=${reaction} message_ts=${messageTs} key=${createHash("sha256").update(key).digest("hex").slice(0, 20)}`;
+        if (!opts.queueRepo.transitionLog.listForQitem(item.qitemId).some((t) => t.transitionNote === note)) {
+          opts.queueRepo.update({ qitemId: item.qitemId, actorSession, transitionNote: note });
+        }
         if (reaction === "-1") {
           await opts.queueRepo.create({
             qitemId: `qitem-slack-feedback-${createHash("sha256").update(key).digest("hex").slice(0, 20)}`,
             sourceSession: actorSession,
-            destinationSession: item.sourceSession,
+            destinationSession: root.seat,
             tags: ["founder-slack", "inbound", "human-feedback", `reply-to:${root.conversationId}`],
             summary: `👎 on "${(item.summary ?? item.qitemId).slice(0, 80)}"`,
             body: `The human gave 👎 to ${item.qitemId} (${item.summary ?? "no summary"}). Do not ask why; propose something different in its thread: rig queue create --human-intent update --reply-to ${root.conversationId} (with --confirm for a new button).`,
@@ -721,9 +727,12 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         return "recorded";
       },
       ...(bot ? {
-        markReceived: async ({ channel, ts }: { channel: string; ts: string }) => {
+        markReceived: async ({ channel, ts, qitemId }: { channel: string; ts: string; qitemId: string }) => {
           const r = await addReaction(bot, { channel, timestamp: ts, name: "eyes" }, opts.fetchImpl);
           if (!r.ok) log(`👀 not added ts=${ts}: ${r.error}`);
+          // The seat may have handled the row while the 👀 was on its way: take it off again.
+          const row = opts.queueRepo.getById(qitemId);
+          if (row && handled(row.state)) await unmarkReceived(row.tags);
         },
         retireQuestionButtons: async ({ channel, messageTs, qitemId }: { channel: string; messageTs: string; qitemId: string }) => {
           const decision = opts.queueRepo.getById(qitemId);
@@ -759,7 +768,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         const defaultConfirm = cfg.explicitAnswersOnly && !offer?.humanConfirm && offer?.humanIntent !== "update" && !offer?.humanQuestions?.length && !offer?.humanAck;
         const reading = offer?.humanConfirm ?? (defaultConfirm ? DEFAULT_CONFIRM_DECISION : null);
         if (!offer || !reading) return { ok: false, reason: "not-a-confirm-offer" };
-        if (offer.destinationSession !== actorSession) return { ok: false, reason: "not-the-asked-human" };
+        const askedRoot = threadMap.resolveByConversation(offer.humanIntent !== "update" ? offer.qitemId : offer.replyTo ?? "");
+        if (!askedRoot || !isRequestHuman(askedRoot, actorSession)) return { ok: false, reason: "not-the-asked-human" };
         const decisionQitemId = offer.humanIntent !== "update" ? offer.qitemId : offer.replyTo;
         if (!decisionQitemId) return { ok: false, reason: "not-a-confirm-offer" };
         if (offer.humanIntent === "update" && offer.tsCreated < gateOpenedAt(opts.queueRepo, decisionQitemId)) return { ok: false, reason: "offer-from-an-earlier-gate" };
@@ -793,9 +803,9 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     starts.push(() => {
       unsubscribe = opts.queueRepo.events.subscribe((event) => {
         if (event.type !== "queue.updated" || event.fromState === event.toState) return;
-        if (!["done", "canceled", "handed-off", "failed", "denied"].includes(event.toState)) return;
+        if (!handled(event.toState)) return;
         const row = opts.queueRepo.getById(event.qitemId);
-        if (row?.tags?.includes("founder-slack") && row.tags.includes("inbound")) unmarkReceived(row.body);
+        if (row?.tags?.includes("founder-slack") && row.tags.includes("inbound")) void unmarkReceived(row.tags);
       });
     });
     stops.push(() => unsubscribe?.());
