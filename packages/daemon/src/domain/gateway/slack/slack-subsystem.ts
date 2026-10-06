@@ -401,29 +401,49 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     log,
   };
 
-  // Phase 1 — the 👀 on a received human message comes off once the seat has handled it: its row
-  // is closed, or the seat answered in that thread. The gateway tags each inbound row with the
-  // message it came from (never parsed from the human's text).
+  // Phase 1 — a received human message shows where the seat is: 👀 received, 🤔 the seat claimed
+  // it, nothing once handled (its row closed, or the seat answered in its thread). Each sync reads
+  // the row's current state and runs one at a time per row, so the last sync after the last change
+  // decides the reaction. The gateway tags each inbound row with the message it came from (never
+  // parsed from the human's text).
   const receivedMessage = (tags: readonly string[] | null | undefined): { channel: string; ts: string } | null => {
     const ref = tags?.find((t) => t.startsWith(SLACK_MESSAGE_TAG))?.slice(SLACK_MESSAGE_TAG.length);
     const sep = ref?.lastIndexOf(":") ?? -1;
     return ref && sep > 0 ? { channel: ref.slice(0, sep), ts: ref.slice(sep + 1) } : null;
   };
-  const unmarkReceived = async (tags: readonly string[] | null | undefined): Promise<void> => {
-    const message = receivedMessage(tags);
-    if (!bot || !message) return;
-    const r = await removeReaction(bot, { channel: message.channel, timestamp: message.ts, name: "eyes" }, opts.fetchImpl);
-    if (!r.ok) log(`👀 not removed ts=${message.ts}: ${r.error}`);
-  };
+  const handled = (state: string | undefined): boolean => ["done", "canceled", "handed-off", "failed", "denied"].includes(state ?? "");
   const threadAnsweredAt = new Map<string, string>(); // conversation -> last seat answer in its thread
+  const RECEIPTS = ["eyes", "thinking_face"] as const;
+  const wantedReceipt = (row: { state: string; tsCreated: string; tags?: string[] | null }): (typeof RECEIPTS)[number] | null => {
+    const conversation = row.tags?.find((t) => t.startsWith("reply-to:"))?.slice("reply-to:".length);
+    const answeredAt = conversation ? threadAnsweredAt.get(conversation) : undefined;
+    if (handled(row.state) || (answeredAt && answeredAt >= row.tsCreated)) return null;
+    return row.state === "in-progress" ? "thinking_face" : "eyes";
+  };
+  const receiptChains = new Map<string, Promise<void>>();
+  const syncReceipt = (qitemId: string): Promise<void> => {
+    const run = (receiptChains.get(qitemId) ?? Promise.resolve()).catch(() => {}).then(async () => {
+      const row = opts.queueRepo.getById(qitemId);
+      const message = receivedMessage(row?.tags);
+      if (!bot || !row || !message) return;
+      const wanted = wantedReceipt(row);
+      for (const name of RECEIPTS) {
+        const input = { channel: message.channel, timestamp: message.ts, name };
+        const r = name === wanted ? await addReaction(bot, input, opts.fetchImpl) : await removeReaction(bot, input, opts.fetchImpl);
+        if (!r.ok) log(`receipt ${name} not ${name === wanted ? "added" : "removed"} ts=${message.ts}: ${r.error}`);
+      }
+    });
+    receiptChains.set(qitemId, run);
+    void run.finally(() => { if (receiptChains.get(qitemId) === run) receiptChains.delete(qitemId); });
+    return run;
+  };
   const unmarkThread = (conversationId: string): void => {
     threadAnsweredAt.set(conversationId, new Date().toISOString());
     const rows = opts.queueRepo.db
-      .prepare(`SELECT tags FROM queue_items WHERE tags LIKE ? AND tags LIKE '%"founder-slack"%'`)
-      .all(`%"reply-to:${conversationId}"%`) as Array<{ tags: string | null }>;
-    for (const row of rows) void unmarkReceived(row.tags ? (JSON.parse(row.tags) as string[]) : null);
+      .prepare(`SELECT qitem_id FROM queue_items WHERE tags LIKE ? AND tags LIKE '%"founder-slack"%' AND tags LIKE '%"${SLACK_MESSAGE_TAG}%'`)
+      .all(`%"reply-to:${conversationId}"%`) as Array<{ qitem_id: string }>;
+    for (const row of rows) void syncReceipt(row.qitem_id);
   };
-  const handled = (state: string | undefined): boolean => ["done", "canceled", "handed-off", "failed", "denied"].includes(state ?? "");
 
   // Late-bound so deliver can release the driver's in-flight guard (built after the wire).
   let releaseRef: (qitemId: string) => void = () => {};
@@ -728,15 +748,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         return "recorded";
       },
       ...(bot ? {
-        markReceived: async ({ channel, ts, qitemId }: { channel: string; ts: string; qitemId: string }) => {
-          const r = await addReaction(bot, { channel, timestamp: ts, name: "eyes" }, opts.fetchImpl);
-          if (!r.ok) log(`👀 not added ts=${ts}: ${r.error}`);
-          // The seat may have handled the row while the 👀 was on its way: take it off again.
-          const row = opts.queueRepo.getById(qitemId);
-          const conversation = row?.tags?.find((t) => t.startsWith("reply-to:"))?.slice("reply-to:".length);
-          const answeredAt = conversation ? threadAnsweredAt.get(conversation) : undefined;
-          if (row && (handled(row.state) || (answeredAt && answeredAt >= row.tsCreated))) await unmarkReceived(row.tags);
-        },
+        markReceived: ({ qitemId }: { qitemId: string }) => syncReceipt(qitemId),
         retireQuestionButtons: async ({ channel, messageTs, qitemId }: { channel: string; messageTs: string; qitemId: string }) => {
           const decision = opts.queueRepo.getById(qitemId);
           if (!decision?.humanQuestions?.length) return;
@@ -798,10 +810,9 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     let unsubscribe: (() => void) | undefined;
     starts.push(() => {
       unsubscribe = opts.queueRepo.events.subscribe((event) => {
-        if (event.type !== "queue.updated" || event.fromState === event.toState) return;
-        if (!handled(event.toState)) return;
-        const row = opts.queueRepo.getById(event.qitemId);
-        if (row?.tags?.includes("founder-slack") && row.tags.includes("inbound")) void unmarkReceived(row.tags);
+        if (event.type === "queue.claimed" || (event.type === "queue.updated" && event.fromState !== event.toState)) {
+          void syncReceipt(event.qitemId);
+        }
       });
     });
     stops.push(() => unsubscribe?.());

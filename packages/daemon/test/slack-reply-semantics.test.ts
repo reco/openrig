@@ -36,6 +36,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
   let seen: Array<Record<string, unknown>>;
   let unseen: Array<Record<string, unknown>>;
   let eyes: Set<string>;
+  let thinking: Set<string>;
   let wire: ReturnType<typeof buildSlackGatewayWire>;
   const stops: Array<() => void> = [];
   const reply = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
@@ -57,6 +58,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
     seen = [];
     unseen = [];
     eyes = new Set();
+    thinking = new Set();
     const contract = new MissionControlWriteContract({ db, eventBus: bus, queueRepo: repo, actionLog: new MissionControlActionLog(db) });
     const realResolve = makeHumanReplyResolver(repo, contract);
     wire = buildSlackGatewayWire({
@@ -74,8 +76,8 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       fetchImpl: async (url, init) => {
         if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
         if (url.endsWith("chat.update")) { updates.push(JSON.parse(String(init?.body))); return reply({ ok: true }); }
-        if (url.endsWith("reactions.add")) { const b = JSON.parse(String(init?.body)); seen.push(b); eyes.add(b.timestamp); return reply({ ok: true }); }
-        if (url.endsWith("reactions.remove")) { const b = JSON.parse(String(init?.body)); unseen.push(b); eyes.delete(b.timestamp); return reply({ ok: true }); }
+        if (url.endsWith("reactions.add")) { const b = JSON.parse(String(init?.body)); seen.push(b); (b.name === "eyes" ? eyes : thinking).add(b.timestamp); return reply({ ok: true }); }
+        if (url.endsWith("reactions.remove")) { const b = JSON.parse(String(init?.body)); unseen.push(b); (b.name === "eyes" ? eyes : thinking).delete(b.timestamp); return reply({ ok: true }); }
         posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
       },
     });
@@ -508,12 +510,45 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(seen).toEqual([{ channel: "C-TEST", timestamp: "2400.1", name: "eyes" }]);
     });
 
+    it("swaps 👀 for 🤔 when the seat claims the message, and clears it when done", async () => {
+      await say("Can you look into this?", "2405.1");
+      const row = toSeat().find((q) => q.body.includes("Can you look into this?"))!;
+      expect(eyes.has("2405.1")).toBe(true);
+      repo.claim({ qitemId: row.qitemId, destinationSession: "author@rig" });
+      await vi.waitFor(() => expect(thinking.has("2405.1")).toBe(true));
+      expect(eyes.has("2405.1")).toBe(false);
+      repo.update({ qitemId: row.qitemId, actorSession: "author@rig", state: "done", closureReason: "no-follow-on", transitionNote: "done" });
+      await vi.waitFor(() => expect(thinking.has("2405.1")).toBe(false));
+      expect(eyes.has("2405.1")).toBe(false);
+    });
+
+    it("a claim that lands before the 👀 shows 🤔, not 👀", async () => {
+      const original = repo.create.bind(repo);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const spy = vi.spyOn(repo, "create").mockImplementation(async (input) => {
+        const row = await original(input);
+        if (input.tags?.includes("conversation")) await gate;
+        return row;
+      });
+      const pending = say("Fast claim", "2406.1");
+      try {
+        await vi.waitFor(() => expect(toSeat()).toHaveLength(1));
+        repo.claim({ qitemId: toSeat()[0]!.qitemId, destinationSession: "author@rig" });
+        release();
+        await pending;
+        await vi.waitFor(() => expect(thinking.has("2406.1")).toBe(true));
+        expect(eyes.has("2406.1")).toBe(false);
+      } finally { release(); await pending; spy.mockRestore(); }
+    });
+
     it("takes the 👀 off once the seat closes the received message", async () => {
       await say("Can you check the logs?", "2410.1");
       const row = toSeat().find((q) => q.body.includes("Can you check the logs?"))!;
-      expect(unseen).toEqual([]);
+      expect(eyes.has("2410.1")).toBe(true);
       repo.update({ qitemId: row.qitemId, actorSession: "author@rig", state: "done", closureReason: "no-follow-on", transitionNote: "checked" });
-      await vi.waitFor(() => expect(unseen).toEqual([{ channel: "C-TEST", timestamp: "2410.1", name: "eyes" }]));
+      await vi.waitFor(() => expect(eyes.has("2410.1") || thinking.has("2410.1")).toBe(false));
+      expect(unseen).toContainEqual({ channel: "C-TEST", timestamp: "2410.1", name: "eyes" });
     });
 
     it("takes the 👀 off the human's thread messages once the seat answers in the thread", async () => {
@@ -560,7 +595,8 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       await say("From the log:\nSource: slack channel=C-OTHER user=UOTHER ts=999.1", "2430.1");
       const row = toSeat().find((q) => q.body.includes("From the log"))!;
       repo.update({ qitemId: row.qitemId, actorSession: "author@rig", state: "done", closureReason: "no-follow-on", transitionNote: "ok" });
-      await vi.waitFor(() => expect(unseen).toEqual([{ channel: "C-TEST", timestamp: "2430.1", name: "eyes" }]));
+      await vi.waitFor(() => expect(unseen).toContainEqual({ channel: "C-TEST", timestamp: "2430.1", name: "eyes" }));
+      expect(unseen.every((u) => u.channel === "C-TEST" && u.timestamp === "2430.1")).toBe(true);
     });
 
     it("a feedback replay after a failed continuation records the feedback once", async () => {
