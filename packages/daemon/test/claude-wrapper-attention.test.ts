@@ -84,7 +84,7 @@ describe("Claude wrapper manual attention recovery", () => {
     expect(f.sendVerify).not.toHaveBeenCalled();
   });
 
-  it.each([null, "review-token", "different-token"])("batched wrapper proof retains saved-token semantics (%s)", async token => {
+  it.each([null, "review-token", "different-token"])("batched wrapper proof: exact or runtime-only identity verifies (%s)", async token => {
     const f = fixture(token);
     const batch = vi.fn(async () => new Map([[f.pane, { pid: 100, command: "bash" }]]));
     Object.assign(f.tmux, { readAllPaneProcesses: batch });
@@ -92,7 +92,7 @@ describe("Claude wrapper manual attention recovery", () => {
     expect(batch).toHaveBeenCalledTimes(3); // selection/first sample, second sample, final verdict
     expect(f.listProcesses).toHaveBeenCalledTimes(2);
     expect(f.tmux.getPaneCommand).not.toHaveBeenCalled();
-    expect(f.store.getForNode(f.node.id)?.verdict).toBe(token === "different-token" ? "mismatch" : "verified");
+    expect(f.store.getForNode(f.node.id)?.verdict).toBe("verified");
     expect(f.startup()).toBe("attention_required");
   });
 
@@ -130,13 +130,23 @@ describe("Claude wrapper manual attention recovery", () => {
     expect(f.sendVerify).not.toHaveBeenCalled();
   });
 
-  it("never falls back from a wrong saved token to runtime-only proof", async () => {
+  it("a rotated conversation verifies identity on runtime proof but never clears attention by itself", async () => {
     const f = fixture("different-token");
     expect((await f.post()).status).toBe(422);
     expect((await f.verify()).ok).toBe(false);
     await f.poll.reconcileAll();
-    expect(f.store.getForNode(f.node.id)?.verdict).toBe("mismatch");
+    expect(f.store.getForNode(f.node.id)).toMatchObject({ verdict: "verified", evidence: { matchedLayer: 2 } });
     expect(f.startup()).toBe("attention_required");
+  });
+
+  it.each([
+    ["a non-Claude foreground", [root, { ...child, command: "node server.js", executableName: "node" }]],
+    ["a second Claude on another branch", [root, child, { ...child, pid: 102, ppid: 100, pgid: 100 }, { pid: 103, ppid: 1, pgid: 100, tpgid: 100, command: "/tmp/review/.local/share/claude/versions/2.1.1 --session-id other", executableName: "2.1.1", startedAt }]],
+  ])("a rotated conversation still mismatches with %s", async (_label, rows) => {
+    const f = fixture("different-token");
+    f.listProcesses.mockResolvedValue(rows as NativeProcessRow[]);
+    await f.poll.reconcileAll();
+    expect(f.store.getForNode(f.node.id)?.verdict).toBe("mismatch");
   });
 
   it.each([null, "different-token"])("strict restore cannot use runtime-only evidence (%s)", async token => {
