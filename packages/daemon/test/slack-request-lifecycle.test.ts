@@ -201,6 +201,15 @@ describe("phase 1 request lifecycle sweep", () => {
       expect(toSeat().filter((q) => q.tags?.includes("request-reminder"))).toEqual([]);
     });
 
+    it("never reminds about a thread the human started", async () => {
+      const own = await repo.create({ sourceSession: human, destinationSession: "author@rig", body: "Any open items?", tags: ["founder-slack", "inbound", "unrouted-signal"], nudge: false });
+      map.close("1.1");
+      map.open({ threadTs: "3.1", channel: "C-TEST", human, seat: "author@rig", conversationId: own.qitemId });
+      at(10); await sweep();
+      expect(threadPosts).toEqual([]);
+      expect(toSeat().filter((q) => q.tags?.includes("request-reminder"))).toEqual([]);
+    });
+
     it("uses the configured interval", async () => {
       at(1.1); await sweep(1);
       expect(threadPosts).toHaveLength(1);

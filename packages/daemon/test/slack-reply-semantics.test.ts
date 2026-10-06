@@ -637,6 +637,36 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       await expect(repo.create({ ...request, humanIntent: "decision", replyTo: decisionId })).rejects.toMatchObject({ code: "reply_to_requires_update" });
     });
 
+    it("--reply-to a human-started message answers in its thread, and the thread routes back to the seat", async () => {
+      socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-top", type: "events_api", payload: { event: { type: "message", user: "UFOUNDER", text: "Any open items?", ts: "2500.1", channel: "C-TEST" } } }) });
+      await vi.waitFor(() => expect(finals("e-top")).toHaveLength(1));
+      const inbound = repo.list({ limit: 100 }).find((q) => q.body.includes("Any open items?"))!;
+      expect(eyes.has("2500.1")).toBe(true);
+      const answer = await repo.create({ ...request, humanIntent: "update", summary: "Two open items", body: "1. Review 2. Merge", replyTo: inbound.qitemId });
+      await deliver(answer.qitemId);
+      expect(posts.at(-1)?.thread_ts).toBe("2500.1");
+      expect(repo.getById(answer.qitemId)?.replyToFallback).toBeNull();
+      await vi.waitFor(() => expect(eyes.has("2500.1")).toBe(false));
+      await sayIn("2500.1", "And the third one?", "2501.1");
+      const followUp = repo.list({ limit: 100 }).find((q) => q.body.includes("And the third one?"));
+      expect(followUp?.destinationSession).toBe("author@rig");
+      expect(followUp?.tags).toContain(`reply-to:${inbound.qitemId}`);
+    });
+
+    it("a human-started thread is routing-only: answer: and cancel there resolve or close nothing", async () => {
+      socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-top2", type: "events_api", payload: { event: { type: "message", user: "UFOUNDER", text: "Status please", ts: "2600.1", channel: "C-TEST" } } }) });
+      await vi.waitFor(() => expect(finals("e-top2")).toHaveLength(1));
+      const inbound = repo.list({ limit: 100 }).find((q) => q.body.includes("Status please"))!;
+      const answer = await repo.create({ ...request, humanIntent: "update", summary: "All green", body: "Nothing open.", replyTo: inbound.qitemId });
+      await deliver(answer.qitemId);
+      await sayIn("2600.1", "answer: thanks", "2601.1");
+      await sayIn("2600.1", "cancel", "2602.1");
+      expect(decisions).toEqual([]);
+      expect(new ThreadSeatMap(db).resolveByThread("2600.1")?.state).toBe("open");
+      expect(repo.transitionLog.listForQitem(inbound.qitemId).some((t) => t.transitionNote?.startsWith("request-closed"))).toBe(false);
+      expect(repo.transitionLog.listForQitem(inbound.qitemId).some((t) => t.transitionNote?.startsWith("slack-posted thread_ts=2600.1"))).toBe(true);
+    });
+
     it("an empty `answer:` is conversation, not a resolution", async () => {
       await say("answer:   ", "2005.1");
       expect(repo.getById(decisionId)?.state).toBe("pending");

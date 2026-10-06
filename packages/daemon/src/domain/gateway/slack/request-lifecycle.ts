@@ -49,7 +49,7 @@ function lastPark(repo: QueueRepository, qitemId: string): { ts: string; transit
   return transitions.filter((t, i) => t.state === "blocked" && transitions[i - 1]?.state !== "blocked").at(-1);
 }
 
-const entityOf = (session: string | null | undefined): string => (session ?? "").split("@")[0] ?? "";
+export const entityOf = (session: string | null | undefined): string => (session ?? "").split("@")[0] ?? "";
 
 /** The request's asked human, as recorded on its thread when it was posted. */
 export function isRequestHuman(root: ThreadMapping, actorSession: string): boolean {
@@ -122,7 +122,8 @@ export async function sweepRequests(deps: RequestLifecycleDeps, now = new Date()
     if (Number(root.threadTs) * 1000 < (deps.floorMs ?? 0)) continue;
     try {
       const item = deps.queueRepo.getById(root.conversationId);
-      if (!item || item.humanIntent === "update") continue;
+      // A thread the human started is conversation, not a request to them: nothing to close or remind.
+      if (!item || item.humanIntent === "update" || entityOf(item.sourceSession) === entityOf(root.human)) continue;
       if (item.state === "canceled") {
         await closeRequest(deps, root, "canceled-by-seat", "daemon@kernel");
         closed.push(root.conversationId);
