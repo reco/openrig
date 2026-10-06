@@ -98,15 +98,23 @@ With `explicitAnswersOnly` on, a human's typed reply in a decision's thread is
 Answer it in the same thread with `--human-intent update --reply-to
 <decision-id>`. When you believe you have their answer, offer it with
 `--confirm "<your reading>"` on that update; never treat prose such as "yes" as
-approval. Every decision shows buttons: one without questions or its own
-button gets an "Agree" button (recorded as "acknowledged and agreed"). For a
-yes/go decision, put the action on a button with
+approval. Pick the kind that fits:
+- an action to approve (merge a PR, close an issue): a decision with
+  `--confirm "<the action>"`; it shows that button and "Not now";
+- a plan or long text to approve: a plain decision; it shows "Confirm" and
+  "Not now";
+- a choice: `--human-questions-file` option buttons;
+- information to acknowledge: `--human-intent ack`; no buttons, the human
+  reacts ✅ ("acknowledged"); you keep working meanwhile.
+"Not now" resolves the decision as "not now": propose something different in
+its thread. 👍/👎 on any of your messages is feedback, never a decision; on 👎
+you get a row: propose an alternative, do not ask why. For a yes/go decision,
+put the action on a button with
 `--confirm "<call to action>"` on the decision itself (e.g. "Build it", "Write the
 issue"); a click approves with exactly that text. The decision resolves, once,
 on a button click, a reply starting with `answer:`, a Confirm click (with
-exactly your stated reading), or a ✅ from the asked human (on the first message
-of a decision without any buttons, that means "acknowledged and agreed"; with an
-approve button or questions, ✅ there does nothing). After a click, the buttons
+exactly your stated reading), or a ✅ from the asked human (on an acknowledgement
+request it means "acknowledged"; on a decision with buttons it does nothing). After a click, the buttons
 turn into the outcome; an offer that lost to another answer shows "Not used". Answering does not close the request. Link its outcome with
 `--link pr:<url>`, `--link issue:<url>` or `--link qitem:<id>` on `rig queue
 update` or `create`: the thread closes once every linked outcome is finished, or

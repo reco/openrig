@@ -459,7 +459,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--id <qitemId>", "Retry identity: reuse for the same create after an unknown outcome; otherwise generated and printed before sending")
     .option("--target-repo <name>", "PL-007: typed repo scope (must match a repo in the source rig's RigSpec.workspace.repos[])")
     .option("--summary <text>", "Short human-readable subject, shown in the needs-you view. For a human destination, --body-file is the complete decision brief or update; keep technical continuation in the owning agent row and evidence.")
-    .option("--human-intent <intent>", "decision (default) or update: a quiet informational delivery, never an approval request")
+    .option("--human-intent <intent>", "decision (default), ack (the human only acknowledges it with a ✅; no buttons) or update: a quiet informational delivery, never an approval request")
     .option("--human-detail-file <path>", "One explicitly authored supplemental thread reply; keep the complete action/options in --body-file")
     .option("--reply-to <qitemId>", "Post this update into an earlier qitem's Slack thread (requires --human-intent update; posts as a new top-level message instead if that thread can't be used, e.g. it is missing, or it still has an open human decision while slack explicitAnswersOnly is off; --verify reports why)")
     .option("--link <kind:ref>", "Link this request to its outcome, kind:ref with kind pr|issue|qitem (repeatable). The request's Slack thread closes once every linked outcome is finished (PR merged or closed, issue closed, qitem done or canceled)", collectLink, [] as string[])
@@ -622,7 +622,8 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
           qitemId,
           destinationSession: hostResolved.destination,
           body: resolvedBody,
-          humanIntent: opts.humanIntent,
+          humanIntent: opts.humanIntent === "ack" ? "decision" : opts.humanIntent,
+          ...(opts.humanIntent === "ack" ? { humanAck: true } : {}),
           humanDetail: opts.humanDetailFile ? await resolveQueueBody({ bodyFile: opts.humanDetailFile }) : undefined,
           replyTo: opts.replyTo,
           humanQuestions,

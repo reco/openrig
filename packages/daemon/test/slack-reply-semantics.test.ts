@@ -107,17 +107,67 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(DEFAULT_CONFIG.staleReminderDays).toBe(3);
     });
 
-    it("gives a plain decision an Agree button and no footer", () => {
-      expect(JSON.stringify(posts[0]?.blocks)).toContain(`or-confirm:${decisionId}`);
-      expect(JSON.stringify(posts[0]?.blocks)).toContain('"text":"Agree"');
+    it("gives a plain decision Confirm and Not now buttons and no footer", () => {
+      const blocks = JSON.stringify(posts[0]?.blocks);
+      expect(blocks).toContain(`or-confirm:${decisionId}`);
+      expect(blocks).toContain('"text":"Confirm"');
+      expect(blocks).toContain('"text":"Not now"');
       expect(String(posts[0]?.text)).not.toContain("answer:");
     });
 
-    it("the Agree button records acknowledged and agreed, then shows the decision", async () => {
+    it("Confirm records confirmed, then shows the decision", async () => {
       expect(await click(`or-confirm:${decisionId}`, "or-confirm", "1.1", "UFOUNDER", "3600.1")).toMatchObject({ status: "accepted" });
-      expect(decisions).toEqual(["acknowledged and agreed"]);
-      expect(String(updates.find((u) => u.ts === "1.1")?.text)).toContain("Decided: *Agree*");
+      expect(decisions).toEqual(["confirmed"]);
+      expect(String(updates.find((u) => u.ts === "1.1")?.text)).toContain("Decided: *Confirm*");
       expect(JSON.stringify(updates.find((u) => u.ts === "1.1")?.blocks)).not.toContain("or-confirm");
+    });
+
+    it("Not now records not now, asks the seat for something different, and shows the decision", async () => {
+      expect(await click(`or-confirm:${decisionId}`, "or-not-now", "1.1", "UFOUNDER", "3600.2")).toMatchObject({ status: "accepted" });
+      expect(decisions).toEqual(["not now"]);
+      const row = toSeat().find((q) => q.tags?.includes("human-answer"));
+      expect(row?.summary).toContain("Not now");
+      expect(row?.body).toContain(`--reply-to ${decisionId}`);
+      expect(String(updates.find((u) => u.ts === "1.1")?.text)).toContain("Decided: *Not now*");
+      expect(await click(`or-confirm:${decisionId}`, "or-confirm", "1.1", "UFOUNDER", "3600.3")).not.toMatchObject({ status: "accepted" });
+      expect(decisions).toEqual(["not now"]);
+    });
+
+    const ackRequest = async () => {
+      const ack = await repo.create({ ...request, summary: "Test daemon restarted", body: "17433 now runs the new build.", humanIntent: "decision", humanAck: true });
+      await deliver(ack.qitemId);
+      return { ackId: ack.qitemId, root: `${posts.length}.1` };
+    };
+
+    it("an ack has no buttons, asks for ✅, and ✅ records acknowledged once", async () => {
+      const { ackId, root } = await ackRequest();
+      expect(JSON.stringify(posts.at(-1)?.blocks)).not.toContain("or-confirm");
+      expect(String(posts.at(-1)?.text)).toContain("React ✅ when seen.");
+      expect(await react(root)).toMatchObject({ status: "accepted" });
+      await react(root);
+      expect(repo.getById(ackId)?.state).toBe("done");
+      expect(decisions).toEqual(["acknowledged"]);
+      expect(String(updates.find((u) => u.ts === root)?.text)).toContain("Acknowledged.");
+    });
+
+    it("refuses an ack that also carries buttons", async () => {
+      await expect(repo.create({ ...request, humanIntent: "decision", humanAck: true, humanConfirm: "Go" })).rejects.toMatchObject({ code: "invalid_human_ack" });
+      await expect(repo.create({ ...request, humanIntent: "update", humanAck: true })).rejects.toMatchObject({ code: "invalid_human_ack" });
+    });
+
+    it("👍 and 👎 are recorded as feedback and never decide; 👎 asks the seat for an alternative", async () => {
+      expect(await react("1.1", { reaction: "+1" })).toMatchObject({ status: "accepted" });
+      expect(await react("1.1", { reaction: "-1" })).toMatchObject({ status: "accepted" });
+      await react("1.1", { reaction: "-1" });
+      expect(repo.getById(decisionId)?.state).toBe("pending");
+      expect(decisions).toEqual([]);
+      const notes = repo.transitionLog.listForQitem(decisionId).map((t) => t.transitionNote ?? "").filter((n) => n.startsWith("human-feedback "));
+      expect(notes).toHaveLength(2);
+      const asks = toSeat().filter((q) => q.tags?.includes("human-feedback"));
+      expect(asks).toHaveLength(1);
+      expect(asks[0]?.summary).toContain("👎");
+      expect(asks[0]?.body).toContain(`--reply-to ${decisionId}`);
+      expect(await react("1.1", { reaction: "-1", user: "UOTHER" })).not.toMatchObject({ status: "accepted" });
     });
 
     it("a clarifying question reaches the owning seat and leaves the decision open", async () => {
@@ -338,23 +388,22 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(decisions).toEqual(["Ship the schema migration, hold the data one."]);
     });
 
-    it("✅ on the root of a plain decision resolves it as approved", async () => {
-      expect(await react("1.1")).toMatchObject({ status: "accepted" });
-      expect(decisions).toEqual(["acknowledged and agreed"]);
+    it("✅ on the root of a decision with buttons does nothing", async () => {
+      expect(await react("1.1")).toMatchObject({ status: "ignored" });
+      expect(decisions).toEqual([]);
     });
 
-    it("resolves once across a replayed ✅, a second ✅ and an `answer:`", async () => {
-      expect(await react("1.1", { envelopeId: "e-r1" })).toMatchObject({ status: "accepted" });
-      socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-r1", type: "events_api", payload: { event: { type: "reaction_added", user: "UFOUNDER", reaction: "white_check_mark", item: { type: "message", channel: "C-TEST", ts: "1.1" } } } }) });
-      await react("1.1");
-      await say("answer: something else", "2031.1");
-      expect(resolutions()).toHaveLength(1);
-      expect(toSeat().filter((q) => q.tags?.includes("human-answer") && q.summary?.includes("✅"))).toHaveLength(1);
+    it("an ack resolves once across a replayed ✅ and a second ✅", async () => {
+      const { ackId, root } = await ackRequest();
+      expect(await react(root, { envelopeId: "e-r1" })).toMatchObject({ status: "accepted" });
+      socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-r1", type: "events_api", payload: { event: { type: "reaction_added", user: "UFOUNDER", reaction: "white_check_mark", item: { type: "message", channel: "C-TEST", ts: root } } } }) });
+      await react(root);
+      expect(repo.transitionLog.listForQitem(ackId).filter((t) => t.ownerNotificationKind === "human-decision-resolved")).toHaveLength(1);
     });
 
     it("ignores other emoji, other people's ✅, and ✅ on someone else's message", async () => {
       await say("Which one?", "2032.1");
-      expect(await react("1.1", { reaction: "thumbsup" })).toMatchObject({ status: "ignored" });
+      expect(await react("1.1", { reaction: "eyes" })).toMatchObject({ status: "ignored" });
       expect(await react("1.1", { user: "UOTHER" })).not.toMatchObject({ status: "accepted" });
       expect(await react("2032.1", { user: "UOTHER" })).not.toMatchObject({ status: "accepted" });
       expect(await react("9999.1")).toMatchObject({ status: "ignored" });

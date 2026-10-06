@@ -22,6 +22,8 @@ export interface QitemLike {
   humanIntent?: "decision" | "update" | null;
   /** Phase 1 — a reading the human confirms with one click (an update replying to a decision). */
   humanConfirm?: string | null;
+  /** Phase 1 — the human only acknowledges this request with a ✅; it carries no buttons. */
+  humanAck?: boolean | null;
 }
 
 /** M1 A5b — an outbound image attachment. A media-bearing OutboundDecision carries these;
@@ -60,7 +62,9 @@ export interface OutboundMessageOpts {
   answerHint?: boolean;
   /** Phase 1: the offer's button is replaced by its outcome: confirmed, or not used because the
    *  decision was made another way. */
-  confirmOutcome?: "confirmed" | "not-used";
+  confirmOutcome?: ConfirmOutcome;
+  /** Phase 1: the acknowledgement request was acknowledged; its ✅ prompt is replaced. */
+  acknowledged?: boolean;
   /** Phase 1: every question is answered; the button rows are replaced by the answers. */
   answered?: boolean;
 }
@@ -114,10 +118,17 @@ export const QUESTION_BLOCK_PREFIX = "or-q:";
 export const OPTION_ACTION_PREFIX = "or-opt:";
 export const CONFIRM_BLOCK_PREFIX = "or-confirm:";
 export const CONFIRM_ACTION_ID = "or-confirm";
+export const NOT_NOW_ACTION_ID = "or-not-now";
+export type ConfirmChoice = "confirm" | "not-now";
+export type ConfirmOutcome = "confirmed" | "declined" | "not-used";
+const ACK_PROMPT = "React ✅ when seen.";
 const TYPED_REPLY_HINT = "Or reply in this thread with your own answer.";
 /** Phase 1: a decision that brings no buttons of its own gets this one. */
-export const DEFAULT_AGREE_LABEL = "Agree";
-export const DEFAULT_AGREE_DECISION = "acknowledged and agreed";
+export const DEFAULT_CONFIRM_LABEL = "Confirm";
+export const DEFAULT_CONFIRM_DECISION = "confirmed";
+export const NOT_NOW_LABEL = "Not now";
+export const NOT_NOW_DECISION = "not now";
+export const ACK_DECISION = "acknowledged";
 
 /** Parse a clicked button back into its question and option ids; null if it is not ours. */
 export function parseQuestionAction(blockId: unknown, actionId: unknown): { questionId: string; optionId: string } | null {
@@ -129,12 +140,18 @@ export function parseQuestionAction(blockId: unknown, actionId: unknown): { ques
 }
 
 /** The offer qitem a clicked Confirm button names; null if the click is not a Confirm. */
-export function parseConfirmAction(blockId: unknown, actionId: unknown): string | null {
-  if (actionId !== CONFIRM_ACTION_ID || typeof blockId !== "string" || !blockId.startsWith(CONFIRM_BLOCK_PREFIX)) return null;
-  return blockId.slice(CONFIRM_BLOCK_PREFIX.length) || null;
+export function parseConfirmAction(blockId: unknown, actionId: unknown): { offerQitemId: string; choice: ConfirmChoice } | null {
+  if (typeof blockId !== "string" || !blockId.startsWith(CONFIRM_BLOCK_PREFIX)) return null;
+  const choice = actionId === CONFIRM_ACTION_ID ? "confirm" : actionId === NOT_NOW_ACTION_ID ? "not-now" : null;
+  const offerQitemId = blockId.slice(CONFIRM_BLOCK_PREFIX.length);
+  return choice && offerQitemId ? { offerQitemId, choice } : null;
 }
 
-function buildConfirmBlocks(qitemId: string, reading: string, outcome: "confirmed" | "not-used" | undefined, approve: boolean): { blocks: unknown[]; text: string } {
+function buildConfirmBlocks(qitemId: string, reading: string, outcome: ConfirmOutcome | undefined, approve: boolean): { blocks: unknown[]; text: string } {
+  if (outcome === "declined") {
+    const text = bounded(`Decided: *${NOT_NOW_LABEL}*`, SLACK_SECTION_CAP, "declined");
+    return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
+  }
   if (outcome === "not-used") {
     const text = bounded(`Not used: the decision was already made another way. (${approve ? "Button" : "Reading"}: ${inert(reading)})`, SLACK_SECTION_CAP, "unused offer");
     return { text, blocks: [{ type: "context", elements: [{ type: "mrkdwn", text }] }] };
@@ -147,8 +164,11 @@ function buildConfirmBlocks(qitemId: string, reading: string, outcome: "confirme
   if (approve) {
     const label = bounded(inert(reading), MAX_OPTION_LABEL, "approve button label");
     return {
-      text: `Click "${label}" to decide.`,
-      blocks: [{ type: "actions", block_id: `${CONFIRM_BLOCK_PREFIX}${qitemId}`, elements: [{ type: "button", action_id: CONFIRM_ACTION_ID, style: "primary", text: { type: "plain_text", text: label } }] }],
+      text: `Click "${label}" or "${NOT_NOW_LABEL}" to decide.`,
+      blocks: [{ type: "actions", block_id: `${CONFIRM_BLOCK_PREFIX}${qitemId}`, elements: [
+        { type: "button", action_id: CONFIRM_ACTION_ID, style: "primary", text: { type: "plain_text", text: label } },
+        { type: "button", action_id: NOT_NOW_ACTION_ID, text: { type: "plain_text", text: NOT_NOW_LABEL } },
+      ] }],
     };
   }
   if (confirmed) {
@@ -309,16 +329,18 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
   const questionParts = !q.humanQuestions?.length ? null
     : opts.answered ? buildAnsweredBlocks(q.humanQuestions, q.humanAnswers ?? {})
     : buildQuestionBlocks(q.humanQuestions, explicit ? null : TYPED_REPLY_HINT);
-  const confirmText = q.humanConfirm ?? (explicit && q.humanIntent !== "update" && !q.humanQuestions?.length ? DEFAULT_AGREE_LABEL : null);
+  const confirmText = q.humanConfirm ?? (explicit && q.humanIntent !== "update" && !q.humanQuestions?.length && !q.humanAck ? DEFAULT_CONFIRM_LABEL : null);
   const confirmParts = confirmText ? buildConfirmBlocks(q.qitemId, confirmText, opts.confirmOutcome, q.humanIntent !== "update") : null;
+  const ackText = q.humanAck && q.humanIntent !== "update" ? (opts.acknowledged ? "Acknowledged." : ACK_PROMPT) : null;
   if (opts.extraBlocks?.length) {
     throw new HumanMessageShapeError("Extra blocks have no complete accessible fallback. Use mediaRefs for images or author supplemental human detail.");
   }
-  const text = bounded([headline, body, questionParts?.text, confirmParts?.text, attr, evidence ? evidence.text : null, attachmentText, opts.reconcileMarker].filter(Boolean).join("\n"), SLACK_TEXT_CAP, "complete fallback");
+  const text = bounded([headline, body, questionParts?.text, confirmParts?.text, ackText, attr, evidence ? evidence.text : null, attachmentText, opts.reconcileMarker].filter(Boolean).join("\n"), SLACK_TEXT_CAP, "complete fallback");
   const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: headline } }];
   if (body.trim()) blocks.push({ type: "section", text: { type: "mrkdwn", text: body } });
   if (questionParts) blocks.push(...questionParts.blocks);
   if (confirmParts) blocks.push(...confirmParts.blocks);
+  if (ackText) blocks.push({ type: "section", text: { type: "mrkdwn", text: ackText } });
   blocks.push(...imageBlocks);
   if (evidence) blocks.push(evidence.block);
   blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: attr }] });
