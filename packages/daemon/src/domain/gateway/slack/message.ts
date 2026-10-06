@@ -55,7 +55,8 @@ export interface OutboundMessageOpts {
   mentionUserId?: string;
   /** Stable decision/part identity. Included in the complete fallback budget. */
   reconcileMarker?: string;
-  /** Phase 1: a decision tells its human that only an `answer:` reply decides. */
+  /** Phase 1 (explicitAnswersOnly): decisions always carry buttons and no typed-reply hint; a
+   *  decision without its own buttons gets an Agree button. */
   answerHint?: boolean;
   /** Phase 1: the offer's button is replaced by its outcome: confirmed, or not used because the
    *  decision was made another way. */
@@ -114,8 +115,9 @@ export const OPTION_ACTION_PREFIX = "or-opt:";
 export const CONFIRM_BLOCK_PREFIX = "or-confirm:";
 export const CONFIRM_ACTION_ID = "or-confirm";
 const TYPED_REPLY_HINT = "Or reply in this thread with your own answer.";
-const ANSWER_HINT = "👉 *To decide:* react ✅ to approve, or reply `answer: <your decision>`\n💬 Other replies go to the asking seat as conversation.";
-const QUESTION_ANSWER_HINT = "✍️ Or reply `answer: <your own answer>`\n💬 Other replies go to the asking seat as conversation.";
+/** Phase 1: a decision that brings no buttons of its own gets this one. */
+export const DEFAULT_AGREE_LABEL = "Agree";
+export const DEFAULT_AGREE_DECISION = "acknowledged and agreed";
 
 /** Parse a clicked button back into its question and option ids; null if it is not ours. */
 export function parseQuestionAction(blockId: unknown, actionId: unknown): { questionId: string; optionId: string } | null {
@@ -134,43 +136,43 @@ export function parseConfirmAction(blockId: unknown, actionId: unknown): string 
 
 function buildConfirmBlocks(qitemId: string, reading: string, outcome: "confirmed" | "not-used" | undefined, approve: boolean): { blocks: unknown[]; text: string } {
   if (outcome === "not-used") {
-    const text = bounded(`↩️ Not used: the decision was already made another way. (${approve ? "Button" : "Reading"}: ${inert(reading)})`, SLACK_SECTION_CAP, "unused offer");
+    const text = bounded(`Not used: the decision was already made another way. (${approve ? "Button" : "Reading"}: ${inert(reading)})`, SLACK_SECTION_CAP, "unused offer");
     return { text, blocks: [{ type: "context", elements: [{ type: "mrkdwn", text }] }] };
   }
   const confirmed = outcome === "confirmed";
   if (confirmed && approve) {
-    const text = bounded(`✅ ${inert(reading)}`, SLACK_SECTION_CAP, "approved call to action");
+    const text = bounded(`Decided: *${inert(reading)}*`, SLACK_SECTION_CAP, "approved call to action");
     return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
   }
   if (approve) {
     const label = bounded(inert(reading), MAX_OPTION_LABEL, "approve button label");
     return {
-      text: `👉 Click "${label}" to approve.`,
+      text: `Click "${label}" to decide.`,
       blocks: [{ type: "actions", block_id: `${CONFIRM_BLOCK_PREFIX}${qitemId}`, elements: [{ type: "button", action_id: CONFIRM_ACTION_ID, style: "primary", text: { type: "plain_text", text: label } }] }],
     };
   }
   if (confirmed) {
-    const text = bounded(`✅ Confirmed: ${inert(reading)}`, SLACK_SECTION_CAP, "confirmed reading");
+    const text = bounded(`Confirmed: ${inert(reading)}`, SLACK_SECTION_CAP, "confirmed reading");
     return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
   }
-  const text = bounded(`🤔 *My reading:* ${inert(reading)}`, SLACK_SECTION_CAP, "confirm reading");
+  const text = bounded(`*My reading:* ${inert(reading)}`, SLACK_SECTION_CAP, "confirm reading");
   return {
     text,
     blocks: [
       { type: "section", text: { type: "mrkdwn", text } },
-      { type: "actions", block_id: `${CONFIRM_BLOCK_PREFIX}${qitemId}`, elements: [{ type: "button", action_id: CONFIRM_ACTION_ID, style: "primary", text: { type: "plain_text", text: "✅ Confirm" } }] },
+      { type: "actions", block_id: `${CONFIRM_BLOCK_PREFIX}${qitemId}`, elements: [{ type: "button", action_id: CONFIRM_ACTION_ID, style: "primary", text: { type: "plain_text", text: "Confirm" } }] },
     ],
   };
 }
 
 function buildAnsweredBlocks(questions: readonly HumanQuestion[], answers: HumanAnswers): { blocks: unknown[]; text: string } {
-  const lines = formatHumanAnswers(questions, answers).map((line) => bounded(`✅ ${inert(line)}`, SLACK_SECTION_CAP, "answer"));
+  const lines = formatHumanAnswers(questions, answers).map((line) => bounded(`Answered: ${inert(line)}`, SLACK_SECTION_CAP, "answer"));
   return { text: lines.join("\n"), blocks: lines.map((text) => ({ type: "section", text: { type: "mrkdwn", text } })) };
 }
 
 /** #193 — the questions as blocks (a section, then a button row, per question) plus the
  *  complete text they must also appear as in the accessible fallback. */
-function buildQuestionBlocks(questions: readonly HumanQuestion[], hint: string): { blocks: unknown[]; text: string } {
+function buildQuestionBlocks(questions: readonly HumanQuestion[], hint: string | null): { blocks: unknown[]; text: string } {
   const blocks: unknown[] = [];
   const lines: string[] = [];
   for (const q of questions) {
@@ -189,8 +191,10 @@ function buildQuestionBlocks(questions: readonly HumanQuestion[], hint: string):
     });
     lines.push(question, ...q.options.map((o) => `• ${inert(o.label)}${o.recommended ? " (recommended)" : ""}`));
   }
-  blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: hint }] });
-  lines.push(hint);
+  if (hint) {
+    blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: hint }] });
+    lines.push(hint);
+  }
   return { blocks, text: lines.join("\n") };
 }
 
@@ -301,21 +305,20 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
   const imageBlocks = buildImageBlocks(opts.mediaRefs);
   const attachmentText = imageBlocks.map((b) => `Image: ${(b as { alt_text: string }).alt_text}`).join("\n");
   const evidence = buildEvidenceLink(opts.evidenceLink);
-  const answerHint = opts.answerHint && q.humanIntent !== "update" ? ANSWER_HINT : null;
+  const explicit = opts.answerHint === true;
   const questionParts = !q.humanQuestions?.length ? null
     : opts.answered ? buildAnsweredBlocks(q.humanQuestions, q.humanAnswers ?? {})
-    : buildQuestionBlocks(q.humanQuestions, answerHint ? QUESTION_ANSWER_HINT : TYPED_REPLY_HINT);
-  const plainHint = questionParts ? null : answerHint && q.humanConfirm && q.humanIntent !== "update" ? QUESTION_ANSWER_HINT : answerHint;
-  const confirmParts = q.humanConfirm ? buildConfirmBlocks(q.qitemId, q.humanConfirm, opts.confirmOutcome, q.humanIntent !== "update") : null;
+    : buildQuestionBlocks(q.humanQuestions, explicit ? null : TYPED_REPLY_HINT);
+  const confirmText = q.humanConfirm ?? (explicit && q.humanIntent !== "update" && !q.humanQuestions?.length ? DEFAULT_AGREE_LABEL : null);
+  const confirmParts = confirmText ? buildConfirmBlocks(q.qitemId, confirmText, opts.confirmOutcome, q.humanIntent !== "update") : null;
   if (opts.extraBlocks?.length) {
     throw new HumanMessageShapeError("Extra blocks have no complete accessible fallback. Use mediaRefs for images or author supplemental human detail.");
   }
-  const text = bounded([headline, body, questionParts?.text, confirmParts?.text, plainHint, attr, evidence ? evidence.text : null, attachmentText, opts.reconcileMarker].filter(Boolean).join("\n"), SLACK_TEXT_CAP, "complete fallback");
+  const text = bounded([headline, body, questionParts?.text, confirmParts?.text, attr, evidence ? evidence.text : null, attachmentText, opts.reconcileMarker].filter(Boolean).join("\n"), SLACK_TEXT_CAP, "complete fallback");
   const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: headline } }];
   if (body.trim()) blocks.push({ type: "section", text: { type: "mrkdwn", text: body } });
   if (questionParts) blocks.push(...questionParts.blocks);
   if (confirmParts) blocks.push(...confirmParts.blocks);
-  if (plainHint) blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: plainHint }] });
   blocks.push(...imageBlocks);
   if (evidence) blocks.push(evidence.block);
   blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: attr }] });

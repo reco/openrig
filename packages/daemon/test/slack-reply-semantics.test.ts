@@ -107,9 +107,17 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(DEFAULT_CONFIG.staleReminderDays).toBe(3);
     });
 
-    it("tells the human how to decide in the decision post", () => {
-      expect(String(posts[0]?.text)).toContain("answer:");
-      expect(JSON.stringify(posts[0]?.blocks)).toContain("answer:");
+    it("gives a plain decision an Agree button and no footer", () => {
+      expect(JSON.stringify(posts[0]?.blocks)).toContain(`or-confirm:${decisionId}`);
+      expect(JSON.stringify(posts[0]?.blocks)).toContain('"text":"Agree"');
+      expect(String(posts[0]?.text)).not.toContain("answer:");
+    });
+
+    it("the Agree button records acknowledged and agreed, then shows the decision", async () => {
+      expect(await click(`or-confirm:${decisionId}`, "or-confirm", "1.1", "UFOUNDER", "3600.1")).toMatchObject({ status: "accepted" });
+      expect(decisions).toEqual(["acknowledged and agreed"]);
+      expect(String(updates.find((u) => u.ts === "1.1")?.text)).toContain("Decided: *Agree*");
+      expect(JSON.stringify(updates.find((u) => u.ts === "1.1")?.blocks)).not.toContain("or-confirm");
     });
 
     it("a clarifying question reaches the owning seat and leaves the decision open", async () => {
@@ -285,7 +293,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(JSON.stringify(posts.at(-1)?.blocks)).toContain(`or-confirm:${cta.qitemId}`);
       expect(JSON.stringify(posts.at(-1)?.blocks)).toContain("🚀 Build it");
       expect(String(posts.at(-1)?.text)).not.toContain("react ✅");
-      expect(String(posts.at(-1)?.text)).toContain("answer: <your own answer>");
+      expect(String(posts.at(-1)?.text)).not.toContain("answer:");
       expect(await react(root)).toMatchObject({ status: "ignored" });
       expect(repo.getById(cta.qitemId)?.state).toBe("pending");
       expect(await click(`or-confirm:${cta.qitemId}`, "or-confirm", root, "UFOUNDER", "3200.1", root)).toMatchObject({ status: "accepted" });

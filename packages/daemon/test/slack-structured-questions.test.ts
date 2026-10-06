@@ -246,8 +246,8 @@ describe("structured human questions (#193)", () => {
       const edits = posts.filter((p) => p.ts === "1.1");
       expect(edits).toHaveLength(1);
       expect(JSON.stringify(edits[0]?.blocks)).not.toContain("or-opt:");
-      expect(String(edits[0]?.text)).toContain("✅ Which database?: Postgres");
-      expect(String(edits[0]?.text)).toContain("✅ Ship this week?: Yes");
+      expect(String(edits[0]?.text)).toContain("Answered: Which database?: Postgres");
+      expect(String(edits[0]?.text)).toContain("Answered: Ship this week?: Yes");
     });
 
     it("lands exactly one reply when the final click is replayed or clicked again", async () => {

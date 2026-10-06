@@ -28,7 +28,7 @@ import { evidenceAttachment, subsystemSlackDeliver } from "./slack-delivery.js";
 import { InboundRouter, inboundQitemIdFor, type ReactionTarget, type SlackEvent, type SlackBlockActions, type InboundFilePort, type InboundFileResult, type StoredInboundFile, type FailedInboundFile } from "./inbound.js";
 import { makeInboundSenderResolver, type RegistrySurface } from "./inbound-admission.js";
 import { ThreadSeatMap, formatPostedStamp } from "./thread-seat-map.js";
-import { attributionFromSession, buildOutboundMessage } from "./message.js";
+import { attributionFromSession, buildOutboundMessage, DEFAULT_AGREE_DECISION } from "./message.js";
 import { makeThreadRouteResolver } from "./thread-routing.js";
 import { closeRequest, currentGateResolved, gateOpenedAt, githubLinkState, isRequestHuman, sweepRequests, type LinkState, type RequestLifecycleDeps, type RequestLink } from "./request-lifecycle.js";
 import { startSocketInbound, type SocketInboundHandle, type WsLike } from "./socket-inbound.js";
@@ -379,6 +379,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   // A replaced post keeps everything the original showed except its buttons.
   const repostInputs = (row: { sourceSession: string; evidenceRef?: string | null; summary: string | null }) => ({
     sourceLabel: cfg.sourceLabel,
+    answerHint: cfg.explicitAnswersOnly,
     attribution: attributionFromSession(row.sourceSession),
     ...evidenceAttachment(undefined, row.evidenceRef, row.summary),
   });
@@ -698,13 +699,15 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       },
       confirmOffer: ({ offerQitemId, actorSession }) => {
         const offer = opts.queueRepo.getById(offerQitemId);
-        if (!offer?.humanConfirm) return { ok: false, reason: "not-a-confirm-offer" };
+        const defaultAgree = cfg.explicitAnswersOnly && !offer?.humanConfirm && offer?.humanIntent !== "update" && !offer?.humanQuestions?.length;
+        const reading = offer?.humanConfirm ?? (defaultAgree ? DEFAULT_AGREE_DECISION : null);
+        if (!offer || !reading) return { ok: false, reason: "not-a-confirm-offer" };
         if (offer.destinationSession !== actorSession) return { ok: false, reason: "not-the-asked-human" };
         const decisionQitemId = offer.humanIntent !== "update" ? offer.qitemId : offer.replyTo;
         if (!decisionQitemId) return { ok: false, reason: "not-a-confirm-offer" };
         if (offer.humanIntent === "update" && offer.tsCreated < gateOpenedAt(opts.queueRepo, decisionQitemId)) return { ok: false, reason: "offer-from-an-earlier-gate" };
         const won = opts.queueRepo.transitionLog.listForQitem(offer.qitemId).some((t) => t.transitionNote === CONFIRM_WON_NOTE && t.actorSession === "daemon@kernel" && t.identityProvenance === null);
-        return { ok: true, decisionQitemId, reading: offer.humanConfirm, decided: currentGateResolved(opts.queueRepo, decisionQitemId), won };
+        return { ok: true, decisionQitemId, reading, decided: currentGateResolved(opts.queueRepo, decisionQitemId), won };
       },
       actionDeadLetter: new DeadLetterStore<SlackBlockActions>(path.join(stateDir(opts.home), "slack-inbound-action-deadletter.jsonl")),
       ...(bot ? {

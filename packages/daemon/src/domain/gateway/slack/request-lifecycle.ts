@@ -92,7 +92,7 @@ export async function closeRequest(deps: RequestLifecycleDeps, root: ThreadMappi
       nudge: true,
     });
   }
-  const posted = await deps.postInThread(root.channel, root.threadTs, escapeSlackText(redactSecrets(`🔒 Closed: ${describeClose(reason)}`)));
+  const posted = await deps.postInThread(root.channel, root.threadTs, escapeSlackText(redactSecrets(`Closed: ${describeClose(reason)}`)));
   if (!posted) deps.log?.(`request ${root.conversationId} closed; the closing line was not posted`);
 }
 
@@ -110,7 +110,7 @@ async function remind(deps: RequestLifecycleDeps, root: ThreadMapping, days: num
     deps.queueRepo.update({ qitemId: root.conversationId, actorSession: "daemon@kernel", transitionNote: `${REQUEST_REMINDER_PREFIX} target=seat days=${days}` });
     return;
   }
-  const text = `⏰ *Still waiting on you* (${days} quiet days)\n• Reply \`answer: <your decision>\` to decide\n• Reply \`cancel\` to close it`;
+  const text = `⏰ *Still waiting on your decision* (${days} quiet days). Use the buttons above, or reply \`cancel\` to close it.`;
   if (!(await deps.postInThread(root.channel, root.threadTs, text))) return;
   deps.queueRepo.update({ qitemId: root.conversationId, actorSession: "daemon@kernel", transitionNote: `${REQUEST_REMINDER_PREFIX} target=human days=${days}` });
 }
