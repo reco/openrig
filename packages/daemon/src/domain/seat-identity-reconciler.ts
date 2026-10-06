@@ -205,6 +205,16 @@ export class SeatIdentityReconciler {
         if (generation !== this.generation) return;
       }
     }
+    // A Claude seat whose stored conversation rotated (/clear, resume) no longer matches its
+    // process's launch argv. Identity then rests on runtime proof: one stable Claude in the
+    // seat's sole bound pane. Continuity is reported as matchedLayer 2, never as a downrank.
+    const runtimeOnly = new Set<string>();
+    const observeClaudeWithToken = async (seat: RunningSeatRow, input: Parameters<typeof observeClaudePaneProcess>[0]) => {
+      const exact = await observeClaudePaneProcess(input);
+      if (exact) { runtimeOnly.delete(seat.node_id); return exact; }
+      runtimeOnly.add(seat.node_id);
+      return observeClaudePaneRuntime(input);
+    };
     const sample = async (observations: Map<string, PaneObservation>) => {
       let snapshot: ReturnType<NativeProcessLister> | undefined;
       // Two fresh process snapshots, each paired with its own pane observation.
@@ -215,11 +225,11 @@ export class SeatIdentityReconciler {
           return observed ? observed.pid : this.tmux.getPanePid(target);
         },
       });
-      return Promise.all(nativeSeats.map((seat) => (seat.runtime === "codex" ? observeCodexPaneProcess
-        : seat.resume_token !== null && seat.resume_token !== undefined ? observeClaudePaneProcess : observeClaudePaneRuntime)({
-        target: seat.tmux_pane!, tmux, expectedToken: seat.resume_token,
-        listProcesses: () => snapshot ??= this.listProcesses(),
-      })));
+      return Promise.all(nativeSeats.map((seat) => {
+        const input = { target: seat.tmux_pane!, tmux, expectedToken: seat.resume_token, listProcesses: () => snapshot ??= this.listProcesses() };
+        if (seat.runtime === "codex") return observeCodexPaneProcess(input);
+        return seat.resume_token !== null && seat.resume_token !== undefined ? observeClaudeWithToken(seat, input) : observeClaudePaneRuntime(input);
+      }));
     };
     const first = await sample(panes);
     if (generation !== this.generation) return;
@@ -235,7 +245,7 @@ export class SeatIdentityReconciler {
     }
     for (const seat of seats) {
       try {
-        const verdict = await this.computeVerdict(seat, liveSessions, observedAt, nativeProofs.get(seat.node_id) ?? null, panes);
+        const verdict = await this.computeVerdict(seat, liveSessions, observedAt, nativeProofs.get(seat.node_id) ?? null, panes, runtimeOnly.has(seat.node_id));
         if (generation !== this.generation) return;
         this.store.upsert(verdict);
       } catch {
@@ -265,6 +275,7 @@ export class SeatIdentityReconciler {
     observedAt: string,
     native: NativeProcessObservation | null,
     panes: Map<string, PaneObservation> | null = null,
+    runtimeOnlyProof = false,
   ): Promise<SeatIdentityVerdict> {
     const base = {
       nodeId: seat.node_id,
@@ -317,7 +328,7 @@ export class SeatIdentityReconciler {
     if (seat.runtime === "codex" || (seat.runtime === "claude-code" && (seat.resume_token != null || native !== null)
       && classifyPaneRuntimeMatch(command, seat.runtime) === "mismatch" && isShellForeground(command?.trim().toLowerCase() ?? ""))) {
       let verified = native?.panePid === pid;
-      if (verified && seat.runtime === "claude-code" && seat.resume_token == null) {
+      if (verified && seat.runtime === "claude-code" && (seat.resume_token == null || runtimeOnlyProof)) {
         // Runtime-only proof must still refer to the sole bound pane after the
         // two shared process snapshots. It does not clear startup/restore state.
         const currentPanes = await this.tmux.listPanes?.(seat.session_name).catch(() => []);
@@ -328,7 +339,7 @@ export class SeatIdentityReconciler {
         ...base, verdict: verified ? "verified" : "mismatch",
         evidenceSource: "pane_process", reason: verified ? null : "process_identity_ambiguous",
         evidence: { registeredPane: seat.tmux_pane, observedPid: native?.process.pid ?? pid,
-          observedCommand: native?.process.command ?? command, matchedLayer: verified ? 1 : null },
+          observedCommand: native?.process.command ?? command, matchedLayer: verified ? (runtimeOnlyProof ? 2 : 1) : null },
       };
     }
     const match = classifyPaneRuntimeMatch(command, seat.runtime);
