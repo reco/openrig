@@ -98,9 +98,12 @@ With `explicitAnswersOnly` on, a human's typed reply in a decision's thread is
 Answer it in the same thread with `--human-intent update --reply-to
 <decision-id>`. When you believe you have their answer, offer it with
 `--confirm "<your reading>"` on that update; never treat prose such as "yes" as
-approval. The decision resolves, once, on a button click, a reply starting with
-`answer:`, a Confirm click (with exactly your stated reading), or a ✅ from the
-asked human. Answering does not close the request. Link its outcome with
+approval. For a yes/go decision, put the action on a button with
+`--confirm "<call to action>"` on the decision itself (e.g. "Build it", "Write the
+issue"); a click approves with exactly that text. The decision resolves, once,
+on a button click, a reply starting with `answer:`, a Confirm click (with
+exactly your stated reading), or a ✅ from the asked human (on the decision's
+first message that means "acknowledged and agreed"). Answering does not close the request. Link its outcome with
 `--link pr:<url>`, `--link issue:<url>` or `--link qitem:<id>` on `rig queue
 update` or `create`: the thread closes once every linked outcome is finished, or
 when the human replies `cancel`. A request quiet for `staleReminderDays` (default

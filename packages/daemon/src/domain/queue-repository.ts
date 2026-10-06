@@ -27,7 +27,7 @@ import {
 } from "./queue-wake-repository.js";
 import { WatchdogJobsRepository } from "./watchdog-jobs-repository.js";
 import { armQueueWait, backOffQueueWait, refreshQueueWaits, evaluateQueueWait, retargetQueueWait, isQueueWait } from "./queue-wait-backoff.js";
-import { parseHumanQuestions, unansweredQuestions, type HumanQuestion, type HumanAnswers, type RecordHumanAnswerResult } from "./human-questions.js";
+import { MAX_OPTION_LABEL, parseHumanQuestions, unansweredQuestions, type HumanQuestion, type HumanAnswers, type RecordHumanAnswerResult } from "./human-questions.js";
 
 export const QUEUE_STATES = [
   "pending",
@@ -303,7 +303,8 @@ export interface QueueCreateInput {
   replyTo?: string | null;
   /** #193 — 1–4 structured questions; accepted only with humanIntent "decision". */
   humanQuestions?: HumanQuestion[] | null;
-  /** Phase 1 — a reading to confirm; accepted only on an update replying to a decision. */
+  /** Phase 1 — on a decision, the approve button's call to action ("Build it"); on an update
+   *  replying to a decision, the seat's reading to confirm. A click resolves with this text. */
   humanConfirm?: string | null;
   summary?: string | null;
   /** OPR.0.4.4.19 FR-5 — optional durable-artifact pointer. Persisted when
@@ -1665,11 +1666,15 @@ export class QueueRepository {
     const fail = (message: string) => new QueueRepositoryError("invalid_human_confirm", message);
     if (typeof reading !== "string" || !reading.trim()) throw fail("humanConfirm must be the nonempty reading the human confirms.");
     if (reading.length > MAX_HUMAN_CONFIRM) throw fail(`humanConfirm is over ${MAX_HUMAN_CONFIRM} characters.`);
-    if (input.humanIntent !== "update" || input.replyTo == null) {
-      throw fail("humanConfirm is accepted only on an update replying to a decision (humanIntent update with replyTo).");
+    if (input.humanIntent !== "update") {
+      if (!isHumanSeatSessionRef(input.destinationSession)) throw fail("humanConfirm requires a human destination: only a human can click it.");
+      if (input.humanQuestions != null) throw fail("an approve button and structured questions cannot share one decision; use an option instead.");
+      if (reading.length > MAX_OPTION_LABEL) throw fail(`an approve button label is at most ${MAX_OPTION_LABEL} characters (Slack's button limit).`);
+    } else {
+      if (input.replyTo == null) throw fail("humanConfirm on an update needs replyTo naming the decision it reads.");
+      const target = this.getById(input.replyTo);
+      if (!target || target.humanIntent === "update") throw fail(`humanConfirm needs replyTo to name a decision; ${input.replyTo} is not one.`);
     }
-    const target = this.getById(input.replyTo);
-    if (!target || target.humanIntent === "update") throw fail(`humanConfirm needs replyTo to name a decision; ${input.replyTo} is not one.`);
     if (!this.hasHumanConfirmColumn) throw fail("humanConfirm requires the current queue schema; it was not saved.");
   }
 

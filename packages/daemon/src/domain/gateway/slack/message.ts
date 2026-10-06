@@ -131,7 +131,18 @@ export function parseConfirmAction(blockId: unknown, actionId: unknown): string 
   return blockId.slice(CONFIRM_BLOCK_PREFIX.length) || null;
 }
 
-function buildConfirmBlocks(qitemId: string, reading: string, confirmed: boolean): { blocks: unknown[]; text: string } {
+function buildConfirmBlocks(qitemId: string, reading: string, confirmed: boolean, approve: boolean): { blocks: unknown[]; text: string } {
+  if (confirmed && approve) {
+    const text = bounded(`✅ ${inert(reading)}`, SLACK_SECTION_CAP, "approved call to action");
+    return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
+  }
+  if (approve) {
+    const label = bounded(inert(reading), MAX_OPTION_LABEL, "approve button label");
+    return {
+      text: `👉 Click "${label}" to approve.`,
+      blocks: [{ type: "actions", block_id: `${CONFIRM_BLOCK_PREFIX}${qitemId}`, elements: [{ type: "button", action_id: CONFIRM_ACTION_ID, style: "primary", text: { type: "plain_text", text: label } }] }],
+    };
+  }
   if (confirmed) {
     const text = bounded(`✅ Confirmed: ${inert(reading)}`, SLACK_SECTION_CAP, "confirmed reading");
     return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
@@ -289,7 +300,7 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
     : opts.answered ? buildAnsweredBlocks(q.humanQuestions, q.humanAnswers ?? {})
     : buildQuestionBlocks(q.humanQuestions, answerHint ? QUESTION_ANSWER_HINT : TYPED_REPLY_HINT);
   const plainHint = questionParts ? null : answerHint;
-  const confirmParts = q.humanConfirm ? buildConfirmBlocks(q.qitemId, q.humanConfirm, opts.confirmed === true) : null;
+  const confirmParts = q.humanConfirm ? buildConfirmBlocks(q.qitemId, q.humanConfirm, opts.confirmed === true, q.humanIntent !== "update") : null;
   if (opts.extraBlocks?.length) {
     throw new HumanMessageShapeError("Extra blocks have no complete accessible fallback. Use mediaRefs for images or author supplemental human detail.");
   }

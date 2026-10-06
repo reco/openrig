@@ -220,8 +220,25 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(repo.getById(decisionId)?.state).toBe("pending");
     });
 
-    it("refuses a confirm reading on anything but an update replying to a decision", async () => {
-      await expect(repo.create({ ...request, humanIntent: "decision", humanConfirm: "x" })).rejects.toMatchObject({ code: "invalid_human_confirm" });
+    it("an approve button on a decision carries the seat's call to action and approves with it", async () => {
+      const cta = await repo.create({ ...request, summary: "Approve the widget?", humanIntent: "decision", humanConfirm: "🚀 Build it" });
+      await deliver(cta.qitemId);
+      const root = `${posts.length}.1`;
+      expect(JSON.stringify(posts.at(-1)?.blocks)).toContain(`or-confirm:${cta.qitemId}`);
+      expect(JSON.stringify(posts.at(-1)?.blocks)).toContain("🚀 Build it");
+      expect(await click(`or-confirm:${cta.qitemId}`, "or-confirm", root, "UFOUNDER", "3200.1", root)).toMatchObject({ status: "accepted" });
+      expect(repo.getById(cta.qitemId)?.state).toBe("done");
+      expect(decisions).toEqual(["🚀 Build it"]);
+      expect(updates.map((u) => u.ts)).toEqual([root]);
+      expect(JSON.stringify(updates[0]?.blocks)).not.toContain("or-confirm");
+    });
+
+    it("refuses an approve button that is too long for Slack or sits beside questions", async () => {
+      await expect(repo.create({ ...request, humanIntent: "decision", humanConfirm: "x".repeat(76) })).rejects.toMatchObject({ code: "invalid_human_confirm" });
+      await expect(repo.create({ ...request, humanIntent: "decision", humanConfirm: "Go", humanQuestions: [{ id: "q", question: "Which?", options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] }] })).rejects.toMatchObject({ code: "invalid_human_confirm" });
+    });
+
+    it("refuses a confirm reading on an update that does not reply to a decision", async () => {
       await expect(repo.create({ ...request, humanIntent: "update", humanConfirm: "x" })).rejects.toMatchObject({ code: "invalid_human_confirm" });
       await expect(repo.create({ ...request, humanIntent: "update", replyTo: decisionId, humanConfirm: "  " })).rejects.toMatchObject({ code: "invalid_human_confirm" });
     });
@@ -253,7 +270,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
 
     it("✅ on the root of a plain decision resolves it as approved", async () => {
       expect(await react("1.1")).toMatchObject({ status: "accepted" });
-      expect(decisions).toEqual(["approved"]);
+      expect(decisions).toEqual(["acknowledged and agreed"]);
     });
 
     it("resolves once across a replayed ✅, a second ✅ and an `answer:`", async () => {

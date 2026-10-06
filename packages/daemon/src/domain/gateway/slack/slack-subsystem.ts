@@ -215,7 +215,7 @@ export function makeReactionTarget(queueRepo: QueueRepository, threadMap: Thread
     if (root) {
       const decision = queueRepo.getById(root.conversationId);
       if (!decision || decision.humanIntent === "update" || decision.humanQuestions?.length || !isRequestHuman(root, actorSession)) return null;
-      return { kind: "answer", decisionQitemId: decision.qitemId, threadTs: messageTs, text: "approved" };
+      return { kind: "answer", decisionQitemId: decision.qitemId, threadTs: messageTs, text: "acknowledged and agreed" };
     }
     const offerId = queueRepo.postedQitemForMessage(messageTs);
     const offer = offerId ? queueRepo.getById(offerId) : null;
@@ -686,8 +686,10 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       },
       confirmOffer: ({ offerQitemId, actorSession }) => {
         const offer = opts.queueRepo.getById(offerQitemId);
-        if (!offer?.humanConfirm || !offer.replyTo) return { ok: false, reason: "not-a-confirm-offer" };
+        if (!offer?.humanConfirm) return { ok: false, reason: "not-a-confirm-offer" };
         if (offer.destinationSession !== actorSession) return { ok: false, reason: "not-the-asked-human" };
+        if (offer.humanIntent !== "update") return { ok: true, decisionQitemId: offer.qitemId, reading: offer.humanConfirm };
+        if (!offer.replyTo) return { ok: false, reason: "not-a-confirm-offer" };
         if (offer.tsCreated < gateOpenedAt(opts.queueRepo, offer.replyTo)) return { ok: false, reason: "offer-from-an-earlier-gate" };
         return { ok: true, decisionQitemId: offer.replyTo, reading: offer.humanConfirm };
       },

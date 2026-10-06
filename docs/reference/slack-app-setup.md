@@ -95,10 +95,11 @@ How a decision is answered depends on `explicitAnswersOnly` in `slack-connector.
 
 - **On (this build's default):** a typed reply in the decision's thread is conversation. It goes
   to the asking seat, which can answer in the same thread (`rig queue create --human-intent update
-  --reply-to <decision>`), and it resolves nothing. The decision resolves on a button click, a
-  reply starting with `answer:`, a Confirm click on the seat's stated reading (`--confirm
-  <reading>`), or a ✅ from the asked human on the decision's root (a decision without buttons,
-  answered as "approved"), on their own reply in the thread (that reply's text), or on a Confirm
+  --reply-to <decision>`), and it resolves nothing. The decision resolves on a button click
+  (including an approve button carrying the seat's call to action, `--confirm "Build it"` on the
+  decision), a reply starting with `answer:`, a Confirm click on the seat's stated reading
+  (`--confirm <reading>` on an update replying to the decision), or a ✅ from the asked human on
+  the decision's root (a decision without question buttons, answered as "acknowledged and agreed"), on their own reply in the thread (that reply's text), or on a Confirm
   offer. It resolves once; later answers reach the seat as messages.
   Answering does not close the request: its thread stays open until the outcome the seat linked
   (`rig queue update --link pr:<url>|issue:<url>|qitem:<id>`) is finished, or the asked human
