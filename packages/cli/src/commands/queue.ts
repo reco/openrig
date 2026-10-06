@@ -625,7 +625,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
         // document to stdout. This is a request identity, NOT a commit receipt.
         console.error(`Queue create request ID: ${qitemId} (not proof of persistence). ${recovery}`);
         if (isHumanSeatSessionRef(hostResolved.destination) && opts.humanIntent === undefined && opts.confirm === undefined && humanQuestions === undefined) {
-          console.error("Warning: no --human-intent, so this posts as a decision with a Confirm button. For information or an answer use --human-intent update (no buttons); for something to acknowledge, --human-intent ack.");
+          console.error("Warning: no --human-intent, so this posts as a decision with a Confirm button. For information, status or an answer use --human-intent update (no buttons, no acknowledgement needed).");
         }
         const res = await client.post<Record<string, unknown>>("/api/queue/create", {
           ...(managedSource === undefined ? { sourceSession: source } : {}),
