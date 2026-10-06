@@ -226,6 +226,10 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       const root = `${posts.length}.1`;
       expect(JSON.stringify(posts.at(-1)?.blocks)).toContain(`or-confirm:${cta.qitemId}`);
       expect(JSON.stringify(posts.at(-1)?.blocks)).toContain("🚀 Build it");
+      expect(String(posts.at(-1)?.text)).not.toContain("react ✅");
+      expect(String(posts.at(-1)?.text)).toContain("answer: <your own answer>");
+      expect(await react(root)).toMatchObject({ status: "ignored" });
+      expect(repo.getById(cta.qitemId)?.state).toBe("pending");
       expect(await click(`or-confirm:${cta.qitemId}`, "or-confirm", root, "UFOUNDER", "3200.1", root)).toMatchObject({ status: "accepted" });
       expect(repo.getById(cta.qitemId)?.state).toBe("done");
       expect(decisions).toEqual(["🚀 Build it"]);

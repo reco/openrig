@@ -214,7 +214,7 @@ export function makeReactionTarget(queueRepo: QueueRepository, threadMap: Thread
     const root = threadMap.resolveByThread(messageTs);
     if (root) {
       const decision = queueRepo.getById(root.conversationId);
-      if (!decision || decision.humanIntent === "update" || decision.humanQuestions?.length || !isRequestHuman(root, actorSession)) return null;
+      if (!decision || decision.humanIntent === "update" || decision.humanQuestions?.length || decision.humanConfirm || !isRequestHuman(root, actorSession)) return null;
       return { kind: "answer", decisionQitemId: decision.qitemId, threadTs: messageTs, text: "acknowledged and agreed" };
     }
     const offerId = queueRepo.postedQitemForMessage(messageTs);

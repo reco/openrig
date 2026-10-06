@@ -299,7 +299,7 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
   const questionParts = !q.humanQuestions?.length ? null
     : opts.answered ? buildAnsweredBlocks(q.humanQuestions, q.humanAnswers ?? {})
     : buildQuestionBlocks(q.humanQuestions, answerHint ? QUESTION_ANSWER_HINT : TYPED_REPLY_HINT);
-  const plainHint = questionParts ? null : answerHint;
+  const plainHint = questionParts ? null : answerHint && q.humanConfirm && q.humanIntent !== "update" ? QUESTION_ANSWER_HINT : answerHint;
   const confirmParts = q.humanConfirm ? buildConfirmBlocks(q.qitemId, q.humanConfirm, opts.confirmed === true, q.humanIntent !== "update") : null;
   if (opts.extraBlocks?.length) {
     throw new HumanMessageShapeError("Extra blocks have no complete accessible fallback. Use mediaRefs for images or author supplemental human detail.");
