@@ -75,6 +75,11 @@ rig status
 rig ps --nodes --rig kernel
 ```
 
+Starting the kernel, including its operator and advisor, is part of installing
+OpenRig. Keep it for a normal install: it helps you choose and start your project
+team. `rig daemon start --no-kernel` is for automation or an explicit request to
+omit the kernel; it leaves you without that operator.
+
 On a fresh instance, explicit daemon startup chooses the kernel variant from
 successful native auth probes: Claude alone, Codex alone, or both. It starts the
 kernel in the background without a project starter. An absent unused provider is
@@ -112,6 +117,8 @@ No, SSH and headless use are valid background outcomes, not setup failures.
 
 Use **herdr first if installed**, **cmux second**, and otherwise give the exact
 [new-terminal commands below](#plain-terminal-a-new-viewing-session).
+To reach just the operator, use the [direct conversation command](#talk-to-the-operator-in-any-terminal).
+`rig tui --shared` is the team dashboard, not the operator's conversation.
 No new terminal-provider installation is needed for this offer. The first view
 contains TUI | advisor | operator in that order, for Claude-only, Codex-only and
 mixed kernels.
@@ -179,6 +186,29 @@ queue worker. A failed or uncertain open is not evidence that nothing opened;
 inspect the provider before retrying or falling back. If the shared TUI tile
 shows a shell, run `rig tui` **in that new tile**, not in the installing agent's
 terminal.
+
+### Talk to the operator in any terminal
+
+No herdr or cmux is needed. On the kernel's host, run:
+
+```sh
+rig ps --nodes --rig kernel --json
+```
+
+Find the row whose `logicalId` is `operator.agent`. Replace the placeholder below
+with that row's `canonicalSessionName`, then run this in a **new terminal on the
+same host, as the same user**:
+
+```sh
+env -u TMUX tmux attach-session -t '=<canonicalSessionName>'
+```
+
+This shows the operator's existing conversation and lets you type your answer.
+The installing agent gives the person the command with the name already filled
+in; it does not attach in its own terminal. Over SSH, connect to the installation
+host first. Use **Ctrl-b, then d** to leave the conversation running and detach.
+If the operator has no binding or needs attention, use
+[Incomplete setup and restart](#incomplete-setup-and-restart).
 
 ### Plain terminal: a new viewing session
 
@@ -255,6 +285,33 @@ an HTTP daemon address is known, ask for the SSH connection details instead of
 inventing them. No new account or credential provisioning is part of this
 handoff. Report which provider or fallback ran, which conversations and TUI
 were visible, and any headless or unverified branch.
+
+### Installing-agent handoff
+
+Ask what the person wants to do and which project folder to use. Hand that goal
+to the ready kernel operator; do not implement the person's project yourself.
+Find the `operator.agent` row with `rig ps --nodes --rig kernel --json` and take
+its `canonicalSessionName`. Use that returned session name, not the logical ID:
+
+```sh
+rig send <canonicalSessionName> 'This is the agent that installed OpenRig. The person will answer in your pane. Goal: <goal>. Project folder: <absolute path>.'
+```
+
+Alternatively, have the person type the goal and folder in the operator pane.
+Show where the operator answers in the existing view or give the exact attach
+command [above](#talk-to-the-operator-in-any-terminal), with the observed name
+filled in. `rig tui --shared` opens the dashboard, not this conversation.
+If the person gives the installing agent a goal later, forward the goal, folder
+and constraints with `rig send`; leave implementation with the operator's team.
+The operator helps the person choose and start a team, then hands the goal to its
+lead. Leave the project work with that team.
+
+Finish installation when the operator is ready and the person is talking to it;
+daemon health alone is not completion. Use the existing
+[recovery routes](#incomplete-setup-and-restart) if the operator needs attention.
+If the person chooses to talk later, keep that choice, leave the exact connection
+step, and say that the conversation handoff is still pending. SSH, headless use,
+and declining a desktop view remain valid background outcomes.
 
 ## Choose your first team
 
