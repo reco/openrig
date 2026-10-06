@@ -304,10 +304,12 @@ function bounded(text: string, max: number, field: string): string {
 /** Pure, deterministic rendering. Queue metadata stays in the durable request;
  * the human sees one subject, complete body and one sender attribution. */
 export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): SlackMessagePayload {
-  const summary = inert(String(q.summary || "(no summary)"));
   const body = bounded(inert(String(q.body || "")), SLACK_SECTION_CAP, "body");
   const mention = opts.mentionUserId ? `<@${opts.mentionUserId}> :rotating_light: ` : "";
-  const headline = bounded(`${mention}*${summary}*`, SLACK_SECTION_CAP, "subject");
+  // No summary, no headline: the body starts the message (a mention still leads it).
+  const headline = q.summary?.trim()
+    ? bounded(`${mention}*${inert(q.summary)}*`, SLACK_SECTION_CAP, "subject")
+    : mention.trim() || null;
   const attr = bounded(`from ${inert(opts.attribution?.session || opts.sourceLabel)}`, 2000, "sender");
   const imageBlocks = buildImageBlocks(opts.mediaRefs);
   const attachmentText = imageBlocks.map((b) => `Image: ${(b as { alt_text: string }).alt_text}`).join("\n");
@@ -323,7 +325,7 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
     throw new HumanMessageShapeError("Extra blocks have no complete accessible fallback. Use mediaRefs for images or author supplemental human detail.");
   }
   const text = bounded([headline, body, questionParts?.text, confirmParts?.text, ackText, attr, evidence ? evidence.text : null, attachmentText, opts.reconcileMarker].filter(Boolean).join("\n"), SLACK_TEXT_CAP, "complete fallback");
-  const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: headline } }];
+  const blocks: unknown[] = headline ? [{ type: "section", text: { type: "mrkdwn", text: headline } }] : [];
   if (body.trim()) blocks.push({ type: "section", text: { type: "mrkdwn", text: body } });
   if (questionParts) blocks.push(...questionParts.blocks);
   if (confirmParts) blocks.push(...confirmParts.blocks);

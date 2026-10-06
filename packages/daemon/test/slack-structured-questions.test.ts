@@ -154,6 +154,18 @@ describe("structured human questions (#193)", () => {
       expect(json).toContain("&lt;!channel&gt;");
     });
 
+    it("a row without a summary has no headline: the body starts the message", () => {
+      const m = buildOutboundMessage({ qitemId: "q1", summary: null, body: "Status: all green." }, { sourceLabel: "rig" });
+      expect(m.text).not.toContain("(no summary)");
+      expect(m.text.startsWith("Status: all green.")).toBe(true);
+      expect((m.blocks[0] as { text: { text: string } }).text.text).toBe("Status: all green.");
+    });
+
+    it("keeps Slack formatting characters in agent text: only & < > are escaped", () => {
+      const m = buildOutboundMessage({ qitemId: "q1", summary: "Plan", body: "*bold* `code` _it_ ~old~\n```\nrig ps\n```" }, { sourceLabel: "rig" });
+      expect(m.text).toContain("*bold* `code` _it_ ~old~\n```\nrig ps\n```");
+    });
+
     it("renders a plain decision exactly as before", () => {
       const plain = buildOutboundMessage({ qitemId: "q", summary: "S", body: "B" }, { sourceLabel: "proof" });
       expect((plain.blocks as Block[]).some((b) => b.type === "actions")).toBe(false);

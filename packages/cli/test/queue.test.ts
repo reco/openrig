@@ -232,6 +232,17 @@ describe("rig queue CLI", () => {
     expect(calls.find((c) => c.path === "/api/queue/create")?.body).toMatchObject({ humanIntent: "decision", humanAck: true });
   });
 
+  it("create to a human without an intent or buttons warns that it will show a Confirm button", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { deps } = makeDeps();
+    await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "human-founder@external", "--body", "FYI: done.", "--json"]);
+    expect(err.mock.calls.flat().join("\n")).toMatch(/Confirm button.*--human-intent update/s);
+    err.mockClear();
+    await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "human-founder@external", "--body", "FYI: done.", "--human-intent", "update", "--json"]);
+    expect(err.mock.calls.flat().join("\n")).not.toMatch(/Confirm button/);
+    err.mockRestore();
+  });
+
   it("create --confirm sends the reading as humanConfirm", async () => {
     const { deps, calls } = makeDeps();
     await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "human-founder@external", "--body", "My reading.", "--human-intent", "update", "--reply-to", "qitem-decision", "--confirm", "Ship the schema migration only.", "--json"]);

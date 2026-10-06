@@ -98,7 +98,9 @@ With `explicitAnswersOnly` on, a human's typed reply in a decision's thread is
 Answer it in the same thread with `--human-intent update --reply-to
 <decision-id>`. When you believe you have their answer, offer it with
 `--confirm "<your reading>"` on that update; never treat prose such as "yes" as
-approval. Pick the kind that fits:
+approval. A status, an answer or other information for the human is
+`--human-intent update` (no buttons); without `--human-intent` the request is a
+decision and shows a Confirm button. Pick the kind that fits:
 - an action to approve (merge a PR, close an issue): a decision with
   `--confirm "<the action>"`; it shows that one button;
 - a plan or long text to approve: a plain decision; it shows "Confirm";
@@ -122,6 +124,13 @@ update` or `create`: the thread closes once every linked outcome is finished, or
 when the human replies `cancel`. A request quiet for `staleReminderDays` (default
 3) reminds the human while unanswered and you once answered; reminders close
 nothing.
+
+Write Slack mrkdwn, not plain prose: a *bold* lead line or label, `inline code`
+for commands, paths and identifiers, triple-backtick blocks for multi-line code
+or output, _italic_, ~strike~, and one blank line between list items and
+sections. Give the request a `--summary`: it is the bold headline (without one,
+the body starts the message). Only `&`, `<` and `>` are escaped, so this
+formatting arrives intact.
 
 A **decision** with a few clear choices can carry `--human-questions-file <path>`:
 a JSON array of 1–4 questions, each

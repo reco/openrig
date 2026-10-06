@@ -459,7 +459,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--id <qitemId>", "Retry identity: reuse for the same create after an unknown outcome; otherwise generated and printed before sending")
     .option("--target-repo <name>", "PL-007: typed repo scope (must match a repo in the source rig's RigSpec.workspace.repos[])")
     .option("--summary <text>", "Short human-readable subject, shown in the needs-you view. For a human destination, --body-file is the complete decision brief or update; keep technical continuation in the owning agent row and evidence.")
-    .option("--human-intent <intent>", "decision (default), ack (the human only acknowledges it with a ✅; no buttons) or update: a quiet informational delivery, never an approval request")
+    .option("--human-intent <intent>", "decision (default; shows buttons, a Confirm button if none are given), ack (the human only acknowledges it with a ✅; no buttons) or update (status, answers, information: no buttons, never an approval request)")
     .option("--human-detail-file <path>", "One explicitly authored supplemental thread reply; keep the complete action/options in --body-file")
     .option("--reply-to <qitemId>", "Post this update into an earlier qitem's Slack thread (requires --human-intent update; posts as a new top-level message instead if that thread can't be used, e.g. it is missing, or it still has an open human decision while slack explicitAnswersOnly is off; --verify reports why)")
     .option("--link <kind:ref>", "Link this request to its outcome, kind:ref with kind pr|issue|qitem (repeatable). The request's Slack thread closes once every linked outcome is finished (PR merged or closed, issue closed, qitem done or canceled)", collectLink, [] as string[])
@@ -617,6 +617,9 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
         // stderr survives an interrupted wait without adding a second JSON
         // document to stdout. This is a request identity, NOT a commit receipt.
         console.error(`Queue create request ID: ${qitemId} (not proof of persistence). ${recovery}`);
+        if (isHumanSeatSessionRef(hostResolved.destination) && opts.humanIntent === undefined && opts.confirm === undefined && humanQuestions === undefined) {
+          console.error("Warning: no --human-intent, so this posts as a decision with a Confirm button. For information or an answer use --human-intent update (no buttons); for something to acknowledge, --human-intent ack.");
+        }
         const res = await client.post<Record<string, unknown>>("/api/queue/create", {
           ...(managedSource === undefined ? { sourceSession: source } : {}),
           qitemId,
