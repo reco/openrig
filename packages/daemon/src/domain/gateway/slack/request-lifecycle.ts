@@ -122,7 +122,8 @@ export async function sweepRequests(deps: RequestLifecycleDeps, now = new Date()
     if (Number(root.threadTs) * 1000 < (deps.floorMs ?? 0)) continue;
     try {
       const item = deps.queueRepo.getById(root.conversationId);
-      if (!item || item.humanIntent === "update") continue;
+      // A thread the human started is conversation, not a request to them: nothing to close or remind.
+      if (!item || item.humanIntent === "update" || entityOf(item.sourceSession) === entityOf(root.human)) continue;
       if (item.state === "canceled") {
         await closeRequest(deps, root, "canceled-by-seat", "daemon@kernel");
         closed.push(root.conversationId);
