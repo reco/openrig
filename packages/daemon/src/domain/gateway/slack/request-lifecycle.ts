@@ -49,7 +49,7 @@ function lastPark(repo: QueueRepository, qitemId: string): { ts: string; transit
   return transitions.filter((t, i) => t.state === "blocked" && transitions[i - 1]?.state !== "blocked").at(-1);
 }
 
-const entityOf = (session: string | null | undefined): string => (session ?? "").split("@")[0] ?? "";
+export const entityOf = (session: string | null | undefined): string => (session ?? "").split("@")[0] ?? "";
 
 /** The request's asked human, as recorded on its thread when it was posted. */
 export function isRequestHuman(root: ThreadMapping, actorSession: string): boolean {

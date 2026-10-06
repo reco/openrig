@@ -30,7 +30,7 @@ import { makeInboundSenderResolver, type RegistrySurface } from "./inbound-admis
 import { ThreadSeatMap, formatPostedStamp } from "./thread-seat-map.js";
 import { attributionFromSession, buildOutboundMessage, DEFAULT_CONFIRM_DECISION } from "./message.js";
 import { makeThreadRouteResolver } from "./thread-routing.js";
-import { closeRequest, currentGateResolved, gateOpenedAt, githubLinkState, isRequestHuman, sweepRequests, type LinkState, type RequestLifecycleDeps, type RequestLink } from "./request-lifecycle.js";
+import { closeRequest, currentGateResolved, entityOf, gateOpenedAt, githubLinkState, isRequestHuman, sweepRequests, type LinkState, type RequestLifecycleDeps, type RequestLink } from "./request-lifecycle.js";
 import { startSocketInbound, type SocketInboundHandle, type WsLike } from "./socket-inbound.js";
 import { loadHumanRegistry, resolveSlackHandle } from "../human-registry.js";
 import { hasLiveHumanGate, type QueueRepository } from "../../queue-repository.js";
@@ -356,8 +356,10 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       const humanMessage = receivedMessage(item.tags);
       if (humanMessage && !item.tags?.some((t) => t.startsWith("reply-to:"))) {
         if (humanMessage.channel !== cfg.channel) return { kind: "fallback", reason: "root-other-channel", threadTs: humanMessage.ts };
-        if (item.sourceSession !== (p.destinationSession ?? "")) return { kind: "fallback", reason: "root-other-human", threadTs: humanMessage.ts };
-        threadMap.open({ threadTs: humanMessage.ts, channel: humanMessage.channel, human: item.sourceSession, seat: p.sourceSession ?? "", conversationId: item.qitemId });
+        if (entityOf(item.sourceSession) !== entityOf(p.destinationSession)) return { kind: "fallback", reason: "root-other-human", threadTs: humanMessage.ts };
+        const root = { threadTs: humanMessage.ts, channel: humanMessage.channel, human: item.sourceSession, seat: p.sourceSession ?? "", conversationId: item.qitemId };
+        threadMap.open(root);
+        opts.queueRepo.update({ qitemId: item.qitemId, actorSession: "daemon@kernel", transitionNote: formatPostedStamp({ ...root, messageTs: humanMessage.ts }) });
         return { kind: "thread", threadTs: humanMessage.ts };
       }
       if (!item.replyTo) return { kind: "fallback", reason: "root-missing", qitemId: item.qitemId };
@@ -723,7 +725,12 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       resolveSender: makeInboundSenderResolver(registry, opts.home),
       // S10 — deterministic thread routing: mapped thread → exactly the mapped seat; unmapped
       // or human-initiated → the configured orchestrator slot as an unrouted-signal row.
-      resolveRoute: makeThreadRouteResolver({ map: threadMap, unroutedDestination: cfg.inboundDestination, log }),
+      resolveRoute: makeThreadRouteResolver({ map: threadMap, unroutedDestination: cfg.inboundDestination, log,
+        isHumanStarted: (conversationId) => {
+          const item = opts.queueRepo.getById(conversationId);
+          const root = threadMap.resolveByConversation(conversationId);
+          return !!item && !!root && entityOf(item.sourceSession) === entityOf(root.human);
+        } }),
       resolveHumanReply: opts.resolveHumanReply,
       explicitAnswersOnly: cfg.explicitAnswersOnly,
       // #193 — a button click records its answer on the decision the clicked root belongs to;

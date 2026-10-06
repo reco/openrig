@@ -28,6 +28,8 @@ export function makeThreadRouteResolver(opts: {
   map: ThreadSeatMap;
   /** The orchestrator slot for unrouted signals (first-class config: inboundDestination). */
   unroutedDestination: string;
+  /** A thread the human started routes to the seat but correlates to no request. */
+  isHumanStarted?: (conversationId: string) => boolean;
   log?: (msg: string) => void;
 }): (ev: SlackEvent & { thread_ts?: string }) => InboundRoute {
   const log = opts.log ?? (() => {});
@@ -46,7 +48,8 @@ export function makeThreadRouteResolver(opts: {
         // only the conversation's newest root correlates to its current human gate.
         // Phase 1: a closed request answers nothing; its replies still reach the seat.
         const newest = opts.map.resolveByConversation(mapping.conversationId);
-        const current = mapping.state === "open" && (!newest || newest.threadTs === threadTs);
+        const current = mapping.state === "open" && (!newest || newest.threadTs === threadTs)
+          && !opts.isHumanStarted?.(mapping.conversationId);
         log(`inbound routed thread_ts=${threadTs} -> ${mapping.seat} (${routeClass}${current ? "" : ", superseded root: no gate correlation"})`);
         return {
           destination: mapping.seat,
