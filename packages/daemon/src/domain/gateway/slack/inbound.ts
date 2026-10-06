@@ -57,7 +57,7 @@ export type ConfirmOffer = (input: { offerQitemId: string; actorSession: string 
 /** Phase 1 — what a ✅ on a message decides, as classified against our own records. */
 export type ReactionTarget =
   | { kind: "confirm"; offerQitemId: string; threadTs: string }
-  | { kind: "answer"; decisionQitemId: string; threadTs: string; text: string; ack?: boolean };
+  | { kind: "answer"; decisionQitemId: string; threadTs: string; text: string };
 
 export const CHECK_REACTION = "white_check_mark";
 /** The received Slack message's identity on its inbound row, written by the gateway only. */
@@ -168,8 +168,6 @@ export interface InboundDeps {
   retireQuestionButtons?: (input: { channel: string; messageTs: string; qitemId: string }) => Promise<void>;
   /** Phase 1 — replace a confirmed offer's button with its reading. Best-effort. */
   retireConfirmOffer?: (input: { channel: string; messageTs: string; offerQitemId: string; outcome: ConfirmOutcome }) => Promise<void>;
-  /** Phase 1 — replace an acknowledged request's ✅ prompt. Best-effort. */
-  retireAck?: (input: { channel: string; messageTs: string; qitemId: string }) => Promise<void>;
   /** Phase 1 — record 👍/👎 on one of our messages from its asked human; 👎 also asks the seat
    *  for an alternative. Feedback never decides anything. */
   recordFeedback?: (input: { channel: string; messageTs: string; actorSession: string; reaction: "+1" | "-1"; key: string }) => Promise<"recorded" | "not-applicable">;
@@ -622,13 +620,6 @@ export class InboundRouter {
     } catch (e) {
       this.deps.log?.(`reaction continuation failed qitem=${target.decisionQitemId}: ${(e as Error).message}`);
       return { status: "handler-failed", reason: "reaction-continuation-failed" };
-    }
-    if (resolution === "resolved" && target.ack) {
-      try {
-        await this.deps.retireAck?.({ channel, messageTs, qitemId: target.decisionQitemId });
-      } catch (e) {
-        this.deps.log?.(`ack prompt not replaced qitem=${target.decisionQitemId}: ${(e as Error).message}`);
-      }
     }
     return resolution === "resolved" ? { status: "accepted", reason: "answered-by-reaction" } : { status: "ignored", reason: resolution ?? "resolve-unavailable" };
   }

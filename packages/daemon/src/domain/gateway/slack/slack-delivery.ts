@@ -193,7 +193,6 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
         humanQuestions: q.humanQuestions,
         humanIntent: q.humanIntent,
         humanConfirm: q.humanConfirm,
-        humanAck: q.humanAck,
         destinationSession: q.destinationSession ?? decision.entityBindingRef,
       },
       {

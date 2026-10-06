@@ -28,7 +28,7 @@ import { evidenceAttachment, subsystemSlackDeliver } from "./slack-delivery.js";
 import { InboundRouter, inboundQitemIdFor, SLACK_MESSAGE_TAG, type ReactionTarget, type SlackEvent, type SlackBlockActions, type InboundFilePort, type InboundFileResult, type StoredInboundFile, type FailedInboundFile } from "./inbound.js";
 import { makeInboundSenderResolver, type RegistrySurface } from "./inbound-admission.js";
 import { ThreadSeatMap, formatPostedStamp } from "./thread-seat-map.js";
-import { ACK_DECISION, attributionFromSession, buildOutboundMessage, DEFAULT_CONFIRM_DECISION } from "./message.js";
+import { attributionFromSession, buildOutboundMessage, DEFAULT_CONFIRM_DECISION } from "./message.js";
 import { makeThreadRouteResolver } from "./thread-routing.js";
 import { closeRequest, currentGateResolved, gateOpenedAt, githubLinkState, isRequestHuman, sweepRequests, type LinkState, type RequestLifecycleDeps, type RequestLink } from "./request-lifecycle.js";
 import { startSocketInbound, type SocketInboundHandle, type WsLike } from "./socket-inbound.js";
@@ -217,8 +217,7 @@ export function makeReactionTarget(queueRepo: QueueRepository, threadMap: Thread
     if (root) {
       const decision = queueRepo.getById(root.conversationId);
       if (!decision || decision.humanIntent === "update" || !isRequestHuman(root, actorSession)) return null;
-      if (decision.humanAck) return { kind: "answer", decisionQitemId: decision.qitemId, threadTs: messageTs, text: ACK_DECISION, ack: true };
-      // With explicit answers every other decision carries buttons, and ✅ on it does nothing.
+      // With explicit answers every decision carries buttons, and ✅ on it does nothing.
       if (explicitAnswersOnly || decision.humanQuestions?.length || decision.humanConfirm) return null;
       return { kind: "answer", decisionQitemId: decision.qitemId, threadTs: messageTs, text: "acknowledged and agreed" };
     }
@@ -745,13 +744,6 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
           const r = await updateChatMessage(bot, { channel, ts: messageTs, ...message }, opts.fetchImpl);
           if (!r.ok) log(`question buttons not replaced qitem=${qitemId}: ${r.error}`);
         },
-        retireAck: async ({ channel, messageTs, qitemId }: { channel: string; messageTs: string; qitemId: string }) => {
-          const ack = opts.queueRepo.getById(qitemId);
-          if (!ack?.humanAck) return;
-          const message = buildOutboundMessage(ack, { ...repostInputs(ack), acknowledged: true });
-          const r = await updateChatMessage(bot, { channel, ts: messageTs, ...message }, opts.fetchImpl);
-          if (!r.ok) log(`ack prompt not replaced qitem=${qitemId}: ${r.error}`);
-        },
         retireConfirmOffer: async ({ channel, messageTs, offerQitemId, outcome }: { channel: string; messageTs: string; offerQitemId: string; outcome: import("./message.js").ConfirmOutcome }) => {
           const offer = opts.queueRepo.getById(offerQitemId);
           if (!offer) return;
@@ -769,7 +761,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       },
       confirmOffer: ({ offerQitemId, actorSession }) => {
         const offer = opts.queueRepo.getById(offerQitemId);
-        const defaultConfirm = cfg.explicitAnswersOnly && !offer?.humanConfirm && offer?.humanIntent !== "update" && !offer?.humanQuestions?.length && !offer?.humanAck;
+        const defaultConfirm = cfg.explicitAnswersOnly && !offer?.humanConfirm && offer?.humanIntent !== "update" && !offer?.humanQuestions?.length;
         const reading = offer?.humanConfirm ?? (defaultConfirm ? DEFAULT_CONFIRM_DECISION : null);
         if (!offer || !reading) return { ok: false, reason: "not-a-confirm-offer" };
         const askedRoot = threadMap.resolveByConversation(offer.humanIntent !== "update" ? offer.qitemId : offer.replyTo ?? "");

@@ -105,8 +105,8 @@ decision and shows a Confirm button. Pick the kind that fits:
   `--confirm "<the action>"`; it shows that one button;
 - a plan or long text to approve: a plain decision; it shows "Confirm";
 - a choice: `--human-questions-file` option buttons;
-- information to acknowledge: `--human-intent ack`; no buttons, the human
-  reacts ✅ ("acknowledged"); you keep working meanwhile.
+- information: `--human-intent update`; no buttons and no acknowledgement.
+  Silence means read; if the human disagrees, it arrives as a thread reply.
 On every kind the human may type instead; that reaches you as conversation.
 Each received message shows 👀 in Slack until you handle it: answer in its
 thread (`--reply-to`) or close its row; either takes the 👀 off. Always answer.
@@ -116,8 +116,8 @@ put the action on a button with
 `--confirm "<call to action>"` on the decision itself (e.g. "Build it", "Write the
 issue"); a click approves with exactly that text. The decision resolves, once,
 on a button click, a reply starting with `answer:`, a Confirm click (with
-exactly your stated reading), or a ✅ from the asked human (on an acknowledgement
-request it means "acknowledged"; on a decision with buttons it does nothing). After a click, the buttons
+exactly your stated reading), or a ✅ on a Confirm offer (a ✅ on a decision's own
+message does nothing). After a click, the buttons
 turn into the outcome; an offer that lost to another answer shows "Not used". Answering does not close the request. Link its outcome with
 `--link pr:<url>`, `--link issue:<url>` or `--link qitem:<id>` on `rig queue
 update` or `create`: the thread closes once every linked outcome is finished, or

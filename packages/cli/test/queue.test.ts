@@ -226,10 +226,14 @@ describe("rig queue CLI", () => {
     expect(calls.find((c) => c.path === "/api/queue/create")?.body).toMatchObject({ humanIntent: "update", replyTo: "qitem-earlier" });
   });
 
-  it("create --human-intent ack sends a decision that only asks for an acknowledgement", async () => {
+  it("create --human-intent ack fails locally and points to update", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
     const { deps, calls } = makeDeps();
     await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "human-founder@external", "--body", "Restarted.", "--human-intent", "ack", "--json"]);
-    expect(calls.find((c) => c.path === "/api/queue/create")?.body).toMatchObject({ humanIntent: "decision", humanAck: true });
+    expect(calls.find((c) => c.path === "/api/queue/create")).toBeUndefined();
+    expect(err.mock.calls.flat().join("\n")).toMatch(/human_intent_ack_removed.*--human-intent update/s);
+    err.mockRestore();
+    process.exitCode = 0;
   });
 
   it("create to a human without an intent or buttons warns that it will show a Confirm button", async () => {

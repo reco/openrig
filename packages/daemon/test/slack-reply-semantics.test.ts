@@ -130,26 +130,8 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(JSON.stringify(updates.find((u) => u.ts === "1.1")?.blocks)).not.toContain("or-confirm");
     });
 
-    const ackRequest = async () => {
-      const ack = await repo.create({ ...request, summary: "Test daemon restarted", body: "17433 now runs the new build.", humanIntent: "decision", humanAck: true });
-      await deliver(ack.qitemId);
-      return { ackId: ack.qitemId, root: `${posts.length}.1` };
-    };
-
-    it("an ack has no buttons, asks for ✅, and ✅ records acknowledged once", async () => {
-      const { ackId, root } = await ackRequest();
-      expect(JSON.stringify(posts.at(-1)?.blocks)).not.toContain("or-confirm");
-      expect(String(posts.at(-1)?.text)).toContain("React ✅ when seen.");
-      expect(await react(root)).toMatchObject({ status: "accepted" });
-      await react(root);
-      expect(repo.getById(ackId)?.state).toBe("done");
-      expect(decisions).toEqual(["acknowledged"]);
-      expect(String(updates.find((u) => u.ts === root)?.text)).toContain("Acknowledged.");
-    });
-
-    it("refuses an ack that also carries buttons", async () => {
-      await expect(repo.create({ ...request, humanIntent: "decision", humanAck: true, humanConfirm: "Go" })).rejects.toMatchObject({ code: "invalid_human_ack" });
-      await expect(repo.create({ ...request, humanIntent: "update", humanAck: true })).rejects.toMatchObject({ code: "invalid_human_ack" });
+    it("refuses an acknowledgement request: information needs no acknowledgement", async () => {
+      await expect(repo.create({ ...request, humanIntent: "decision", humanAck: true })).rejects.toMatchObject({ code: "invalid_human_ack" });
     });
 
     it("👍 and 👎 are recorded as feedback and never decide; 👎 asks the seat for an alternative", async () => {
@@ -390,13 +372,6 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(decisions).toEqual([]);
     });
 
-    it("an ack resolves once across a replayed ✅ and a second ✅", async () => {
-      const { ackId, root } = await ackRequest();
-      expect(await react(root, { envelopeId: "e-r1" })).toMatchObject({ status: "accepted" });
-      socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-r1", type: "events_api", payload: { event: { type: "reaction_added", user: "UFOUNDER", reaction: "white_check_mark", item: { type: "message", channel: "C-TEST", ts: root } } } }) });
-      await react(root);
-      expect(repo.transitionLog.listForQitem(ackId).filter((t) => t.ownerNotificationKind === "human-decision-resolved")).toHaveLength(1);
-    });
 
     it("ignores other emoji, other people's ✅, and ✅ on someone else's message", async () => {
       await say("Which one?", "2032.1");
@@ -523,10 +498,8 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-group", type: "events_api", payload: { event: { type: "message", channel_type: "group", user: "UFOUNDER", text: "Private question?", ts: "2300.1", thread_ts: "1.1", channel: "C-TEST" } } }) });
       await vi.waitFor(() => expect(finals("e-group")).toHaveLength(1));
       expect(toSeat().find((q) => q.body.includes("Private question?"))?.tags).toContain("conversation");
-      const ack = await repo.create({ ...request, summary: "Private ack", humanIntent: "decision", humanAck: true });
-      await deliver(ack.qitemId);
-      expect(await react(`${posts.length}.1`)).toMatchObject({ status: "accepted" });
-      expect(repo.getById(ack.qitemId)?.state).toBe("done");
+      expect(await react("2300.1")).toMatchObject({ status: "accepted" });
+      expect(decisions).toEqual(["Private question?"]);
     });
 
     it("puts 👀 on each message of the human's that lands, once", async () => {

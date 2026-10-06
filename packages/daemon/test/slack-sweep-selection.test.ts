@@ -66,7 +66,7 @@ describe("Slack sweep selection", () => {
     expect(selected.map(q => q.qitemId)).toEqual(["resolved", "blocked", "alias", "direct"]);
     expect(selected.find(q => q.qitemId === "direct")).toEqual({ qitemId: "direct", destinationSession: "human-owner@external",
       sourceSession: "author@rig", tags: [], state: "pending", tier: null, humanIntent: null, humanDetail: "full detail",
-      replyTo: "prior", humanQuestions: questions, humanConfirm: null, humanAck: false, summary: "summary direct", body: "full body direct", evidenceRef: null,
+      replyTo: "prior", humanQuestions: questions, humanConfirm: null, summary: "summary direct", body: "full body direct", evidenceRef: null,
       notificationKey: direct, ownerNotificationKind: "human-required", ownerNotificationLevel: "ALERT" });
     expect(selected.slice(0, 2).map(q => q.sourceSession)).toEqual(["worker@rig", "worker@rig"]);
     expect((await ports().listHumanAlerts({ minimumLevel: "ALERT" })).map(q => q.qitemId)).toEqual(["blocked", "direct"]);

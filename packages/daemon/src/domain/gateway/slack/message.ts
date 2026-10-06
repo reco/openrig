@@ -22,8 +22,6 @@ export interface QitemLike {
   humanIntent?: "decision" | "update" | null;
   /** Phase 1 — a reading the human confirms with one click (an update replying to a decision). */
   humanConfirm?: string | null;
-  /** Phase 1 — the human only acknowledges this request with a ✅; it carries no buttons. */
-  humanAck?: boolean | null;
 }
 
 /** M1 A5b — an outbound image attachment. A media-bearing OutboundDecision carries these;
@@ -63,8 +61,6 @@ export interface OutboundMessageOpts {
   /** Phase 1: the offer's button is replaced by its outcome: confirmed, or not used because the
    *  decision was made another way. */
   confirmOutcome?: ConfirmOutcome;
-  /** Phase 1: the acknowledgement request was acknowledged; its ✅ prompt is replaced. */
-  acknowledged?: boolean;
   /** Phase 1: every question is answered; the button rows are replaced by the answers. */
   answered?: boolean;
 }
@@ -119,12 +115,10 @@ export const OPTION_ACTION_PREFIX = "or-opt:";
 export const CONFIRM_BLOCK_PREFIX = "or-confirm:";
 export const CONFIRM_ACTION_ID = "or-confirm";
 export type ConfirmOutcome = "confirmed" | "not-used";
-const ACK_PROMPT = "React ✅ when seen.";
 const TYPED_REPLY_HINT = "Or reply in this thread with your own answer.";
 /** Phase 1: a decision that brings no buttons of its own gets this one. */
 export const DEFAULT_CONFIRM_LABEL = "Confirm";
 export const DEFAULT_CONFIRM_DECISION = "confirmed";
-export const ACK_DECISION = "acknowledged";
 
 /** Parse a clicked button back into its question and option ids; null if it is not ours. */
 export function parseQuestionAction(blockId: unknown, actionId: unknown): { questionId: string; optionId: string } | null {
@@ -318,18 +312,16 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
   const questionParts = !q.humanQuestions?.length ? null
     : opts.answered ? buildAnsweredBlocks(q.humanQuestions, q.humanAnswers ?? {})
     : buildQuestionBlocks(q.humanQuestions, explicit ? null : TYPED_REPLY_HINT);
-  const confirmText = q.humanConfirm ?? (explicit && q.humanIntent !== "update" && !q.humanQuestions?.length && !q.humanAck ? DEFAULT_CONFIRM_LABEL : null);
+  const confirmText = q.humanConfirm ?? (explicit && q.humanIntent !== "update" && !q.humanQuestions?.length ? DEFAULT_CONFIRM_LABEL : null);
   const confirmParts = confirmText ? buildConfirmBlocks(q.qitemId, confirmText, opts.confirmOutcome, q.humanIntent !== "update") : null;
-  const ackText = q.humanAck && q.humanIntent !== "update" ? (opts.acknowledged ? "Acknowledged." : ACK_PROMPT) : null;
   if (opts.extraBlocks?.length) {
     throw new HumanMessageShapeError("Extra blocks have no complete accessible fallback. Use mediaRefs for images or author supplemental human detail.");
   }
-  const text = bounded([headline, body, questionParts?.text, confirmParts?.text, ackText, attr, evidence ? evidence.text : null, attachmentText, opts.reconcileMarker].filter(Boolean).join("\n"), SLACK_TEXT_CAP, "complete fallback");
+  const text = bounded([headline, body, questionParts?.text, confirmParts?.text, attr, evidence ? evidence.text : null, attachmentText, opts.reconcileMarker].filter(Boolean).join("\n"), SLACK_TEXT_CAP, "complete fallback");
   const blocks: unknown[] = headline ? [{ type: "section", text: { type: "mrkdwn", text: headline } }] : [];
   if (body.trim()) blocks.push({ type: "section", text: { type: "mrkdwn", text: body } });
   if (questionParts) blocks.push(...questionParts.blocks);
   if (confirmParts) blocks.push(...confirmParts.blocks);
-  if (ackText) blocks.push({ type: "section", text: { type: "mrkdwn", text: ackText } });
   blocks.push(...imageBlocks);
   if (evidence) blocks.push(evidence.block);
   blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: attr }] });

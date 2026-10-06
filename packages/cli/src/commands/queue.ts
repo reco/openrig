@@ -459,7 +459,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--id <qitemId>", "Retry identity: reuse for the same create after an unknown outcome; otherwise generated and printed before sending")
     .option("--target-repo <name>", "PL-007: typed repo scope (must match a repo in the source rig's RigSpec.workspace.repos[])")
     .option("--summary <text>", "Short human-readable subject, shown in the needs-you view. For a human destination, --body-file is the complete decision brief or update; keep technical continuation in the owning agent row and evidence.")
-    .option("--human-intent <intent>", "decision (default; shows buttons, a Confirm button if none are given), ack (the human only acknowledges it with a ✅; no buttons) or update (status, answers, information: no buttons, never an approval request)")
+    .option("--human-intent <intent>", "decision (default; shows buttons, a Confirm button if none are given) or update (status, answers, information: no buttons and no acknowledgement; silence means read)")
     .option("--human-detail-file <path>", "One explicitly authored supplemental thread reply; keep the complete action/options in --body-file")
     .option("--reply-to <qitemId>", "Post this update into an earlier qitem's Slack thread (requires --human-intent update; posts as a new top-level message instead if that thread can't be used, e.g. it is missing, or it still has an open human decision while slack explicitAnswersOnly is off; --verify reports why)")
     .option("--link <kind:ref>", "Link this request to its outcome, kind:ref with kind pr|issue|qitem (repeatable). The request's Slack thread closes once every linked outcome is finished (PR merged or closed, issue closed, qitem done or canceled)", collectLink, [] as string[])
@@ -524,6 +524,13 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
           emitBodyResolveError(err as Error & { fact?: string; consequence?: string; action?: string }, opts.json ?? false);
           return;
         }
+      }
+      if (opts.humanIntent === "ack") {
+        const message = "human_intent_ack_removed: --human-intent ack was removed. Information needs no acknowledgement (reading it counts; disagreement arrives as a thread reply). Use --human-intent update.";
+        if (opts.json) console.error(JSON.stringify({ error: "human_intent_ack_removed", message }));
+        else console.error(message);
+        process.exitCode = 1;
+        return;
       }
       // #96: a thread root routes replies to the item that opened it, so only an update
       // (which never takes a reply) may join another item's thread. Fail before the daemon.
@@ -625,8 +632,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
           qitemId,
           destinationSession: hostResolved.destination,
           body: resolvedBody,
-          humanIntent: opts.humanIntent === "ack" ? "decision" : opts.humanIntent,
-          ...(opts.humanIntent === "ack" ? { humanAck: true } : {}),
+          humanIntent: opts.humanIntent,
           humanDetail: opts.humanDetailFile ? await resolveQueueBody({ bodyFile: opts.humanDetailFile }) : undefined,
           replyTo: opts.replyTo,
           humanQuestions,
