@@ -461,7 +461,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--summary <text>", "Short human-readable subject, shown in the needs-you view. For a human destination, --body-file is the complete decision brief or update; keep technical continuation in the owning agent row and evidence.")
     .option("--human-intent <intent>", "decision (default; shows buttons, a Confirm button if none are given) or update (status, answers, information: no buttons and no acknowledgement; silence means read)")
     .option("--human-detail-file <path>", "One explicitly authored supplemental thread reply; keep the complete action/options in --body-file")
-    .option("--reply-to <qitemId>", "Post this update into an earlier qitem's Slack thread (requires --human-intent update; posts as a new top-level message instead if that thread can't be used, e.g. it is missing, or it still has an open human decision while slack explicitAnswersOnly is off; --verify reports why)")
+    .option("--reply-to <qitemId>", "Post this update, or a decision with its own buttons (--confirm or --human-questions-file), into an earlier qitem's Slack thread (an update needs --human-intent update; posts as a new top-level message instead if that thread can't be used, e.g. it is missing, or it still has an open human decision while slack explicitAnswersOnly is off; --verify reports why)")
     .option("--link <kind:ref>", "Link this request to its outcome, kind:ref with kind pr|issue|qitem (repeatable). The request's Slack thread closes once every linked outcome is finished (PR merged or closed, issue closed, qitem done or canceled)", collectLink, [] as string[])
     .option("--confirm <reading>", "A one-click answer that resolves with exactly this text. On a decision: the approve button's call to action, at most 75 characters (e.g. \"Build it\", \"Write the issue\"). On an update with --reply-to <decision>: your reading of their answer, shown with a Confirm button")
     .option("--human-questions-file <path>", "#193: JSON array of 1-4 questions for a decision, each {id, question, options: [{id, label, recommended?}]} with 2-4 options; Slack shows them as buttons")
@@ -534,8 +534,8 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       }
       // #96: a thread root routes replies to the item that opened it, so only an update
       // (which never takes a reply) may join another item's thread. Fail before the daemon.
-      if (opts.replyTo !== undefined && opts.humanIntent !== "update") {
-        const message = "reply_to_requires_update: --reply-to is accepted only with --human-intent update; a decision keeps its own thread so its reply stays unambiguous.";
+      if (opts.replyTo !== undefined && opts.humanIntent !== "update" && opts.confirm === undefined && opts.humanQuestionsFile === undefined) {
+        const message = "reply_to_requires_update: --reply-to is accepted with --human-intent update, or on a decision with its own buttons (--confirm or --human-questions-file); a plain decision keeps its own thread so its reply stays unambiguous.";
         if (opts.json) console.error(JSON.stringify({ error: "reply_to_requires_update", message }));
         else console.error(message);
         process.exitCode = 1;

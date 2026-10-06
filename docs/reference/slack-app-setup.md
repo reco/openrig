@@ -64,8 +64,8 @@ groups:
   `rig slack verify` checks these.
 - **Feature scopes**: `files:read` (download attachments people send), `files:write` (upload
   attachments to Slack), `app_mentions:read` (receive @-mentions of the app), `reactions:read`
-  (receive a ✅ that answers a decision), `reactions:write` (put 👀 on each received message until the
-  seat has handled it), and `groups:history` / `groups:read` (use a private
+  (receive a ✅ that answers a decision), `reactions:write` (put 👀 on each received message, 🤔 once
+  the seat starts on it, removed when handled), and `groups:history` / `groups:read` (use a private
   channel: its messages, history and membership check). `rig slack verify` warns when one of these is missing (if
   Slack returns the granted scopes) but does not require them, so a READY from verify does not
   prove attachments, mentions, reactions or a private channel will work.

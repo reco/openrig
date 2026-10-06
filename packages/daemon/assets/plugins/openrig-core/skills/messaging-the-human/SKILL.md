@@ -107,9 +107,12 @@ decision and shows a Confirm button. Pick the kind that fits:
 - a choice: `--human-questions-file` option buttons;
 - information: `--human-intent update`; no buttons and no acknowledgement.
   Silence means read; if the human disagrees, it arrives as a thread reply.
+A decision with buttons of its own (`--confirm` or `--human-questions-file`) may
+also go into an earlier request's thread with `--reply-to`; its clicks answer it,
+not the thread's request.
 On every kind the human may type instead; that reaches you as conversation.
-Each received message shows 👀 in Slack until you handle it: answer in its
-thread (`--reply-to`) or close its row; either takes the 👀 off. Always answer.
+Each received message shows 👀 in Slack, 🤔 once you claim its row, and nothing
+once you answer in its thread (`--reply-to`) or close its row. Always answer.
 👍/👎 on any of your messages is feedback, never a decision; on 👎
 you get a row: propose an alternative, do not ask why. For a yes/go decision,
 put the action on a button with

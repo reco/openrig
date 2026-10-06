@@ -608,6 +608,33 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(repo.transitionLog.listForQitem(decisionId).filter((t) => t.transitionNote?.startsWith("human-feedback "))).toHaveLength(1);
     });
 
+    it("a decision with an action button can be posted in an earlier request's thread, and its click decides it", async () => {
+      const followUp = await repo.create({ ...request, summary: "Build the CSV export now?", body: "Spec is done.", humanIntent: "decision", replyTo: decisionId, humanConfirm: "Build it" });
+      await deliver(followUp.qitemId);
+      const ts = `${posts.length}.1`;
+      expect(posts.at(-1)?.thread_ts).toBe("1.1");
+      expect(JSON.stringify(posts.at(-1)?.blocks)).toContain(`or-confirm:${followUp.qitemId}`);
+      expect(await click(`or-confirm:${followUp.qitemId}`, "or-confirm", ts, "UFOUNDER", "3800.1", "1.1")).toMatchObject({ status: "accepted" });
+      expect(decisions).toEqual(["Build it"]);
+      expect(repo.getById(followUp.qitemId)?.state).toBe("done");
+      expect(repo.getById(decisionId)?.state).toBe("pending");
+    });
+
+    it("option buttons in a thread record their answers on the decision they belong to", async () => {
+      const followUp = await repo.create({ ...request, summary: "Which day?", body: "Pick one.", humanIntent: "decision", replyTo: decisionId,
+        humanQuestions: [{ id: "day", question: "Launch day?", options: [{ id: "mon", label: "Mon" }, { id: "tue", label: "Tue" }] }] });
+      await deliver(followUp.qitemId);
+      const ts = `${posts.length}.1`;
+      expect(posts.at(-1)?.thread_ts).toBe("1.1");
+      expect(await click("or-q:day", "or-opt:tue", ts, "UFOUNDER", "3810.1", "1.1")).toMatchObject({ status: "accepted" });
+      expect(repo.getById(followUp.qitemId)).toMatchObject({ state: "done", humanAnswers: { day: "tue" } });
+      expect(repo.getById(decisionId)?.state).toBe("pending");
+    });
+
+    it("refuses a thread-reply decision without buttons of its own", async () => {
+      await expect(repo.create({ ...request, humanIntent: "decision", replyTo: decisionId })).rejects.toMatchObject({ code: "reply_to_requires_update" });
+    });
+
     it("an empty `answer:` is conversation, not a resolution", async () => {
       await say("answer:   ", "2005.1");
       expect(repo.getById(decisionId)?.state).toBe("pending");

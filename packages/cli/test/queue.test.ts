@@ -248,6 +248,12 @@ describe("rig queue CLI", () => {
     err.mockRestore();
   });
 
+  it("create --reply-to with a decision is allowed when it carries --confirm", async () => {
+    const { deps, calls } = makeDeps();
+    await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "human-founder@external", "--body", "Build?", "--reply-to", "qitem-earlier", "--confirm", "Build it", "--json"]);
+    expect(calls.find((c) => c.path === "/api/queue/create")?.body).toMatchObject({ replyTo: "qitem-earlier", humanConfirm: "Build it" });
+  });
+
   it("create --confirm sends the reading as humanConfirm", async () => {
     const { deps, calls } = makeDeps();
     await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "human-founder@external", "--body", "My reading.", "--human-intent", "update", "--reply-to", "qitem-decision", "--confirm", "Ship the schema migration only.", "--json"]);

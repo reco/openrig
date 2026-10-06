@@ -173,6 +173,8 @@ export interface InboundDeps {
   recordFeedback?: (input: { channel: string; messageTs: string; actorSession: string; reaction: "+1" | "-1"; key: string }) => Promise<"recorded" | "not-applicable">;
   /** Phase 1 — record that this offer's click resolved its decision (so only it shows Confirmed). */
   markConfirmWon?: (offerQitemId: string) => void;
+  /** The qitem whose Slack post has this message ts (our own posts only). */
+  postedQitem?: (messageTs: string) => string | null;
   /** Phase 1 — classify the message an admitted human added ✅ to; null = it decides nothing. */
   reactionTarget?: (input: { channel: string; messageTs: string; actorSession: string }) => ReactionTarget | null;
   /** #193 — clicks whose continuation (reply row + resolve) failed; retried with the event
@@ -418,7 +420,9 @@ export class InboundRouter {
     }
     const rootTs = clickedRootTs(payload);
     const route = rootTs ? this.deps.resolveRoute?.({ type: "message", thread_ts: rootTs, channel: payload.channel?.id }) : undefined;
-    const qitemId = route?.correlationQitemId;
+    // Buttons on a decision posted inside another item's thread answer that decision, not the thread's item.
+    const clickedTs = payload.container?.message_ts ?? payload.message?.ts;
+    const qitemId = (clickedTs ? this.deps.postedQitem?.(clickedTs) : null) ?? route?.correlationQitemId;
     if (!rootTs || !route || !qitemId) return { status: "ignored", reason: "unmapped-message" };
     const recorded = this.deps.recordHumanAnswer?.({ qitemId, actorSession: who.source, ...picked });
     if (!recorded || recorded.status !== "recorded") {
@@ -494,7 +498,8 @@ export class InboundRouter {
     if (!route?.correlationQitemId) return { status: "ignored", reason: "unmapped-message" };
     const offer = this.deps.confirmOffer?.({ offerQitemId, actorSession });
     if (!offer?.ok) return { status: "refused", reason: offer?.reason ?? "confirm-unavailable" };
-    if (offer.decisionQitemId !== route.correlationQitemId) return { status: "ignored", reason: "offer-not-in-this-thread" };
+    const ownPostInThread = offer.decisionQitemId === offerQitemId && !!offerTs && this.deps.postedQitem?.(offerTs) === offerQitemId;
+    if (offer.decisionQitemId !== route.correlationQitemId && !ownPostInThread) return { status: "ignored", reason: "offer-not-in-this-thread" };
     const previous = this.confirmChains.get(offer.decisionQitemId) ?? Promise.resolve();
     const run = previous.catch(() => {}).then(() => this.confirmInTurn(actorSession, offerQitemId, route, channel, offerTs));
     this.confirmChains.set(offer.decisionQitemId, run);

@@ -1575,7 +1575,7 @@ export class QueueRepository {
       }
       if (!this.hasHumanIntentColumn) throw new QueueRepositoryError("invalid_human_notification", "Human notification fields require the current queue schema; they were not saved.");
     }
-    if (input.replyTo != null) this.validateReplyTo(input.replyTo, input.humanIntent);
+    if (input.replyTo != null) this.validateReplyTo(input.replyTo, input);
     let humanQuestions: HumanQuestion[] | null = null;
     if (input.humanQuestions != null) {
       if (!isHumanSeatSessionRef(input.destinationSession)) {
@@ -1683,9 +1683,12 @@ export class QueueRepository {
     if (!this.hasHumanConfirmColumn) throw fail("humanConfirm requires the current queue schema; it was not saved.");
   }
 
-  private validateReplyTo(replyTo: string, humanIntent: QueueCreateInput["humanIntent"]): void {
-    if (humanIntent !== "update") {
-      throw new QueueRepositoryError("reply_to_requires_update", "replyTo is accepted only with humanIntent update; a decision keeps its own thread so its reply stays unambiguous.");
+  private validateReplyTo(replyTo: string, input: QueueCreateInput): void {
+    // A decision may join another item's thread only with buttons of its own: a click names the
+    // decision it belongs to, while a typed reply in that thread belongs to the thread's item.
+    const ownButtons = input.humanConfirm != null || input.humanQuestions != null;
+    if (input.humanIntent !== "update" && !ownButtons) {
+      throw new QueueRepositoryError("reply_to_requires_update", "replyTo is accepted on an update, or on a decision with its own buttons (humanConfirm or humanQuestions); a plain decision keeps its own thread so its reply stays unambiguous.");
     }
     if (!this.hasReplyToColumn) throw new QueueRepositoryError("invalid_human_notification", "replyTo requires the current queue schema; it was not saved.");
     if (!this.getById(replyTo)) throw new QueueRepositoryError("reply_to_not_found", `replyTo names no qitem on this host: ${replyTo}.`);
