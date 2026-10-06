@@ -276,7 +276,9 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
     it("escapes the human's cancel reason in the closing line", async () => {
       await say("cancel: <!channel> not needed", "2042.1");
       const closing = posts.find((p) => p.thread_ts === "1.1" && /closed/i.test(String(p.text)));
+      expect(closing).toBeDefined();
       expect(String(closing?.text)).not.toContain("<!channel>");
+      expect(String(closing?.text)).toContain("&lt;!channel&gt;");
     });
 
     it("an empty `answer:` is conversation, not a resolution", async () => {
