@@ -34,6 +34,9 @@ export interface SlackConnectorConfig {
   queueUrl: string | null;
   minimumLevelThatPosts: OwnerNotificationLevel;
   minimumLevelThatInterrupts: OwnerNotificationLevel;
+  /** Phase 1: a typed thread reply is conversation; only a button, an `answer:` reply or a ✅
+   *  resolves a decision. False keeps the #96 contract: any typed reply answers the decision. */
+  explicitAnswersOnly: boolean;
 }
 
 export const DEFAULT_CONFIG: SlackConnectorConfig = {
@@ -47,6 +50,7 @@ export const DEFAULT_CONFIG: SlackConnectorConfig = {
   queueUrl: null,
   minimumLevelThatPosts: "NOTICE",
   minimumLevelThatInterrupts: "ALERT",
+  explicitAnswersOnly: true,
 };
 
 function validateLevel(field: string, value: unknown): asserts value is OwnerNotificationLevel {

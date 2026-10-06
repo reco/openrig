@@ -27,6 +27,8 @@ export interface SubsystemSlackDeliveryOpts {
   channel: string;
   sourceLabel: string; // host/box/rig — from config, never hardcoded (item 7)
   bodyExcerpt?: number;
+  /** Phase 1: decisions tell their human that only an `answer:` reply decides. */
+  answerHint?: boolean;
   fetchImpl?: FetchImpl;
   /** decisionId-keyed delivered-store (idempotent redelivery: replay re-acks, never re-posts). */
   delivered: SeenStore;
@@ -189,10 +191,12 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
         summary: q.summary,
         body: q.body,
         humanQuestions: q.humanQuestions,
+        humanIntent: q.humanIntent,
         destinationSession: q.destinationSession ?? decision.entityBindingRef,
       },
       {
         sourceLabel: opts.sourceLabel,
+        answerHint: opts.answerHint,
         bodyExcerpt: opts.bodyExcerpt,
         mediaRefs,
         evidenceLink,
@@ -415,6 +419,7 @@ export function subsystemSlackDeliver(opts: SubsystemSlackDeliveryOpts): Subsyst
         const partEvidence = evidenceAttachment(part.media, part.evidenceRef, part.summary);
         buildOutboundMessage(part, {
           sourceLabel: opts.sourceLabel,
+          answerHint: opts.answerHint,
           attribution: attributionFromSession(part.sourceSession),
           mentionUserId: index === 0 ? opts.resolveMentionUserId?.(q) : undefined,
           reconcileMarker: reconcileToken(partId(index)),

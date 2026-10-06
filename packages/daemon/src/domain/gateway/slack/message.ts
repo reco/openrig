@@ -18,6 +18,7 @@ export interface QitemLike {
   destinationSession?: string | null;
   /** #193 — structured questions, rendered as one button row per question. */
   humanQuestions?: readonly HumanQuestion[] | null;
+  humanIntent?: "decision" | "update" | null;
 }
 
 /** M1 A5b — an outbound image attachment. A media-bearing OutboundDecision carries these;
@@ -51,6 +52,8 @@ export interface OutboundMessageOpts {
   mentionUserId?: string;
   /** Stable decision/part identity. Included in the complete fallback budget. */
   reconcileMarker?: string;
+  /** Phase 1: a decision tells its human that only an `answer:` reply decides. */
+  answerHint?: boolean;
 }
 
 /** A1.2 — the four attribution fields. */
@@ -101,6 +104,7 @@ export function buildImageBlocks(mediaRefs: readonly SlackMediaRef[] | undefined
 export const QUESTION_BLOCK_PREFIX = "or-q:";
 export const OPTION_ACTION_PREFIX = "or-opt:";
 const TYPED_REPLY_HINT = "Or reply in this thread with your own answer.";
+const ANSWER_HINT = "To decide, reply in this thread starting with `answer:`. Other replies go to the asking seat as conversation.";
 
 /** Parse a clicked button back into its question and option ids; null if it is not ours. */
 export function parseQuestionAction(blockId: unknown, actionId: unknown): { questionId: string; optionId: string } | null {
@@ -113,7 +117,7 @@ export function parseQuestionAction(blockId: unknown, actionId: unknown): { ques
 
 /** #193 — the questions as blocks (a section, then a button row, per question) plus the
  *  complete text they must also appear as in the accessible fallback. */
-function buildQuestionBlocks(questions: readonly HumanQuestion[]): { blocks: unknown[]; text: string } {
+function buildQuestionBlocks(questions: readonly HumanQuestion[], hint: string): { blocks: unknown[]; text: string } {
   const blocks: unknown[] = [];
   const lines: string[] = [];
   for (const q of questions) {
@@ -132,8 +136,8 @@ function buildQuestionBlocks(questions: readonly HumanQuestion[]): { blocks: unk
     });
     lines.push(question, ...q.options.map((o) => `• ${inert(o.label)}${o.recommended ? " (recommended)" : ""}`));
   }
-  blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: TYPED_REPLY_HINT }] });
-  lines.push(TYPED_REPLY_HINT);
+  blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: hint }] });
+  lines.push(hint);
   return { blocks, text: lines.join("\n") };
 }
 
@@ -244,14 +248,17 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
   const imageBlocks = buildImageBlocks(opts.mediaRefs);
   const attachmentText = imageBlocks.map((b) => `Image: ${(b as { alt_text: string }).alt_text}`).join("\n");
   const evidence = buildEvidenceLink(opts.evidenceLink);
-  const questionParts = q.humanQuestions?.length ? buildQuestionBlocks(q.humanQuestions) : null;
+  const answerHint = opts.answerHint && q.humanIntent !== "update" ? ANSWER_HINT : null;
+  const questionParts = q.humanQuestions?.length ? buildQuestionBlocks(q.humanQuestions, answerHint ?? TYPED_REPLY_HINT) : null;
+  const plainHint = questionParts ? null : answerHint;
   if (opts.extraBlocks?.length) {
     throw new HumanMessageShapeError("Extra blocks have no complete accessible fallback. Use mediaRefs for images or author supplemental human detail.");
   }
-  const text = bounded([headline, body, questionParts?.text, attr, evidence ? evidence.text : null, attachmentText, opts.reconcileMarker].filter(Boolean).join("\n"), SLACK_TEXT_CAP, "complete fallback");
+  const text = bounded([headline, body, questionParts?.text, plainHint, attr, evidence ? evidence.text : null, attachmentText, opts.reconcileMarker].filter(Boolean).join("\n"), SLACK_TEXT_CAP, "complete fallback");
   const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: headline } }];
   if (body.trim()) blocks.push({ type: "section", text: { type: "mrkdwn", text: body } });
   if (questionParts) blocks.push(...questionParts.blocks);
+  if (plainHint) blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: plainHint }] });
   blocks.push(...imageBlocks);
   if (evidence) blocks.push(evidence.block);
   blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: attr }] });

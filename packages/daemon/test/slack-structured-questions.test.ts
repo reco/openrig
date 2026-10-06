@@ -1,7 +1,7 @@
 // #193 — a decision may carry 1–4 structured questions, each with 2–4 clickable options.
 // Slack renders them as buttons; a click (block_actions over Socket Mode) records that
 // question's answer on the same item, and the decision resolves once every question has one.
-// A typed reply in the thread still resolves the decision as before ("Other").
+// An `answer:` reply in the thread resolves the decision with free text ("Other").
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -319,8 +319,8 @@ describe("structured human questions (#193)", () => {
       expect(threadAcks().some((t) => t.startsWith("All answered"))).toBe(false);
     });
 
-    it("still resolves on a typed reply in the thread (the \"Other\" answer)", async () => {
-      socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-typed", type: "events_api", payload: { event: { type: "message", user: "UFOUNDER", text: "Neither — use DuckDB", ts: "3000.1", thread_ts: "1.1", channel: "C-TEST" } } }) });
+    it("resolves on an `answer:` reply in the thread (the \"Other\" answer)", async () => {
+      socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-typed", type: "events_api", payload: { event: { type: "message", user: "UFOUNDER", text: "answer: Neither — use DuckDB", ts: "3000.1", thread_ts: "1.1", channel: "C-TEST" } } }) });
       await vi.waitFor(() => expect(repo.getById(decisionId)?.state).toBe("done"));
       expect(repliesToSeat()[0]?.body).toContain("Neither — use DuckDB");
     });

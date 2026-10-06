@@ -109,7 +109,7 @@ export function makeHumanReplyResolver(
         actorSession: input.actorSession,
         state: "done",
         closureReason: "no-follow-on",
-        transitionNote: "direct human reply received",
+        transitionNote: `direct human reply received: ${input.decision}`,
         ownerNotificationKind: "human-decision-resolved",
       });
       return "resolved";
@@ -330,6 +330,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         botToken: bot!,
         channel: cfg.channel!,
         sourceLabel: cfg.sourceLabel,
+        answerHint: cfg.explicitAnswersOnly,
         fetchImpl: opts.fetchImpl,
         delivered,
         attempted,
@@ -576,6 +577,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       // or human-initiated → the configured orchestrator slot as an unrouted-signal row.
       resolveRoute: makeThreadRouteResolver({ map: threadMap, unroutedDestination: cfg.inboundDestination, log }),
       resolveHumanReply: opts.resolveHumanReply,
+      explicitAnswersOnly: cfg.explicitAnswersOnly,
       // #193 — a button click records its answer on the decision the clicked root belongs to;
       // a failed hand-back is retried with the event dead-letters, and each click is confirmed
       // in the decision's thread (a bot post, so inbound never ingests it).

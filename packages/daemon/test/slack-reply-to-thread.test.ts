@@ -105,7 +105,7 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
     let wire: ReturnType<typeof buildSlackGatewayWire>;
     beforeEach(() => {
       const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\n");
-      saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE" }, home);
+      saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE", explicitAnswersOnly: false }, home);
       posts = [];
       wire = buildSlackGatewayWire({ home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
       stops.push(() => wire.stop()); wire.startServices?.();
@@ -336,7 +336,7 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       const first = await repo.create({ ...request, humanIntent: "update" });
       await deliver(first.qitemId);
       wire.stop();
-      saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-OTHER", secretsEnvFile: join(home, "fake.env"), minimumLevelThatInterrupts: "NOTICE" }, home);
+      saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-OTHER", secretsEnvFile: join(home, "fake.env"), minimumLevelThatInterrupts: "NOTICE", explicitAnswersOnly: false }, home);
       wire = buildSlackGatewayWire({ home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
       stops.push(() => wire.stop()); wire.startServices?.();
       const update = await repo.create({ ...request, humanIntent: "update", replyTo: first.qitemId });

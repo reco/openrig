@@ -95,6 +95,14 @@ export interface FailedInboundFile { name: string; error: string }
 export interface InboundFileResult { stored: StoredInboundFile[]; failed: FailedInboundFile[] }
 export interface InboundFilePort { transfer(files: unknown[], eventTs: string, eventChannel?: string): Promise<InboundFileResult> }
 
+const EXPLICIT_ANSWER = /^\s*answer:\s*([\s\S]*?)\s*$/i;
+
+/** The decision text of an explicit `answer:` reply, or null when the text is not one. */
+export function explicitAnswer(text: string | undefined): string | null {
+  const answer = EXPLICIT_ANSWER.exec(text ?? "")?.[1];
+  return answer ? answer : null;
+}
+
 export function shouldIngest(ev: SlackEvent): boolean {
   return ingestDecision(ev).ingest;
 }
@@ -121,6 +129,9 @@ export interface InboundDeps {
   resolveRoute?: (ev: SlackEvent) => { destination: string; tags?: string[]; correlationQitemId?: string };
   /** Continue an exact human gate through the existing Mission Control resolve primitive. */
   resolveHumanReply?: (input: { qitemId: string; actorSession: string; decision: string }) => Promise<"resolved" | "already-resolved" | "not-applicable">;
+  /** Phase 1: only an explicit `answer:` reply resolves; other typed replies are conversation.
+   *  Absent or false keeps the #96 contract (any typed reply answers). */
+  explicitAnswersOnly?: boolean;
   /** #193 — record a clicked answer on the decision the clicked message belongs to. */
   recordHumanAnswer?: RecordHumanAnswer;
   /** #193 — clicks whose continuation (reply row + resolve) failed; retried with the event
@@ -171,6 +182,18 @@ export class InboundRouter {
       summary: `${ev.recoveredAfterGap ? "[Recovered after gap] " : ""}Founder via Slack: ${headline.slice(0, 90)}`,
       body: `${sections.filter((s) => s.length > 0).join("\n\n")}\n\n---\nSource: ${meta}${correlationQitemId ? `\nIn reply to: ${correlationQitemId}` : ""}\nRouted by openrig slack-inbound. Default destination per config; re-route via queue as needed.`,
     };
+  }
+
+  /** What a reply on a decision's thread decides: the resolve text, or null for conversation. */
+  private replyDecision(ev: SlackEvent, correlationQitemId: string | undefined): string | null {
+    if (!correlationQitemId) return null;
+    if (this.deps.explicitAnswersOnly) return explicitAnswer(ev.text);
+    return String(ev.text ?? "").trim() || "[file reply]";
+  }
+
+  private replyTags(correlationQitemId: string | undefined, decision: string | null): string[] {
+    if (!correlationQitemId || !this.deps.explicitAnswersOnly) return [];
+    return [decision ? "human-answer" : "conversation"];
   }
 
   /** Slack message ts is unique within a channel, so every inbound id uses both fields. */
@@ -241,6 +264,7 @@ export class InboundRouter {
       if (!isCurrent()) return { landed: false, reason: "inactive" };
       // S10 — deterministic route (thread map) when wired; static destination otherwise.
       const route = this.deps.resolveRoute?.(ev) ?? { destination: this.deps.destination };
+      const decision = this.replyDecision(ev, route.correlationQitemId);
       const { summary, body } = this.summaryOf(ev, transfer, route.correlationQitemId);
       let qitemId: string;
       try {
@@ -249,7 +273,7 @@ export class InboundRouter {
           source: who.source, // the REGISTERED human's canonical ref (human-class), never a raw platform id
           destination: route.destination,
           priority: "routine",
-          tags: route.tags ?? ["founder-slack", "inbound"],
+          tags: [...route.tags ?? ["founder-slack", "inbound"], ...this.replyTags(route.correlationQitemId, decision)],
           summary,
           body,
         });
@@ -258,12 +282,12 @@ export class InboundRouter {
         return { landed: false, reason: "create_failed" };
       }
       let replyResolution: "resolved" | "already-resolved" | "not-applicable" | undefined;
-      if (route.correlationQitemId && this.deps.resolveHumanReply) {
+      if (route.correlationQitemId && decision && this.deps.resolveHumanReply) {
         try {
           replyResolution = await this.deps.resolveHumanReply({
             qitemId: route.correlationQitemId,
             actorSession: who.source,
-            decision: String(ev.text ?? "").trim() || "[file reply]",
+            decision,
           });
         } catch (e) {
           this.deps.log?.(`human reply continuation failed qitem=${route.correlationQitemId} ts=${ts}: ${(e as Error).message}`);
