@@ -411,13 +411,6 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     const sep = ref?.lastIndexOf(":") ?? -1;
     return ref && sep > 0 ? { channel: ref.slice(0, sep), ts: ref.slice(sep + 1) } : null;
   };
-  // The thread a reply-posted item went into (its own posted receipt), for items without a root.
-  const postedThreadRoot = (qitemId: string) => {
-    const note = opts.queueRepo.transitionLog.listForQitem(qitemId)
-      .find((t) => t.actorSession === "daemon@kernel" && t.transitionNote?.startsWith("slack-owner-notification-posted "))?.transitionNote;
-    const threadTs = note?.split(/\s+/).find((f) => f.startsWith("thread_ts="))?.slice("thread_ts=".length);
-    return threadTs ? threadMap.resolveByThread(threadTs) : null;
-  };
   const handled = (state: string | undefined): boolean => ["done", "canceled", "handed-off", "failed", "denied"].includes(state ?? "");
   const threadAnsweredAt = new Map<string, string>(); // conversation -> last seat answer in its thread
   const RECEIPTS = ["eyes", "thinking_face"] as const;
@@ -785,7 +778,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         const reading = offer?.humanConfirm ?? (defaultConfirm ? DEFAULT_CONFIRM_DECISION : null);
         if (!offer || !reading) return { ok: false, reason: "not-a-confirm-offer" };
         const askedRoot = threadMap.resolveByConversation(offer.humanIntent !== "update" ? offer.qitemId : offer.replyTo ?? "")
-          ?? postedThreadRoot(offer.qitemId);
+          ?? threadMap.resolveByThread(opts.queueRepo.postedThreadForQitem(offer.qitemId) ?? "");
         if (!askedRoot || !isRequestHuman(askedRoot, actorSession)) return { ok: false, reason: "not-the-asked-human" };
         const decisionQitemId = offer.humanIntent !== "update" ? offer.qitemId : offer.replyTo;
         if (!decisionQitemId) return { ok: false, reason: "not-a-confirm-offer" };

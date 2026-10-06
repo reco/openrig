@@ -628,6 +628,8 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(posts.at(-1)?.thread_ts).toBe("1.1");
       expect(await click("or-q:day", "or-opt:tue", ts, "UFOUNDER", "3810.1", "1.1")).toMatchObject({ status: "accepted" });
       expect(repo.getById(followUp.qitemId)).toMatchObject({ state: "done", humanAnswers: { day: "tue" } });
+      expect(toSeat().find((q) => q.tags?.includes("human-answer"))?.tags).toEqual(expect.arrayContaining([`reply-to:${followUp.qitemId}`]));
+      expect(toSeat().find((q) => q.tags?.includes("human-answer"))?.tags).not.toContain(`reply-to:${decisionId}`);
       expect(repo.getById(decisionId)?.state).toBe("pending");
     });
 

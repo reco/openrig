@@ -3270,6 +3270,13 @@ export class QueueRepository {
     return row?.qitem_id ?? null;
   }
 
+  /** The thread root this qitem's own Slack post went into, from the daemon's posted receipt. */
+  postedThreadForQitem(qitemId: string): string | null {
+    const note = this.transitionLog.listForQitem(qitemId)
+      .find((t) => t.actorSession === "daemon@kernel" && t.transitionNote?.startsWith("slack-owner-notification-posted "))?.transitionNote;
+    return note?.split(/\s+/).find((f) => f.startsWith("thread_ts="))?.slice("thread_ts=".length) ?? null;
+  }
+
   /** The thread root a message we posted went into (its own ts for a root post). */
   postedThreadForMessage(messageTs: string): string | null {
     const qitemId = this.postedQitemForMessage(messageTs);

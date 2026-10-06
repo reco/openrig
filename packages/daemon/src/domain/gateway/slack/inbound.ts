@@ -450,7 +450,7 @@ export class InboundRouter {
         source: who.source,
         destination: route.destination,
         priority: "routine",
-        tags: [...route.tags ?? ["founder-slack", "inbound"], "human-answer"],
+        tags: [...(route.tags ?? ["founder-slack", "inbound"]).filter((t) => !t.startsWith("reply-to:")), `reply-to:${qitemId}`, "human-answer"],
         summary: `Founder via Slack: answered ${lines.length === 1 ? "1 question" : `${lines.length} questions`}`,
         body: `${lines.join("\n")}\n\n---\nAnswers (question id → option id): ${JSON.stringify(recorded.answers)}\nIn reply to: ${qitemId} (its humanAnswers field holds the same)\nRouted by openrig slack-inbound (button click).`,
       });
