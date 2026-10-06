@@ -508,6 +508,26 @@ describe("SeatHandoverService", () => {
     expect(successorBinding.codexConfigProfile).toBe("prod-sandboxed");
   });
 
+  it("a second fresh handover in the same pane rebinds the seat's own claimed discovery row", async () => {
+    const { node } = seedSeat({ runtime: "codex" });
+    const handover = () => service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh", operator: "orch-lead@seat-rig" });
+
+    expect((await handover()).ok).toBe(true);
+    const row = db.prepare("SELECT status, claimed_node_id FROM discovered_sessions WHERE tmux_session = ?").get("dev-impl@seat-rig") as { status: string; claimed_node_id: string };
+    expect(row).toEqual({ status: "claimed", claimed_node_id: node.id });
+
+    expect(await handover()).toMatchObject({ ok: true });
+  });
+
+  it("a fresh handover still refuses its pane's discovery row when another node claimed it", async () => {
+    const { rig } = seedSeat({ runtime: "codex" });
+    const other = rigRepo.addNode(rig.id, "dev.other", { runtime: "codex", cwd: "/project" });
+    const row = seedDiscovery({ tmuxSession: "dev-impl@seat-rig", tmuxPane: "%9" });
+    discoveryRepo.markClaimed(row.id, other.id);
+    const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh", operator: "orch-lead@seat-rig" });
+    expect(result).toMatchObject({ ok: false, code: "discovered_not_active" });
+  });
+
   it("composes the full cycle for a fresh source: create -> deliver -> verify -> rebind", async () => {
     const { node } = seedSeat({ runtime: "codex" });
 
