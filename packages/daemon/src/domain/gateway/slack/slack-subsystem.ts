@@ -582,6 +582,12 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       // a failed hand-back is retried with the event dead-letters, and each click is confirmed
       // in the decision's thread (a bot post, so inbound never ingests it).
       recordHumanAnswer: (input) => opts.queueRepo.recordHumanAnswer(input),
+      confirmOffer: ({ offerQitemId, actorSession }) => {
+        const offer = opts.queueRepo.getById(offerQitemId);
+        if (!offer?.humanConfirm || !offer.replyTo) return { ok: false, reason: "not-a-confirm-offer" };
+        if (offer.destinationSession !== actorSession) return { ok: false, reason: "not-the-asked-human" };
+        return { ok: true, decisionQitemId: offer.replyTo, reading: offer.humanConfirm };
+      },
       actionDeadLetter: new DeadLetterStore<SlackBlockActions>(path.join(stateDir(opts.home), "slack-inbound-action-deadletter.jsonl")),
       ...(bot ? {
         acknowledgeAnswer: async ({ channel, threadTs, text }: { channel?: string; threadTs: string; text: string }) => {

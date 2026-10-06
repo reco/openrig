@@ -68,6 +68,8 @@ export function isBlockerLive(state: string): boolean {
  *  active human-destined decision, or a row blocked on any human-class seat right now. A
  *  resolved park returns to in-progress; blocked_on alone (which the resolve verb documents
  *  keeping as provenance) is never a live gate. */
+export const MAX_HUMAN_CONFIRM = 2000;
+
 export function hasLiveHumanGate(item: {
   humanIntent?: string | null;
   state: string;
@@ -172,6 +174,9 @@ export interface QueueItem {
   humanQuestions?: HumanQuestion[] | null;
   /** #193 — answers recorded from clicks, questionId → optionId; null until the first click. */
   humanAnswers?: HumanAnswers | null;
+  /** Phase 1 — the reading this update offers its human to confirm; a click resolves the
+   *  decision it replies to with exactly this text. */
+  humanConfirm?: string | null;
   /** Short human-readable subject; null for callers that omit it. */
   summary: string | null;
   /** OPR.0.4.4.19 FR-5 — pointer to the durable artifact a human judges
@@ -225,6 +230,7 @@ interface QueueItemRow {
   reply_to?: string | null;
   human_questions?: string | null;
   human_answers?: string | null;
+  human_confirm?: string | null;
   summary: string | null;
   evidence_ref: string | null;
   closure_reason: string | null;
@@ -288,6 +294,8 @@ export interface QueueCreateInput {
   replyTo?: string | null;
   /** #193 — 1–4 structured questions; accepted only with humanIntent "decision". */
   humanQuestions?: HumanQuestion[] | null;
+  /** Phase 1 — a reading to confirm; accepted only on an update replying to a decision. */
+  humanConfirm?: string | null;
   summary?: string | null;
   /** OPR.0.4.4.19 FR-5 — optional durable-artifact pointer. Persisted when
    *  present; required at the domain layer only for human-routed items. */
@@ -691,6 +699,7 @@ export class QueueRepository {
   private readonly hasHumanIntentColumn: boolean;
   private readonly hasReplyToColumn: boolean;
   private readonly hasHumanQuestionsColumn: boolean;
+  private readonly hasHumanConfirmColumn: boolean;
   private readonly hasEvidenceRefColumn: boolean;
   private readonly hasMintingGenColumn: boolean;
   private readonly hasClaimedGenColumn: boolean;
@@ -754,6 +763,7 @@ export class QueueRepository {
     this.hasHumanIntentColumn = detectQueueColumn(db, "human_intent");
     this.hasReplyToColumn = detectQueueColumn(db, "reply_to");
     this.hasHumanQuestionsColumn = detectQueueColumn(db, "human_questions");
+    this.hasHumanConfirmColumn = detectQueueColumn(db, "human_confirm");
     this.hasEvidenceRefColumn = detectQueueColumn(db, "evidence_ref");
     this.hasQueueTransitionsTable = detectTable(db, "queue_transitions");
     const transitionColumns = this.hasQueueTransitionsTable
@@ -1568,6 +1578,7 @@ export class QueueRepository {
       if (!this.hasHumanQuestionsColumn) throw new QueueRepositoryError("invalid_human_questions", "humanQuestions require the current queue schema; they were not saved.");
       humanQuestions = parsed.questions;
     }
+    if (input.humanConfirm != null) this.validateHumanConfirm(input.humanConfirm, input);
     const id = input.qitemId ?? newQitemId();
     const ts = new Date().toISOString();
     const priority = input.priority ?? "routine";
@@ -1610,6 +1621,9 @@ export class QueueRepository {
     if (humanQuestions) {
       this.db.prepare("UPDATE queue_items SET human_questions = ? WHERE qitem_id = ?").run(JSON.stringify(humanQuestions), id);
     }
+    if (input.humanConfirm != null) {
+      this.db.prepare("UPDATE queue_items SET human_confirm = ? WHERE qitem_id = ?").run(input.humanConfirm, id);
+    }
     this.persistMintingGeneration(id, input.sourceSession);
     const notification = this.classifyOwnerNotification({
       action: "create",
@@ -1636,6 +1650,18 @@ export class QueueRepository {
       summary: input.summary ?? null,
     });
     return { qitemId: id, persistedEvent };
+  }
+
+  private validateHumanConfirm(reading: unknown, input: QueueCreateInput): void {
+    const fail = (message: string) => new QueueRepositoryError("invalid_human_confirm", message);
+    if (typeof reading !== "string" || !reading.trim()) throw fail("humanConfirm must be the nonempty reading the human confirms.");
+    if (reading.length > MAX_HUMAN_CONFIRM) throw fail(`humanConfirm is over ${MAX_HUMAN_CONFIRM} characters.`);
+    if (input.humanIntent !== "update" || input.replyTo == null) {
+      throw fail("humanConfirm is accepted only on an update replying to a decision (humanIntent update with replyTo).");
+    }
+    const target = this.getById(input.replyTo);
+    if (!target || target.humanIntent === "update") throw fail(`humanConfirm needs replyTo to name a decision; ${input.replyTo} is not one.`);
+    if (!this.hasHumanConfirmColumn) throw fail("humanConfirm requires the current queue schema; it was not saved.");
   }
 
   private validateReplyTo(replyTo: string, humanIntent: QueueCreateInput["humanIntent"]): void {
@@ -3892,6 +3918,7 @@ export class QueueRepository {
       replyTo: row.reply_to ?? null,
       humanQuestions: row.human_questions ? (JSON.parse(row.human_questions) as HumanQuestion[]) : null,
       humanAnswers: row.human_answers ? (JSON.parse(row.human_answers) as HumanAnswers) : null,
+      humanConfirm: row.human_confirm ?? null,
       closureReason: row.closure_reason as ClosureReason | null,
       closureTarget: row.closure_target,
       closureRequiredAt: row.closure_required_at,

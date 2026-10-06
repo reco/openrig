@@ -33,6 +33,7 @@ export interface OutboundPostPayload {
   /** #96: an update posted into this earlier qitem's thread (subsystem-resolved). */
   replyTo?: string | null;
   humanQuestions?: import("../../human-questions.js").HumanQuestion[] | null;
+  humanConfirm?: string | null;
   summary?: string | null;
   body?: string | null;
   destinationSession?: string | null;
@@ -138,6 +139,7 @@ function toPayload(q: QueueItem): OutboundPostPayload {
     humanDetail: q.humanDetail,
     replyTo: q.replyTo,
     humanQuestions: q.humanQuestions,
+    humanConfirm: q.humanConfirm,
     summary: q.summary,
     body: q.body,
     destinationSession: q.destinationSession,

@@ -141,6 +141,57 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(toSeat()[0]?.body).toContain(`--reply-to ${decisionId}`);
     });
 
+    async function click(blockId: string, actionId: string, messageTs: string, user = "UFOUNDER", actionTs = `${Date.now()}.${Math.random()}`): Promise<{ status: string; reason?: string }> {
+      const envelopeId = `e-click-${actionTs}`;
+      socket.onmessage?.({ data: JSON.stringify({
+        envelope_id: envelopeId, type: "interactive",
+        payload: {
+          type: "block_actions", user: { id: user }, channel: { id: "C-TEST" },
+          container: { type: "message", message_ts: messageTs, thread_ts: "1.1", channel_id: "C-TEST" },
+          message: { ts: messageTs, thread_ts: "1.1" },
+          actions: [{ type: "button", block_id: blockId, action_id: actionId, action_ts: actionTs }],
+        },
+      }) });
+      await vi.waitFor(() => expect(finals(envelopeId)).toHaveLength(1));
+      return finals(envelopeId)[0]!;
+    }
+    async function offerConfirm(reading: string): Promise<{ qitemId: string; messageTs: string }> {
+      const offer = await repo.create({ ...request, humanIntent: "update", summary: "My reading", body: "Is this right?", replyTo: decisionId, humanConfirm: reading });
+      await deliver(offer.qitemId);
+      return { qitemId: offer.qitemId, messageTs: `${posts.length}.1` };
+    }
+
+    it("a Confirm button resolves the decision with exactly the stated reading, once", async () => {
+      const reading = "Ship only the schema migration this week; data migration next week.";
+      const offer = await offerConfirm(reading);
+      const blocks = JSON.stringify(posts.at(-1)?.blocks);
+      expect(posts.at(-1)?.thread_ts).toBe("1.1");
+      expect(blocks).toContain(`or-confirm:${offer.qitemId}`);
+      expect(String(posts.at(-1)?.text)).toContain(`Confirm: ${reading}`);
+
+      await say("yes", "2020.1");
+      expect(repo.getById(decisionId)?.state).toBe("pending");
+
+      expect(await click(`or-confirm:${offer.qitemId}`, "or-confirm", offer.messageTs)).toMatchObject({ status: "accepted" });
+      expect(await click(`or-confirm:${offer.qitemId}`, "or-confirm", offer.messageTs)).not.toMatchObject({ status: "handler-failed" });
+      expect(repo.getById(decisionId)?.state).toBe("done");
+      expect(resolutions()).toHaveLength(1);
+      expect(resolutions()[0]?.transitionNote).toBe(`direct human reply received: ${reading}`);
+      expect(toSeat().filter((q) => q.tags?.includes("human-answer"))).toHaveLength(1);
+    });
+
+    it("refuses a Confirm click from anyone but the addressed human", async () => {
+      const offer = await offerConfirm("Ship it.");
+      expect(await click(`or-confirm:${offer.qitemId}`, "or-confirm", offer.messageTs, "USTRANGER")).toMatchObject({ status: "refused" });
+      expect(repo.getById(decisionId)?.state).toBe("pending");
+    });
+
+    it("refuses a confirm reading on anything but an update replying to a decision", async () => {
+      await expect(repo.create({ ...request, humanIntent: "decision", humanConfirm: "x" })).rejects.toMatchObject({ code: "invalid_human_confirm" });
+      await expect(repo.create({ ...request, humanIntent: "update", humanConfirm: "x" })).rejects.toMatchObject({ code: "invalid_human_confirm" });
+      await expect(repo.create({ ...request, humanIntent: "update", replyTo: decisionId, humanConfirm: "  " })).rejects.toMatchObject({ code: "invalid_human_confirm" });
+    });
+
     it("an empty `answer:` is conversation, not a resolution", async () => {
       await say("answer:   ", "2005.1");
       expect(repo.getById(decisionId)?.state).toBe("pending");

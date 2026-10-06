@@ -19,6 +19,8 @@ export interface QitemLike {
   /** #193 — structured questions, rendered as one button row per question. */
   humanQuestions?: readonly HumanQuestion[] | null;
   humanIntent?: "decision" | "update" | null;
+  /** Phase 1 — a reading the human confirms with one click (an update replying to a decision). */
+  humanConfirm?: string | null;
 }
 
 /** M1 A5b — an outbound image attachment. A media-bearing OutboundDecision carries these;
@@ -103,6 +105,8 @@ export function buildImageBlocks(mediaRefs: readonly SlackMediaRef[] | undefined
  *  exactly these (one producer, one parser: see parseQuestionAction). */
 export const QUESTION_BLOCK_PREFIX = "or-q:";
 export const OPTION_ACTION_PREFIX = "or-opt:";
+export const CONFIRM_BLOCK_PREFIX = "or-confirm:";
+export const CONFIRM_ACTION_ID = "or-confirm";
 const TYPED_REPLY_HINT = "Or reply in this thread with your own answer.";
 const ANSWER_HINT = "To decide, reply in this thread starting with `answer:`. Other replies go to the asking seat as conversation.";
 
@@ -113,6 +117,23 @@ export function parseQuestionAction(blockId: unknown, actionId: unknown): { ques
   const questionId = blockId.slice(QUESTION_BLOCK_PREFIX.length);
   const optionId = actionId.slice(OPTION_ACTION_PREFIX.length);
   return questionId && optionId ? { questionId, optionId } : null;
+}
+
+/** The offer qitem a clicked Confirm button names; null if the click is not a Confirm. */
+export function parseConfirmAction(blockId: unknown, actionId: unknown): string | null {
+  if (actionId !== CONFIRM_ACTION_ID || typeof blockId !== "string" || !blockId.startsWith(CONFIRM_BLOCK_PREFIX)) return null;
+  return blockId.slice(CONFIRM_BLOCK_PREFIX.length) || null;
+}
+
+function buildConfirmBlocks(qitemId: string, reading: string): { blocks: unknown[]; text: string } {
+  const text = bounded(`Confirm: ${inert(reading)}`, SLACK_SECTION_CAP, "confirm reading");
+  return {
+    text,
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text } },
+      { type: "actions", block_id: `${CONFIRM_BLOCK_PREFIX}${qitemId}`, elements: [{ type: "button", action_id: CONFIRM_ACTION_ID, style: "primary", text: { type: "plain_text", text: "Confirm" } }] },
+    ],
+  };
 }
 
 /** #193 — the questions as blocks (a section, then a button row, per question) plus the
@@ -251,13 +272,15 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
   const answerHint = opts.answerHint && q.humanIntent !== "update" ? ANSWER_HINT : null;
   const questionParts = q.humanQuestions?.length ? buildQuestionBlocks(q.humanQuestions, answerHint ?? TYPED_REPLY_HINT) : null;
   const plainHint = questionParts ? null : answerHint;
+  const confirmParts = q.humanConfirm ? buildConfirmBlocks(q.qitemId, q.humanConfirm) : null;
   if (opts.extraBlocks?.length) {
     throw new HumanMessageShapeError("Extra blocks have no complete accessible fallback. Use mediaRefs for images or author supplemental human detail.");
   }
-  const text = bounded([headline, body, questionParts?.text, plainHint, attr, evidence ? evidence.text : null, attachmentText, opts.reconcileMarker].filter(Boolean).join("\n"), SLACK_TEXT_CAP, "complete fallback");
+  const text = bounded([headline, body, questionParts?.text, confirmParts?.text, plainHint, attr, evidence ? evidence.text : null, attachmentText, opts.reconcileMarker].filter(Boolean).join("\n"), SLACK_TEXT_CAP, "complete fallback");
   const blocks: unknown[] = [{ type: "section", text: { type: "mrkdwn", text: headline } }];
   if (body.trim()) blocks.push({ type: "section", text: { type: "mrkdwn", text: body } });
   if (questionParts) blocks.push(...questionParts.blocks);
+  if (confirmParts) blocks.push(...confirmParts.blocks);
   if (plainHint) blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: plainHint }] });
   blocks.push(...imageBlocks);
   if (evidence) blocks.push(evidence.block);

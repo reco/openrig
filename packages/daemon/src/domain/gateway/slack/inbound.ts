@@ -16,7 +16,7 @@ import type { SeenStore, DeadLetterStore, DeadLetterEntry } from "./state-store.
 import type { InboundQueuePort } from "./queue-access.js";
 import { createHash } from "node:crypto";
 import { ADMITTED_EVENT_TYPES } from "./capabilities.js";
-import { escapeSlackText, parseQuestionAction, redactSecrets } from "./message.js";
+import { escapeSlackText, parseConfirmAction, parseQuestionAction, redactSecrets } from "./message.js";
 import { formatHumanAnswers, unansweredQuestions, type RecordHumanAnswerResult } from "../../human-questions.js";
 
 export interface SlackEvent {
@@ -45,6 +45,11 @@ export interface SlackBlockActions {
   message?: { ts?: string; thread_ts?: string };
   actions?: Array<{ block_id?: string; action_id?: string; value?: string; action_ts?: string }>;
 }
+
+/** Phase 1 — the decision a Confirm offer replies to and its stated reading, for the asked human only. */
+export type ConfirmOffer = (input: { offerQitemId: string; actorSession: string }) =>
+  | { ok: true; decisionQitemId: string; reading: string }
+  | { ok: false; reason: string };
 
 export type RecordHumanAnswer = (input: { qitemId: string; actorSession: string; questionId: string; optionId: string }) => RecordHumanAnswerResult;
 
@@ -134,6 +139,8 @@ export interface InboundDeps {
   explicitAnswersOnly?: boolean;
   /** #193 — record a clicked answer on the decision the clicked message belongs to. */
   recordHumanAnswer?: RecordHumanAnswer;
+  /** Phase 1 — look up a clicked Confirm offer. */
+  confirmOffer?: ConfirmOffer;
   /** #193 — clicks whose continuation (reply row + resolve) failed; retried with the event
    *  dead-letters. Absent → a failed click is only logged. */
   actionDeadLetter?: DeadLetterStore<SlackBlockActions>;
@@ -341,6 +348,8 @@ export class InboundRouter {
 
   private async attemptAction(payload: SlackBlockActions, live: boolean): Promise<{ status: InboundDisposition; reason?: string }> {
     const action = payload.actions?.[0];
+    const offerQitemId = parseConfirmAction(action?.block_id, action?.action_id);
+    if (offerQitemId) return this.attemptConfirm(payload, offerQitemId, live);
     const picked = parseQuestionAction(action?.block_id, action?.action_id);
     if (!picked) return { status: "ignored", reason: "not-a-question-button" };
     const who = this.deps.resolveSender(payload.user?.id ?? "");
@@ -397,6 +406,48 @@ export class InboundRouter {
     this.deps.log?.(`answers complete qitem=${qitemId} -> ${route.destination}`);
     if (resolution === "resolved") await acknowledge(escapeSlackText(redactSecrets(`All answered, sent back: ${lines.join("; ")}`)));
     return { status: "accepted", reason: "answers-complete" };
+  }
+
+  /** Phase 1 — a Confirm click resolves the decision its offer replies to with exactly the
+   *  offer's stored reading. The reply row id derives from the offer, so a replayed click finds
+   *  the same row, and the resolve transition happens at most once. */
+  private async attemptConfirm(payload: SlackBlockActions, offerQitemId: string, live: boolean): Promise<{ status: InboundDisposition; reason?: string }> {
+    const who = this.deps.resolveSender(payload.user?.id ?? "");
+    if (!who.admitted) {
+      this.deps.log?.(`confirm REFUSED — unregistered sender ${payload.user?.id}: ${who.teaching}`);
+      return { status: "refused", reason: "unregistered" };
+    }
+    const rootTs = clickedRootTs(payload);
+    const route = rootTs ? this.deps.resolveRoute?.({ type: "message", thread_ts: rootTs, channel: payload.channel?.id }) : undefined;
+    if (!rootTs || !route?.correlationQitemId) return { status: "ignored", reason: "unmapped-message" };
+    const offer = this.deps.confirmOffer?.({ offerQitemId, actorSession: who.source });
+    if (!offer?.ok) return { status: "refused", reason: offer?.reason ?? "confirm-unavailable" };
+    if (offer.decisionQitemId !== route.correlationQitemId) return { status: "ignored", reason: "offer-not-in-this-thread" };
+    let resolution: "resolved" | "already-resolved" | "not-applicable" | undefined;
+    try {
+      await this.deps.queue.createQitem({
+        qitemId: `qitem-slack-confirm-${createHash("sha256").update(offerQitemId).digest("hex").slice(0, 20)}`,
+        source: who.source,
+        destination: route.destination,
+        priority: "routine",
+        tags: [...route.tags ?? ["founder-slack", "inbound"], "human-answer"],
+        summary: "Founder via Slack: confirmed your reading",
+        body: `Confirmed: ${offer.reading}\n\n---\nIn reply to: ${offer.decisionQitemId} (offer ${offerQitemId})\nRouted by openrig slack-inbound (Confirm click).`,
+      });
+      resolution = await this.deps.resolveHumanReply?.({ qitemId: offer.decisionQitemId, actorSession: who.source, decision: offer.reading });
+    } catch (e) {
+      this.deps.log?.(`confirm continuation failed offer=${offerQitemId}: ${(e as Error).message}`);
+      return { status: "handler-failed", reason: "confirm-continuation-failed" };
+    }
+    if (resolution !== "resolved") return { status: "ignored", reason: resolution ?? "resolve-unavailable" };
+    if (live) {
+      try {
+        await this.deps.acknowledgeAnswer?.({ channel: payload.channel?.id, threadTs: rootTs, text: escapeSlackText(redactSecrets(`Confirmed: ${offer.reading}`)) });
+      } catch (e) {
+        this.deps.log?.(`confirm acknowledgement failed offer=${offerQitemId}: ${(e as Error).message}`);
+      }
+    }
+    return { status: "accepted", reason: "confirmed" };
   }
 
   /**

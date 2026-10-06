@@ -23,6 +23,7 @@ export interface QueueItem {
   humanDetail?: string | null;
   replyTo?: string | null;
   humanQuestions?: HumanQuestion[] | null;
+  humanConfirm?: string | null;
   summary?: string | null;
   body?: string | null;
   evidenceRef?: string | null;
@@ -92,6 +93,7 @@ function project(q: RepoQueueItem, transition: QueueTransition, entities: readon
     humanDetail: q.humanDetail,
     replyTo: q.replyTo ?? null,
     humanQuestions: q.humanQuestions ?? null,
+    humanConfirm: q.humanConfirm ?? null,
     summary: (r.summary as string | null) ?? null,
     body: (r.body as string | null) ?? null,
     evidenceRef: (r.evidenceRef as string | null) ?? null,

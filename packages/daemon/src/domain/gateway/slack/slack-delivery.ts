@@ -192,6 +192,7 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
         body: q.body,
         humanQuestions: q.humanQuestions,
         humanIntent: q.humanIntent,
+        humanConfirm: q.humanConfirm,
         destinationSession: q.destinationSession ?? decision.entityBindingRef,
       },
       {
@@ -408,7 +409,7 @@ export function subsystemSlackDeliver(opts: SubsystemSlackDeliveryOpts): Subsyst
     const parts = q.humanDetail
       ? [
           { ...q, humanDetail: undefined, body: `${q.body ?? ""}\n\nSupplemental detail follows in this thread.` },
-          { ...q, humanDetail: undefined, humanQuestions: undefined, summary: `Supplemental detail: ${q.summary ?? ""}`, body: q.humanDetail, media: [], evidenceRef: null },
+          { ...q, humanDetail: undefined, humanQuestions: undefined, humanConfirm: undefined, summary: `Supplemental detail: ${q.summary ?? ""}`, body: q.humanDetail, media: [], evidenceRef: null },
         ]
       : [q];
     const partId = (index: number) => parts.length === 1 ? decision.decisionId : `${decision.decisionId}:part:${index + 1}`;

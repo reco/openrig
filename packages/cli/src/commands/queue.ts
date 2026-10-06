@@ -460,6 +460,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--human-intent <intent>", "decision (default) or update: a quiet informational delivery, never an approval request")
     .option("--human-detail-file <path>", "One explicitly authored supplemental thread reply; keep the complete action/options in --body-file")
     .option("--reply-to <qitemId>", "Post this update into an earlier qitem's Slack thread (requires --human-intent update; posts as a new top-level message instead if that thread can't be used, e.g. it is missing, or it still has an open human decision while slack explicitAnswersOnly is off; --verify reports why)")
+    .option("--confirm <reading>", "Offer the human a Confirm button for your reading of their answer (requires --human-intent update and --reply-to <decision>); a click resolves that decision with exactly this text")
     .option("--human-questions-file <path>", "#193: JSON array of 1-4 questions for a decision, each {id, question, options: [{id, label, recommended?}]} with 2-4 options; Slack shows them as buttons")
     .option("--evidence-ref <path>", "OPR.0.4.4.19 FR-5: pointer to the durable artifact a human judges (e.g. a PROOF.md path). Required by the daemon when the item is human-routed; optional otherwise.")
     .option("--host <id>", QUEUE_HOST_OPTION_HELP)
@@ -485,6 +486,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       humanDetailFile?: string;
       replyTo?: string;
       humanQuestionsFile?: string;
+      confirm?: string;
       summary?: string;
       evidenceRef?: string;
       host?: string;
@@ -620,6 +622,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
           humanDetail: opts.humanDetailFile ? await resolveQueueBody({ bodyFile: opts.humanDetailFile }) : undefined,
           replyTo: opts.replyTo,
           humanQuestions,
+          humanConfirm: opts.confirm,
           summary: opts.summary,
           evidenceRef: opts.evidenceRef,
           priority: opts.priority,
