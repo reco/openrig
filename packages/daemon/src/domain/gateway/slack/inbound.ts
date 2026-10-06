@@ -159,6 +159,8 @@ export interface InboundDeps {
   confirmOffer?: ConfirmOffer;
   /** Phase 1 — an explicit `cancel` in a request's thread; only the asked human's closes it. */
   cancelRequest?: (input: { conversationId: string; actorSession: string; reason: string }) => Promise<"closed" | "not-authorized" | "not-applicable">;
+  /** Phase 1 — replace a confirmed offer's button with its reading. Best-effort. */
+  retireConfirmOffer?: (input: { channel: string; messageTs: string; offerQitemId: string }) => Promise<void>;
   /** Phase 1 — classify the message an admitted human added ✅ to; null = it decides nothing. */
   reactionTarget?: (input: { channel: string; messageTs: string; actorSession: string }) => ReactionTarget | null;
   /** #193 — clicks whose continuation (reply row + resolve) failed; retried with the event
@@ -456,10 +458,10 @@ export class InboundRouter {
     }
     const rootTs = clickedRootTs(payload);
     if (!rootTs) return { status: "ignored", reason: "unmapped-message" };
-    return this.confirm(who.source, offerQitemId, rootTs, payload.channel?.id, live);
+    return this.confirm(who.source, offerQitemId, rootTs, payload.channel?.id, live, payload.container?.message_ts ?? payload.message?.ts);
   }
 
-  private async confirm(actorSession: string, offerQitemId: string, rootTs: string, channel: string | undefined, live: boolean): Promise<{ status: InboundDisposition; reason?: string }> {
+  private async confirm(actorSession: string, offerQitemId: string, rootTs: string, channel: string | undefined, live: boolean, offerTs?: string): Promise<{ status: InboundDisposition; reason?: string }> {
     const route = this.deps.resolveRoute?.({ type: "message", thread_ts: rootTs, channel });
     if (!route?.correlationQitemId) return { status: "ignored", reason: "unmapped-message" };
     const offer = this.deps.confirmOffer?.({ offerQitemId, actorSession });
@@ -480,6 +482,13 @@ export class InboundRouter {
     } catch (e) {
       this.deps.log?.(`confirm continuation failed offer=${offerQitemId}: ${(e as Error).message}`);
       return { status: "handler-failed", reason: "confirm-continuation-failed" };
+    }
+    if ((resolution === "resolved" || resolution === "already-resolved") && channel && offerTs) {
+      try {
+        await this.deps.retireConfirmOffer?.({ channel, messageTs: offerTs, offerQitemId });
+      } catch (e) {
+        this.deps.log?.(`confirm button not replaced offer=${offerQitemId}: ${(e as Error).message}`);
+      }
     }
     if (resolution !== "resolved") return { status: "ignored", reason: resolution ?? "resolve-unavailable" };
     if (live) {
@@ -517,7 +526,7 @@ export class InboundRouter {
     this.inflight.add(key);
     try {
       const r = target.kind === "confirm"
-        ? await this.confirm(who.source, target.offerQitemId, target.threadTs, channel, live)
+        ? await this.confirm(who.source, target.offerQitemId, target.threadTs, channel, live, messageTs)
         : await this.answerByReaction(who.source, target, channel, key);
       if (r.status !== "handler-failed") this.deps.seen.mark(key, r.status);
       return r;

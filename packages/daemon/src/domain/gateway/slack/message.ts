@@ -56,6 +56,8 @@ export interface OutboundMessageOpts {
   reconcileMarker?: string;
   /** Phase 1: a decision tells its human that only an `answer:` reply decides. */
   answerHint?: boolean;
+  /** Phase 1: the offer was confirmed; its button is replaced by the confirmed reading. */
+  confirmed?: boolean;
 }
 
 /** A1.2 — the four attribution fields. */
@@ -125,7 +127,11 @@ export function parseConfirmAction(blockId: unknown, actionId: unknown): string 
   return blockId.slice(CONFIRM_BLOCK_PREFIX.length) || null;
 }
 
-function buildConfirmBlocks(qitemId: string, reading: string): { blocks: unknown[]; text: string } {
+function buildConfirmBlocks(qitemId: string, reading: string, confirmed: boolean): { blocks: unknown[]; text: string } {
+  if (confirmed) {
+    const text = bounded(`:white_check_mark: Confirmed: ${inert(reading)}`, SLACK_SECTION_CAP, "confirmed reading");
+    return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
+  }
   const text = bounded(`Confirm: ${inert(reading)}`, SLACK_SECTION_CAP, "confirm reading");
   return {
     text,
@@ -272,7 +278,7 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
   const answerHint = opts.answerHint && q.humanIntent !== "update" ? ANSWER_HINT : null;
   const questionParts = q.humanQuestions?.length ? buildQuestionBlocks(q.humanQuestions, answerHint ?? TYPED_REPLY_HINT) : null;
   const plainHint = questionParts ? null : answerHint;
-  const confirmParts = q.humanConfirm ? buildConfirmBlocks(q.qitemId, q.humanConfirm) : null;
+  const confirmParts = q.humanConfirm ? buildConfirmBlocks(q.qitemId, q.humanConfirm, opts.confirmed === true) : null;
   if (opts.extraBlocks?.length) {
     throw new HumanMessageShapeError("Extra blocks have no complete accessible fallback. Use mediaRefs for images or author supplemental human detail.");
   }

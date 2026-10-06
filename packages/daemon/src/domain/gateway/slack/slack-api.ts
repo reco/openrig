@@ -367,6 +367,16 @@ export async function fetchRecentMessageTexts(
   return incomplete("reconcile pagination exceeded its 10-page bound");
 }
 
+/** Replace one of our posted messages (`chat.update`; chat:write covers the app's own posts). */
+export async function updateChatMessage(
+  token: string,
+  input: { channel: string; ts: string; text: string; blocks: unknown[] },
+  fetchImpl: FetchImpl = defaultFetch,
+): Promise<{ ok: boolean; error?: string }> {
+  const r = await callWebApi("chat.update", token, input, fetchImpl);
+  return { ok: r.ok, error: r.error };
+}
+
 export interface PostChatMessageInput {
   channel: string;
   text: string; // notification fallback — always set (affordance-verified: keep a text arg on all posts)

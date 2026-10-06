@@ -32,6 +32,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
   let posts: Array<Record<string, unknown>>;
   let decisionId: string;
   let decisions: string[];
+  let updates: Array<Record<string, unknown>>;
   let wire: ReturnType<typeof buildSlackGatewayWire>;
   const stops: Array<() => void> = [];
   const reply = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
@@ -49,6 +50,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
     posts = [];
     const sockets: WsLike[] = [];
     decisions = [];
+    updates = [];
     const contract = new MissionControlWriteContract({ db, eventBus: bus, queueRepo: repo, actionLog: new MissionControlActionLog(db) });
     const realResolve = makeHumanReplyResolver(repo, contract);
     wire = buildSlackGatewayWire({
@@ -65,6 +67,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       linkState: async () => "merged",
       fetchImpl: async (url, init) => {
         if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
+        if (url.endsWith("chat.update")) { updates.push(JSON.parse(String(init?.body))); return reply({ ok: true }); }
         posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
       },
     });
@@ -193,6 +196,22 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(resolutions()).toHaveLength(1);
       expect(decisions).toEqual([reading]);
       expect(toSeat().filter((q) => q.tags?.includes("human-answer"))).toHaveLength(1);
+    });
+
+    it("replaces the Confirm button with the confirmed reading after the first click", async () => {
+      const offer = await offerConfirm("Ship widget A this week.");
+      await click(`or-confirm:${offer.qitemId}`, "or-confirm", offer.messageTs);
+      expect(updates).toHaveLength(1);
+      expect(updates[0]).toMatchObject({ channel: "C-TEST", ts: offer.messageTs });
+      expect(JSON.stringify(updates[0]?.blocks)).not.toContain("or-confirm");
+      expect(String(updates[0]?.text)).toContain("Confirmed: Ship widget A this week.");
+      expect(String(updates[0]?.text)).toContain("Is this right?");
+    });
+
+    it("replaces the Confirm button after a ✅ on the offer too", async () => {
+      const offer = await offerConfirm("Ship widget A this week.");
+      await react(offer.messageTs);
+      expect(updates.map((u) => u.ts)).toEqual([offer.messageTs]);
     });
 
     it("refuses a Confirm click from anyone but the addressed human", async () => {

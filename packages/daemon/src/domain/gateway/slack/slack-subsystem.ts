@@ -18,7 +18,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { buildInProcessWire, type GatewayWire, type SubsystemDeliverFn } from "../gateway-subsystem.js";
-import { downloadPrivateFile, postChatMessage } from "./slack-api.js";
+import { downloadPrivateFile, postChatMessage, updateChatMessage } from "./slack-api.js";
 import { loadConfig } from "./config.js";
 import { resolveSecret } from "./secrets.js";
 import { SeenStore, DeadLetterStore, InboundReceiptStore } from "./state-store.js";
@@ -28,6 +28,7 @@ import { subsystemSlackDeliver } from "./slack-delivery.js";
 import { InboundRouter, inboundQitemIdFor, type ReactionTarget, type SlackEvent, type SlackBlockActions, type InboundFilePort, type InboundFileResult, type StoredInboundFile, type FailedInboundFile } from "./inbound.js";
 import { makeInboundSenderResolver, type RegistrySurface } from "./inbound-admission.js";
 import { ThreadSeatMap, formatPostedStamp } from "./thread-seat-map.js";
+import { attributionFromSession, buildOutboundMessage } from "./message.js";
 import { makeThreadRouteResolver } from "./thread-routing.js";
 import { closeRequest, gateOpenedAt, githubLinkState, isRequestHuman, sweepRequests, type LinkState, type RequestLifecycleDeps, type RequestLink } from "./request-lifecycle.js";
 import { startSocketInbound, type SocketInboundHandle, type WsLike } from "./socket-inbound.js";
@@ -660,6 +661,15 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       // in the decision's thread (a bot post, so inbound never ingests it).
       recordHumanAnswer: (input) => opts.queueRepo.recordHumanAnswer(input),
       reactionTarget: makeReactionTarget(opts.queueRepo, threadMap),
+      ...(bot ? {
+        retireConfirmOffer: async ({ channel, messageTs, offerQitemId }: { channel: string; messageTs: string; offerQitemId: string }) => {
+          const offer = opts.queueRepo.getById(offerQitemId);
+          if (!offer) return;
+          const message = buildOutboundMessage(offer, { sourceLabel: cfg.sourceLabel, attribution: attributionFromSession(offer.sourceSession), confirmed: true });
+          const r = await updateChatMessage(bot, { channel, ts: messageTs, ...message }, opts.fetchImpl);
+          if (!r.ok) log(`confirm button not replaced offer=${offerQitemId}: ${r.error}`);
+        },
+      } : {}),
       cancelRequest: async ({ conversationId, actorSession, reason }) => {
         const root = threadMap.resolveByConversation(conversationId);
         if (!root || root.state !== "open" || !opts.queueRepo.getById(conversationId)) return "not-applicable";
