@@ -188,6 +188,19 @@ describe("phase 1 request lifecycle sweep", () => {
       expect(toSeat().find((q) => q.tags?.includes("request-reminder"))?.sourceSession).toBe("daemon@kernel");
     });
 
+    it("a re-parked gate reminds the human even though an earlier gate was answered", async () => {
+      const work = await repo.create({ sourceSession: "author@rig", destinationSession: "author@rig", body: "Work", nudge: false });
+      const parkIt = (summary: string) => repo.update({ qitemId: work.qitemId, actorSession: "author@rig", state: "blocked", blockedOn: "human-founder@kernel", summary, evidenceRef: "/proof.md", transitionNote: "park" });
+      parkIt("First gate");
+      repo.update({ qitemId: work.qitemId, actorSession: human, state: "in-progress", transitionNote: "approved", ownerNotificationKind: "human-decision-resolved" });
+      parkIt("Second gate");
+      map.close("1.1");
+      map.open({ threadTs: "2.1", channel: "C-TEST", human, seat: "author@rig", conversationId: work.qitemId });
+      at(3.1); await sweep();
+      expect(threadPosts.some((p) => p.threadTs === "2.1")).toBe(true);
+      expect(toSeat().filter((q) => q.tags?.includes("request-reminder"))).toEqual([]);
+    });
+
     it("uses the configured interval", async () => {
       at(1.1); await sweep(1);
       expect(threadPosts).toHaveLength(1);

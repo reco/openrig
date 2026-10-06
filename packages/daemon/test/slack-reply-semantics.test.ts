@@ -156,14 +156,14 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(toSeat()[0]?.body).toContain(`--reply-to ${decisionId}`);
     });
 
-    async function click(blockId: string, actionId: string, messageTs: string, user = "UFOUNDER", actionTs = `${Date.now()}.${Math.random()}`): Promise<{ status: string; reason?: string }> {
+    async function click(blockId: string, actionId: string, messageTs: string, user = "UFOUNDER", actionTs = `${Date.now()}.${Math.random()}`, rootTs = "1.1"): Promise<{ status: string; reason?: string }> {
       const envelopeId = `e-click-${actionTs}`;
       socket.onmessage?.({ data: JSON.stringify({
         envelope_id: envelopeId, type: "interactive",
         payload: {
           type: "block_actions", user: { id: user }, channel: { id: "C-TEST" },
-          container: { type: "message", message_ts: messageTs, thread_ts: "1.1", channel_id: "C-TEST" },
-          message: { ts: messageTs, thread_ts: "1.1" },
+          container: { type: "message", message_ts: messageTs, thread_ts: rootTs, channel_id: "C-TEST" },
+          message: { ts: messageTs, thread_ts: rootTs },
           actions: [{ type: "button", block_id: blockId, action_id: actionId, action_ts: actionTs }],
         },
       }) });
@@ -279,6 +279,75 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(closing).toBeDefined();
       expect(String(closing?.text)).not.toContain("<!channel>");
       expect(String(closing?.text)).toContain("&lt;!channel&gt;");
+    });
+
+    const park = async () => {
+      const work = await repo.create({ sourceSession: "author@rig", destinationSession: "worker@rig", body: "Ship the fix.", nudge: false });
+      repo.update({ qitemId: work.qitemId, actorSession: "worker@rig", state: "blocked", blockedOn: "human-founder@kernel", summary: "Merge the fix?", evidenceRef: "/proof/PR.md", transitionNote: "parked for approval" });
+      await deliver(work.qitemId);
+      return { workId: work.qitemId, rootTs: `${posts.length}.1` };
+    };
+    const repark = async (workId: string, summary: string) => {
+      repo.update({ qitemId: workId, actorSession: "worker@rig", state: "blocked", blockedOn: "human-founder@kernel", summary, evidenceRef: "/proof/PR2.md", transitionNote: "parked again" });
+      const before = posts.length;
+      const alert = async () => (await makeQueuePorts(repo, { loadHumanRegistry: () => registry }).listHumanAlerts({})).find((q) => q.qitemId === workId);
+      wire.dispatcher.dispatch("post_message", human, await alert());
+      await vi.waitFor(() => expect(posts.length).toBeGreaterThan(before));
+      await vi.waitFor(async () => expect(await alert()).toBeUndefined());
+    };
+    const sayAsIn = async (user: string, threadTs: string, text: string, ts: string) => {
+      const envelopeId = `e-${ts}`;
+      socket.onmessage?.({ data: JSON.stringify({ envelope_id: envelopeId, type: "events_api", payload: { event: { type: "message", user, text, ts, thread_ts: threadTs, channel: "C-TEST" } } }) });
+      await vi.waitFor(() => expect(finals(envelopeId)).toHaveLength(1));
+    };
+    const sayIn = (threadTs: string, text: string, ts: string) => sayAsIn("UFOUNDER", threadTs, text, ts);
+
+    it("a canceled park's thread no longer answers its gate", async () => {
+      const { workId, rootTs } = await park();
+      await sayIn(rootTs, "cancel: not needed", "2050.1");
+      expect(new ThreadSeatMap(db).resolveByThread(rootTs)?.state).toBe("closed");
+      await sayIn(rootTs, "answer: approved after all", "2051.1");
+      expect(repo.getById(workId)?.state).toBe("blocked");
+      expect(decisions).toEqual([]);
+      expect(repo.list({ limit: 100 }).some((q) => q.destinationSession === "worker@rig" && q.tags?.includes("request-closed"))).toBe(true);
+    });
+
+    it("another registered human's ✅ on their own reply does not answer a park", async () => {
+      const { workId, rootTs } = await park();
+      await sayAsIn("UOTHER", rootTs, "looks fine to me", "2070.1");
+      expect(await react("2070.1", { user: "UOTHER" })).not.toMatchObject({ status: "accepted" });
+      expect(repo.getById(workId)?.state).toBe("blocked");
+    });
+
+    it("the asked human can still cancel a park after answering it", async () => {
+      const { workId, rootTs } = await park();
+      await sayIn(rootTs, "answer: merge it", "2080.1");
+      expect(repo.getById(workId)?.state).toBe("in-progress");
+      await sayIn(rootTs, "cancel", "2081.1");
+      expect(new ThreadSeatMap(db).resolveByThread(rootTs)?.state).toBe("closed");
+    });
+
+    it("✅ on a reply from an earlier gate episode does not answer the re-parked gate", async () => {
+      const { workId, rootTs } = await park();
+      await sayIn(rootTs, "old thought about the first question", "2060.1");
+      await sayIn(rootTs, "answer: merge it", "2061.1");
+      expect(repo.getById(workId)?.state).toBe("in-progress");
+      await repark(workId, "Deploy it too?");
+      expect(await react("2060.1")).not.toMatchObject({ status: "accepted" });
+      expect(repo.getById(workId)?.state).toBe("blocked");
+      expect(decisions).toEqual(["merge it"]);
+    });
+
+    it("✅ on a Confirm offer from an earlier gate episode does not answer the re-parked gate", async () => {
+      const { workId, rootTs } = await park();
+      const offer = await repo.create({ ...request, sourceSession: "worker@rig", humanIntent: "update", summary: "Reading", body: "Right?", replyTo: workId, humanConfirm: "Merge the fix now." });
+      await deliver(offer.qitemId);
+      const offerTs = `${posts.length}.1`;
+      expect(await click(`or-confirm:${offer.qitemId}`, "or-confirm", offerTs, "UFOUNDER", "3000.1", rootTs)).toMatchObject({ status: "accepted" });
+      await repark(workId, "Deploy it too?");
+      expect(await react(offerTs)).not.toMatchObject({ status: "accepted" });
+      expect(repo.getById(workId)?.state).toBe("blocked");
+      expect(decisions).toEqual(["Merge the fix now."]);
     });
 
     it("an empty `answer:` is conversation, not a resolution", async () => {

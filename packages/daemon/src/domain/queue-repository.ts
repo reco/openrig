@@ -3252,6 +3252,18 @@ export class QueueRepository {
     return row?.qitem_id ?? null;
   }
 
+  /** The thread root a message we posted went into (its own ts for a root post). */
+  postedThreadForMessage(messageTs: string): string | null {
+    const qitemId = this.postedQitemForMessage(messageTs);
+    if (!qitemId) return null;
+    for (const t of this.transitionLog.listForQitem(qitemId)) {
+      const fields = (t.transitionNote ?? "").split(/\s+/);
+      if (!fields.includes(`message_ts=${messageTs}`)) continue;
+      return fields.find((f) => f.startsWith("thread_ts="))?.slice("thread_ts=".length) ?? null;
+    }
+    return null;
+  }
+
   private replyToFallbackFor(qitemId: string): string | null {
     const choice = this.replyToChoiceFor(qitemId);
     return choice?.kind === "fallback" ? describeReplyToFallback(choice) : null;

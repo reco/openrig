@@ -30,8 +30,26 @@ export interface RequestLifecycleDeps {
   log?: (msg: string) => void;
 }
 
-const isResolved = (repo: QueueRepository, qitemId: string): boolean =>
-  repo.transitionLog.listForQitem(qitemId).some((t) => t.ownerNotificationKind === "human-decision-resolved");
+/** When the request's current gate opened: its latest park, or its creation for a direct request.
+ *  Anything said or offered before this instant belongs to an earlier gate. */
+export function gateOpenedAt(repo: QueueRepository, qitemId: string): string {
+  const parks = repo.transitionLog.listForQitem(qitemId).filter((t) => t.state === "blocked").map((t) => t.ts).sort();
+  return parks.at(-1) ?? repo.getById(qitemId)?.tsCreated ?? "";
+}
+
+/** Whether the request's current gate has been answered (an earlier gate's answer does not count). */
+export function currentGateResolved(repo: QueueRepository, qitemId: string): boolean {
+  const transitions = repo.transitionLog.listForQitem(qitemId);
+  const lastPark = Math.max(-1, ...transitions.filter((t) => t.state === "blocked").map((t) => t.transitionId));
+  return transitions.some((t) => t.ownerNotificationKind === "human-decision-resolved" && t.transitionId > lastPark);
+}
+
+const entityOf = (session: string | null | undefined): string => (session ?? "").split("@")[0] ?? "";
+
+/** The request's asked human, as recorded on its thread when it was posted. */
+export function isRequestHuman(root: ThreadMapping, actorSession: string): boolean {
+  return entityOf(root.human) !== "" && entityOf(root.human) === entityOf(actorSession);
+}
 
 async function stateOf(deps: RequestLifecycleDeps, link: RequestLink): Promise<LinkState> {
   if (link.kind !== "qitem") return deps.linkState(link);
@@ -51,13 +69,23 @@ export async function closeRequest(deps: RequestLifecycleDeps, root: ThreadMappi
     ...(active ? (canceled ? { state: "canceled" as const } : { state: "done" as const, closureReason: "no-follow-on" }) : {}),
   });
   deps.threadMap.closeConversation(root.conversationId);
+  if (item?.state === "blocked" && !currentGateResolved(deps.queueRepo, root.conversationId)) {
+    await deps.queueRepo.create({
+      sourceSession: "daemon@kernel",
+      destinationSession: root.seat,
+      tags: [REQUEST_CLOSED_PREFIX],
+      summary: `Request ${root.conversationId} closed while parked`,
+      body: `${root.conversationId} was closed (${reason}) while still parked on the human. Its Slack thread no longer answers the gate, so nothing will resume it from there: unblock it or ask again. Closing authorized nothing.`,
+      nudge: true,
+    });
+  }
   const posted = await deps.postInThread(root.channel, root.threadTs, escapeSlackText(redactSecrets(`Closed: ${reason.replaceAll("-", " ")}.`)));
   if (!posted) deps.log?.(`request ${root.conversationId} closed; the closing line was not posted`);
 }
 
 async function remind(deps: RequestLifecycleDeps, root: ThreadMapping, days: number): Promise<void> {
   const item = deps.queueRepo.getById(root.conversationId);
-  if (isResolved(deps.queueRepo, root.conversationId)) {
+  if (currentGateResolved(deps.queueRepo, root.conversationId)) {
     await deps.queueRepo.create({
       sourceSession: "daemon@kernel",
       destinationSession: root.seat,

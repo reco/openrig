@@ -44,12 +44,13 @@ export function makeThreadRouteResolver(opts: {
         // #96: once an update shares a root, its owner's next decision posts a fresh root. A reply
         // still arriving in the OLDER root lands on the seat as a message but answers nothing:
         // only the conversation's newest root correlates to its current human gate.
+        // Phase 1: a closed request answers nothing; its replies still reach the seat.
         const newest = opts.map.resolveByConversation(mapping.conversationId);
-        const current = !newest || newest.threadTs === threadTs;
+        const current = mapping.state === "open" && (!newest || newest.threadTs === threadTs);
         log(`inbound routed thread_ts=${threadTs} -> ${mapping.seat} (${routeClass}${current ? "" : ", superseded root: no gate correlation"})`);
         return {
           destination: mapping.seat,
-          tags: [...BASE_TAGS, "thread", `reply-to:${mapping.conversationId}`],
+          tags: [...BASE_TAGS, "thread", `reply-to:${mapping.conversationId}`, `thread-ts:${threadTs}`],
           ...(current ? { correlationQitemId: mapping.conversationId } : {}),
           routeClass,
         };

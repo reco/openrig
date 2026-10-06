@@ -29,7 +29,7 @@ import { InboundRouter, inboundQitemIdFor, type ReactionTarget, type SlackEvent,
 import { makeInboundSenderResolver, type RegistrySurface } from "./inbound-admission.js";
 import { ThreadSeatMap, formatPostedStamp } from "./thread-seat-map.js";
 import { makeThreadRouteResolver } from "./thread-routing.js";
-import { closeRequest, githubLinkState, sweepRequests, type LinkState, type RequestLifecycleDeps, type RequestLink } from "./request-lifecycle.js";
+import { closeRequest, gateOpenedAt, githubLinkState, isRequestHuman, sweepRequests, type LinkState, type RequestLifecycleDeps, type RequestLink } from "./request-lifecycle.js";
 import { startSocketInbound, type SocketInboundHandle, type WsLike } from "./socket-inbound.js";
 import { loadHumanRegistry, resolveSlackHandle } from "../human-registry.js";
 import { hasLiveHumanGate, type QueueRepository } from "../../queue-repository.js";
@@ -199,37 +199,36 @@ export function makeInboundFilePort(opts: {
   };
 }
 
-const entityOf = (session: string | null | undefined): string => (session ?? "").split("@")[0] ?? "";
-
-/** Whether a decision (a direct human request, or a park) is addressed to this human. */
-function addressedTo(item: { destinationSession: string; state: string; blockedOn: string | null }, actorSession: string): boolean {
-  const actor = entityOf(actorSession);
-  return entityOf(item.destinationSession) === actor || (item.state === "blocked" && entityOf(item.blockedOn) === actor);
-}
-
 /** Phase 1 — classify the message a human added ✅ to, using only our own records: the
  *  decision's root (a plain decision only), a Confirm offer we posted, or the human's own
- *  reply in the decision's thread. */
+ *  reply in the decision's thread. The target keeps the reacted message's own root, so the
+ *  router's current-root check applies, and anything from an earlier gate answers nothing.
+ *  Only the request's asked human may answer. */
 export function makeReactionTarget(queueRepo: QueueRepository, threadMap: ThreadSeatMap): (input: { channel: string; messageTs: string; actorSession: string }) => ReactionTarget | null {
+  const askedIn = (threadTs: string, actorSession: string) => {
+    const root = threadMap.resolveByThread(threadTs);
+    return root && isRequestHuman(root, actorSession) ? root : null;
+  };
   return ({ channel, messageTs, actorSession }) => {
     const root = threadMap.resolveByThread(messageTs);
     if (root) {
       const decision = queueRepo.getById(root.conversationId);
-      if (!decision || decision.humanIntent === "update" || decision.humanQuestions?.length || !addressedTo(decision, actorSession)) return null;
+      if (!decision || decision.humanIntent === "update" || decision.humanQuestions?.length || !isRequestHuman(root, actorSession)) return null;
       return { kind: "answer", decisionQitemId: decision.qitemId, threadTs: messageTs, text: "approved" };
     }
     const offerId = queueRepo.postedQitemForMessage(messageTs);
     const offer = offerId ? queueRepo.getById(offerId) : null;
     if (offer?.humanConfirm && offer.replyTo) {
-      const thread = threadMap.resolveByConversation(offer.replyTo);
-      return thread ? { kind: "confirm", offerQitemId: offer.qitemId, threadTs: thread.threadTs } : null;
+      const threadTs = queueRepo.postedThreadForMessage(messageTs);
+      return threadTs && askedIn(threadTs, actorSession) ? { kind: "confirm", offerQitemId: offer.qitemId, threadTs } : null;
     }
     const reply = queueRepo.getById(inboundQitemIdFor(channel, messageTs));
     const conversation = reply?.tags?.find((t) => t.startsWith("reply-to:"))?.slice("reply-to:".length);
-    if (!reply || !conversation || reply.sourceSession !== actorSession) return null;
-    const thread = threadMap.resolveByConversation(conversation);
+    const threadTs = reply?.tags?.find((t) => t.startsWith("thread-ts:"))?.slice("thread-ts:".length);
+    if (!reply || !conversation || !threadTs || reply.sourceSession !== actorSession || !askedIn(threadTs, actorSession)) return null;
+    if (reply.tsCreated < gateOpenedAt(queueRepo, conversation)) return null;
     const text = reply.body.split("\n\n---\nSource: ")[0]?.trim();
-    return thread && text ? { kind: "answer", decisionQitemId: conversation, threadTs: thread.threadTs, text } : null;
+    return text ? { kind: "answer", decisionQitemId: conversation, threadTs, text } : null;
   };
 }
 
@@ -663,9 +662,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       reactionTarget: makeReactionTarget(opts.queueRepo, threadMap),
       cancelRequest: async ({ conversationId, actorSession, reason }) => {
         const root = threadMap.resolveByConversation(conversationId);
-        const item = opts.queueRepo.getById(conversationId);
-        if (!root || root.state !== "open" || !item) return "not-applicable";
-        if (!addressedTo(item, actorSession)) return "not-authorized";
+        if (!root || root.state !== "open" || !opts.queueRepo.getById(conversationId)) return "not-applicable";
+        if (!isRequestHuman(root, actorSession)) return "not-authorized";
         await closeRequest(lifecycle, root, reason ? `canceled-by-human: ${reason}` : "canceled-by-human", actorSession, true);
         return "closed";
       },
@@ -673,6 +671,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         const offer = opts.queueRepo.getById(offerQitemId);
         if (!offer?.humanConfirm || !offer.replyTo) return { ok: false, reason: "not-a-confirm-offer" };
         if (offer.destinationSession !== actorSession) return { ok: false, reason: "not-the-asked-human" };
+        if (offer.tsCreated < gateOpenedAt(opts.queueRepo, offer.replyTo)) return { ok: false, reason: "offer-from-an-earlier-gate" };
         return { ok: true, decisionQitemId: offer.replyTo, reading: offer.humanConfirm };
       },
       actionDeadLetter: new DeadLetterStore<SlackBlockActions>(path.join(stateDir(opts.home), "slack-inbound-action-deadletter.jsonl")),
