@@ -312,6 +312,23 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(repo.list({ limit: 100 }).some((q) => q.destinationSession === "worker@rig" && q.tags?.includes("request-closed"))).toBe(true);
     });
 
+    it("notes on a parked row do not start a new gate: ✅ on a reply and a Confirm offer still answer it", async () => {
+      const { workId, rootTs } = await park();
+      await sayIn(rootTs, "merge it once CI is green", "2090.1");
+      repo.update({ qitemId: workId, actorSession: "worker@rig", transitionNote: "still waiting" });
+      expect(await react("2090.1")).toMatchObject({ status: "accepted" });
+      expect(decisions).toEqual(["merge it once CI is green"]);
+    });
+
+    it("a note on a parked row does not void a Confirm offer", async () => {
+      const { workId, rootTs } = await park();
+      const offer = await repo.create({ ...request, sourceSession: "worker@rig", humanIntent: "update", summary: "Reading", body: "Right?", replyTo: workId, humanConfirm: "Merge now." });
+      await deliver(offer.qitemId);
+      repo.addRequestLinks({ qitemId: workId, actorSession: "worker@rig", links: ["pr:https://github.com/reco/openrig/pull/7"] });
+      expect(await click(`or-confirm:${offer.qitemId}`, "or-confirm", `${posts.length}.1`, "UFOUNDER", "3100.1", rootTs)).toMatchObject({ status: "accepted" });
+      expect(decisions).toEqual(["Merge now."]);
+    });
+
     it("another registered human's ✅ on their own reply does not answer a park", async () => {
       const { workId, rootTs } = await park();
       await sayAsIn("UOTHER", rootTs, "looks fine to me", "2070.1");

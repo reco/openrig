@@ -33,15 +33,20 @@ export interface RequestLifecycleDeps {
 /** When the request's current gate opened: its latest park, or its creation for a direct request.
  *  Anything said or offered before this instant belongs to an earlier gate. */
 export function gateOpenedAt(repo: QueueRepository, qitemId: string): string {
-  const parks = repo.transitionLog.listForQitem(qitemId).filter((t) => t.state === "blocked").map((t) => t.ts).sort();
-  return parks.at(-1) ?? repo.getById(qitemId)?.tsCreated ?? "";
+  return lastPark(repo, qitemId)?.ts ?? repo.getById(qitemId)?.tsCreated ?? "";
 }
 
 /** Whether the request's current gate has been answered (an earlier gate's answer does not count). */
 export function currentGateResolved(repo: QueueRepository, qitemId: string): boolean {
-  const transitions = repo.transitionLog.listForQitem(qitemId);
-  const lastPark = Math.max(-1, ...transitions.filter((t) => t.state === "blocked").map((t) => t.transitionId));
-  return transitions.some((t) => t.ownerNotificationKind === "human-decision-resolved" && t.transitionId > lastPark);
+  const parkId = lastPark(repo, qitemId)?.transitionId ?? -1;
+  return repo.transitionLog.listForQitem(qitemId).some((t) => t.ownerNotificationKind === "human-decision-resolved" && t.transitionId > parkId);
+}
+
+/** The latest transition INTO blocked. Every transition records the row's state, so a note on a
+ *  blocked row is not a new park. */
+function lastPark(repo: QueueRepository, qitemId: string): { ts: string; transitionId: number } | undefined {
+  const transitions = [...repo.transitionLog.listForQitem(qitemId)].sort((a, b) => a.transitionId - b.transitionId);
+  return transitions.filter((t, i) => t.state === "blocked" && transitions[i - 1]?.state !== "blocked").at(-1);
 }
 
 const entityOf = (session: string | null | undefined): string => (session ?? "").split("@")[0] ?? "";
