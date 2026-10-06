@@ -87,10 +87,25 @@ that item. Send the update from the seat that owns that thread: the seat that
 parked the row, or the author of the earlier item. A human reply in a thread
 reaches its owning seat, so an update from any other seat posts as a new
 message. It also posts as a new message, rather than being refused, if the
-earlier thread is missing or closed, or while the earlier item still waits on
-the human (a pending human decision, or a row parked on the human), since a
-reply in that thread would answer the decision. In every such case the
-`--verify` result says `threaded: false` with the reason.
+earlier thread is missing or closed. With the Slack connector's
+`explicitAnswersOnly` off, it also posts as a new message while the earlier item
+still waits on the human, since any reply in that thread would answer the
+decision. In every such case the `--verify` result says `threaded: false` with
+the reason.
+
+With `explicitAnswersOnly` on, a human's typed reply in a decision's thread is
+**conversation**: it reaches you tagged `conversation` and resolves nothing.
+Answer it in the same thread with `--human-intent update --reply-to
+<decision-id>`. When you believe you have their answer, offer it with
+`--confirm "<your reading>"` on that update; never treat prose such as "yes" as
+approval. The decision resolves, once, on a button click, a reply starting with
+`answer:`, a Confirm click (with exactly your stated reading), or a ✅ from the
+asked human. Answering does not close the request. Link its outcome with
+`--link pr:<url>`, `--link issue:<url>` or `--link qitem:<id>` on `rig queue
+update` or `create`: the thread closes once every linked outcome is finished, or
+when the human replies `cancel`. A request quiet for `staleReminderDays` (default
+3) reminds the human while unanswered and you once answered; reminders close
+nothing.
 
 A **decision** with a few clear choices can carry `--human-questions-file <path>`:
 a JSON array of 1–4 questions, each
@@ -99,8 +114,9 @@ options (labels up to 75 characters, at most one recommended). Slack shows each
 question as a row of buttons. Each click records that answer on the item, and
 the decision resolves once every question has one. You then receive one reply
 row listing the answers, and the item's `humanAnswers` holds the option ids. The
-human may instead type a reply in the thread; that resolves the decision as
-usual, so read the reply rather than assuming an option was picked. Keep the
+human may instead answer in the thread (any reply with `explicitAnswersOnly`
+off, an `answer:` reply with it on), so read the reply rather than assuming an
+option was picked. Keep the
 brief complete: the questions add buttons, they do not replace the explanation.
 
 If an existing agent-owned row must wait for a **decision**, block it on the **new live qitem ID**

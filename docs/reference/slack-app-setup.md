@@ -100,6 +100,10 @@ How a decision is answered depends on `explicitAnswersOnly` in `slack-connector.
   <reading>`), or a ✅ from the asked human on the decision's root (a decision without buttons,
   answered as "approved"), on their own reply in the thread (that reply's text), or on a Confirm
   offer. It resolves once; later answers reach the seat as messages.
+  Answering does not close the request: its thread stays open until the outcome the seat linked
+  (`rig queue update --link pr:<url>|issue:<url>|qitem:<id>`) is finished, or the asked human
+  replies `cancel`. After `staleReminderDays` (default 3) without activity, an unanswered request
+  reminds its human in the thread and an answered one reminds its seat. Reminders close nothing.
 - **Off:** any typed reply in the thread answers the decision.
 
 ## What the connector does with the tokens
