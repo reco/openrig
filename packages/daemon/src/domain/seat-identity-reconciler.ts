@@ -228,7 +228,7 @@ export class SeatIdentityReconciler {
       return Promise.all(nativeSeats.map((seat) => {
         const input = { target: seat.tmux_pane!, tmux, expectedToken: seat.resume_token, listProcesses: () => snapshot ??= this.listProcesses() };
         if (seat.runtime === "codex") return observeCodexPaneProcess(input);
-        return seat.resume_token !== null && seat.resume_token !== undefined ? observeClaudeWithToken(seat, input) : observeClaudePaneRuntime(input);
+        return seat.resume_token != null ? observeClaudeWithToken(seat, input) : observeClaudePaneRuntime(input);
       }));
     };
     const first = await sample(panes);
