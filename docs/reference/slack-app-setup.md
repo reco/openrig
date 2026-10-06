@@ -64,7 +64,8 @@ groups:
   `rig slack verify` checks these.
 - **Feature scopes**: `files:read` (download attachments people send), `files:write` (upload
   attachments to Slack), `app_mentions:read` (receive @-mentions of the app), `reactions:read`
-  (receive a ✅ that answers a decision), and `groups:history` / `groups:read` (use a private
+  (receive a ✅ that answers a decision), `reactions:write` (put 👀 on each received message until the
+  seat has handled it), and `groups:history` / `groups:read` (use a private
   channel: its messages, history and membership check). `rig slack verify` warns when one of these is missing (if
   Slack returns the granted scopes) but does not require them, so a READY from verify does not
   prove attachments, mentions, reactions or a private channel will work.
@@ -83,7 +84,7 @@ If a feature scope was not granted, the effect differs by feature:
   channel, history recovery fails there, and `rig slack verify` cannot confirm the app is a member.
   A public channel needs neither scope.
 
-So after installing, compare the granted scopes Slack shows for the app with all nine scopes that
+So after installing, compare the granted scopes Slack shows for the app with all ten scopes that
 `rig slack manifest --json` lists.
 
 The app subscribes to messages in public and private channels it is a member of

@@ -33,6 +33,8 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
   let decisionId: string;
   let decisions: string[];
   let updates: Array<Record<string, unknown>>;
+  let seen: Array<Record<string, unknown>>;
+  let unseen: Array<Record<string, unknown>>;
   let wire: ReturnType<typeof buildSlackGatewayWire>;
   const stops: Array<() => void> = [];
   const reply = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
@@ -51,6 +53,8 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
     const sockets: WsLike[] = [];
     decisions = [];
     updates = [];
+    seen = [];
+    unseen = [];
     const contract = new MissionControlWriteContract({ db, eventBus: bus, queueRepo: repo, actionLog: new MissionControlActionLog(db) });
     const realResolve = makeHumanReplyResolver(repo, contract);
     wire = buildSlackGatewayWire({
@@ -68,6 +72,8 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       fetchImpl: async (url, init) => {
         if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
         if (url.endsWith("chat.update")) { updates.push(JSON.parse(String(init?.body))); return reply({ ok: true }); }
+        if (url.endsWith("reactions.add")) { seen.push(JSON.parse(String(init?.body))); return reply({ ok: true }); }
+        if (url.endsWith("reactions.remove")) { unseen.push(JSON.parse(String(init?.body))); return reply({ ok: true }); }
         posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
       },
     });
@@ -519,6 +525,27 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       await deliver(ack.qitemId);
       expect(await react(`${posts.length}.1`)).toMatchObject({ status: "accepted" });
       expect(repo.getById(ack.qitemId)?.state).toBe("done");
+    });
+
+    it("puts 👀 on each message of the human's that lands, once", async () => {
+      await say("Are you there?", "2400.1");
+      await say("Are you there?", "2400.1", "e-dup");
+      expect(seen).toEqual([{ channel: "C-TEST", timestamp: "2400.1", name: "eyes" }]);
+    });
+
+    it("takes the 👀 off once the seat closes the received message", async () => {
+      await say("Can you check the logs?", "2410.1");
+      const row = toSeat().find((q) => q.body.includes("Can you check the logs?"))!;
+      expect(unseen).toEqual([]);
+      repo.update({ qitemId: row.qitemId, actorSession: "author@rig", state: "done", closureReason: "no-follow-on", transitionNote: "checked" });
+      await vi.waitFor(() => expect(unseen).toEqual([{ channel: "C-TEST", timestamp: "2410.1", name: "eyes" }]));
+    });
+
+    it("takes the 👀 off the human's thread messages once the seat answers in the thread", async () => {
+      await say("Which logs?", "2420.1");
+      const answer = await repo.create({ ...request, humanIntent: "update", summary: "The API logs", body: "The API logs from today.", replyTo: decisionId });
+      await deliver(answer.qitemId);
+      await vi.waitFor(() => expect(unseen.map((u) => u.timestamp)).toContain("2420.1"));
     });
 
     it("an empty `answer:` is conversation, not a resolution", async () => {

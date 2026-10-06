@@ -3175,6 +3175,11 @@ export class QueueRepository {
     })();
   }
 
+  /** The bus queue changes are published on (read-only subscribers such as the Slack gateway). */
+  get events(): EventBus {
+    return this.eventBus;
+  }
+
   getById(qitemId: string): QueueItem | null {
     const row = this.db
       .prepare("SELECT * FROM queue_items WHERE qitem_id = ?")

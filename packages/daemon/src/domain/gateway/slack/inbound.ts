@@ -160,6 +160,8 @@ export interface InboundDeps {
   confirmOffer?: ConfirmOffer;
   /** Phase 1 — an explicit `cancel` in a request's thread; only the asked human's closes it. */
   cancelRequest?: (input: { conversationId: string; actorSession: string; reason: string }) => Promise<"closed" | "not-authorized" | "not-applicable">;
+  /** Phase 1 — show the human their message was received (a 👀 on it). Best-effort. */
+  markReceived?: (input: { channel: string; ts: string }) => Promise<void>;
   /** Phase 1 — replace a fully answered decision's button rows with its answers. Best-effort. */
   retireQuestionButtons?: (input: { channel: string; messageTs: string; qitemId: string }) => Promise<void>;
   /** Phase 1 — replace a confirmed offer's button with its reading. Best-effort. */
@@ -353,6 +355,13 @@ export class InboundRouter {
         }
       }
       this.deps.seen.mark(eventId, "landed"); // durable qitem exists → safe to mark
+      if (ev.channel && this.deps.markReceived) {
+        try {
+          await this.deps.markReceived({ channel: ev.channel, ts });
+        } catch (e) {
+          this.deps.log?.(`received mark failed ts=${ts}: ${(e as Error).message}`);
+        }
+      }
       this.deps.log?.(`qitem ${qitemId} -> ${route.destination} (ts=${ts})`);
       return { landed: true, qitemId, correlationQitemId: route.correlationQitemId, replyResolution };
     } finally {

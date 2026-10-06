@@ -18,7 +18,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { buildInProcessWire, type GatewayWire, type SubsystemDeliverFn } from "../gateway-subsystem.js";
-import { downloadPrivateFile, postChatMessage, updateChatMessage } from "./slack-api.js";
+import { addReaction, downloadPrivateFile, postChatMessage, removeReaction, updateChatMessage } from "./slack-api.js";
 import { loadConfig } from "./config.js";
 import { resolveSecret } from "./secrets.js";
 import { SeenStore, DeadLetterStore, InboundReceiptStore } from "./state-store.js";
@@ -402,6 +402,25 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     log,
   };
 
+  // Phase 1 — the 👀 on a received human message comes off once the seat has handled it: its row
+  // is closed, or the seat answered in that thread. The row body carries the message's identity.
+  const receivedMessage = (body: string): { channel: string; ts: string } | null => {
+    const m = /\nSource: slack channel=(\S+) user=\S+ ts=(\S+)/.exec(body);
+    return m ? { channel: m[1]!, ts: m[2]! } : null;
+  };
+  const unmarkReceived = (body: string): void => {
+    const message = receivedMessage(body);
+    if (!bot || !message) return;
+    void removeReaction(bot, { channel: message.channel, timestamp: message.ts, name: "eyes" }, opts.fetchImpl)
+      .then((r) => { if (!r.ok) log(`👀 not removed ts=${message.ts}: ${r.error}`); });
+  };
+  const unmarkThread = (conversationId: string): void => {
+    const rows = opts.queueRepo.db
+      .prepare(`SELECT body FROM queue_items WHERE tags LIKE ? AND tags LIKE '%"founder-slack"%'`)
+      .all(`%"reply-to:${conversationId}"%`) as Array<{ body: string }>;
+    for (const row of rows) unmarkReceived(row.body);
+  };
+
   // Late-bound so deliver can release the driver's in-flight guard (built after the wire).
   let releaseRef: (qitemId: string) => void = () => {};
 
@@ -503,6 +522,10 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
             return;
           }
           const key = p.notificationKey ?? p.qitemId;
+          if (threadTs && threadTs !== messageTs) {
+            const conversation = threadMap.resolveByThread(threadTs)?.conversationId;
+            if (conversation) unmarkThread(conversation);
+          }
           if (opts.queueRepo.transitionLog.hasOwnerNotificationReceipt(p.qitemId, key)) return;
           // One atomic queue transition records complete delivery and closes ONLY
           // an informational delivery obligation. This is never a human decision.
@@ -698,6 +721,10 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         return "recorded";
       },
       ...(bot ? {
+        markReceived: async ({ channel, ts }: { channel: string; ts: string }) => {
+          const r = await addReaction(bot, { channel, timestamp: ts, name: "eyes" }, opts.fetchImpl);
+          if (!r.ok) log(`👀 not added ts=${ts}: ${r.error}`);
+        },
         retireQuestionButtons: async ({ channel, messageTs, qitemId }: { channel: string; messageTs: string; qitemId: string }) => {
           const decision = opts.queueRepo.getById(qitemId);
           if (!decision?.humanQuestions?.length) return;
@@ -762,6 +789,16 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       } : {}),
       log,
     });
+    let unsubscribe: (() => void) | undefined;
+    starts.push(() => {
+      unsubscribe = opts.queueRepo.events.subscribe((event) => {
+        if (event.type !== "queue.updated" || event.fromState === event.toState) return;
+        if (!["done", "canceled", "handed-off", "failed", "denied"].includes(event.toState)) return;
+        const row = opts.queueRepo.getById(event.qitemId);
+        if (row?.tags?.includes("founder-slack") && row.tags.includes("inbound")) unmarkReceived(row.body);
+      });
+    });
+    stops.push(() => unsubscribe?.());
     recovery = new ChannelRecovery({ channel: cfg.channel, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl });
     starts.push(() => {
       recovery!.initialize(); // persist the once-only floor before any live events

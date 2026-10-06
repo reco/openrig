@@ -106,6 +106,8 @@ approval. Pick the kind that fits:
 - information to acknowledge: `--human-intent ack`; no buttons, the human
   reacts ✅ ("acknowledged"); you keep working meanwhile.
 On every kind the human may type instead; that reaches you as conversation.
+Each received message shows 👀 in Slack until you handle it: answer in its
+thread (`--reply-to`) or close its row; either takes the 👀 off. Always answer.
 👍/👎 on any of your messages is feedback, never a decision; on 👎
 you get a row: propose an alternative, do not ask why. For a yes/go decision,
 put the action on a button with
