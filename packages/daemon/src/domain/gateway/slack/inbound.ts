@@ -116,7 +116,7 @@ export interface InboundFileResult { stored: StoredInboundFile[]; failed: Failed
 export interface InboundFilePort { transfer(files: unknown[], eventTs: string, eventChannel?: string): Promise<InboundFileResult> }
 
 const EXPLICIT_ANSWER = /^\s*answer:\s*([\s\S]*?)\s*$/i;
-const EXPLICIT_CANCEL = /^\s*cancel\b\s*:?\s*([\s\S]*?)\s*$/i;
+const EXPLICIT_CANCEL = /^\s*cancel\s*(?::\s*([\s\S]*?))?\s*$/i;
 
 /** The decision text of an explicit `answer:` reply, or null when the text is not one. */
 export function explicitAnswer(text: string | undefined): string | null {

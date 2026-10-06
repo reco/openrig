@@ -113,7 +113,7 @@ export function makeHumanReplyResolver(
         actorSession: input.actorSession,
         state: "done",
         closureReason: "no-follow-on",
-        transitionNote: `direct human reply received: ${input.decision}`,
+        transitionNote: "direct human reply received",
         ownerNotificationKind: "human-decision-resolved",
       });
       return "resolved";
@@ -231,6 +231,20 @@ export function makeReactionTarget(queueRepo: QueueRepository, threadMap: Thread
     const text = reply.body.split("\n\n---\nSource: ")[0]?.trim();
     return thread && text ? { kind: "answer", decisionQitemId: conversation, threadTs: thread.threadTs, text } : null;
   };
+}
+
+/** The instant this home first ran the request lifecycle, persisted so older threads are never
+ *  reminded about or closed after an upgrade. */
+function lifecycleFloorMs(home: string): number {
+  const file = path.join(stateDir(home), "slack-request-lifecycle-floor");
+  try {
+    return Number(fs.readFileSync(file, "utf8").trim());
+  } catch {
+    const now = Date.now();
+    fs.mkdirSync(stateDir(home), { recursive: true });
+    fs.writeFileSync(file, `${now}\n`);
+    return now;
+  }
 }
 
 function stateDir(home: string): string {
@@ -364,6 +378,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     queueRepo: opts.queueRepo,
     threadMap,
     staleReminderDays: cfg.staleReminderDays,
+    floorMs: lifecycleFloorMs(opts.home),
     linkState: opts.linkState ?? githubLinkState,
     postInThread: async (channel, threadTs, text) => {
       if (!bot) return false;

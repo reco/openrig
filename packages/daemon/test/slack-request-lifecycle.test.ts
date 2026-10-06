@@ -38,8 +38,8 @@ describe("phase 1 request lifecycle sweep", () => {
   });
   afterEach(() => { vi.useRealTimers(); db.close(); });
 
-  const sweep = (staleReminderDays = 3) => sweepRequests({
-    queueRepo: repo, threadMap: map, staleReminderDays,
+  const sweep = (staleReminderDays = 3, floorMs = 0) => sweepRequests({
+    queueRepo: repo, threadMap: map, staleReminderDays, floorMs,
     linkState: async (link: RequestLink) => github.get(link.ref) ?? "open",
     postInThread: async (_channel, threadTs, text) => { threadPosts.push({ threadTs, text }); return true; },
   });
@@ -172,6 +172,20 @@ describe("phase 1 request lifecycle sweep", () => {
       expect(threadPosts).toEqual([]);
       at(5.1); await sweep();
       expect(threadPosts).toHaveLength(1);
+    });
+
+    it("leaves requests posted before the lifecycle floor alone", async () => {
+      link("pr:https://github.com/reco/openrig/pull/1");
+      github.set("https://github.com/reco/openrig/pull/1", "merged");
+      at(30); await sweep(3, T0.getTime());
+      expect(isOpen()).toBe(true);
+      expect(threadPosts).toEqual([]);
+    });
+
+    it("sends the seat reminder from the daemon, not the human", async () => {
+      resolve();
+      at(3.1); await sweep();
+      expect(toSeat().find((q) => q.tags?.includes("request-reminder"))?.sourceSession).toBe("daemon@kernel");
     });
 
     it("uses the configured interval", async () => {

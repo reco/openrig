@@ -1,7 +1,7 @@
 // Phase 1 reply semantics: a typed reply in a decision's thread is conversation. It reaches the
 // owning seat and resolves nothing. Only an explicit `answer:` reply resolves, exactly once.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDb } from "../src/db/connection.js";
@@ -31,6 +31,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
   let socket: WsLike;
   let posts: Array<Record<string, unknown>>;
   let decisionId: string;
+  let decisions: string[];
   let wire: ReturnType<typeof buildSlackGatewayWire>;
   const stops: Array<() => void> = [];
   const reply = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
@@ -40,15 +41,23 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
     db = createDb(); migrate(db, ALL_MIGRATIONS);
     const bus = new EventBus(db);
     repo = new QueueRepository(db, bus, { loadHumanRegistry: () => registry });
+    mkdirSync(join(home, "state"), { recursive: true });
+    writeFileSync(join(home, "state", "slack-request-lifecycle-floor"), "0\n");
     const secrets = join(home, "fake.env");
     writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE", explicitAnswersOnly }, home);
     posts = [];
     const sockets: WsLike[] = [];
+    decisions = [];
     const contract = new MissionControlWriteContract({ db, eventBus: bus, queueRepo: repo, actionLog: new MissionControlActionLog(db) });
+    const realResolve = makeHumanReplyResolver(repo, contract);
     wire = buildSlackGatewayWire({
       home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
-      resolveHumanReply: makeHumanReplyResolver(repo, contract),
+      resolveHumanReply: async (input) => {
+        const outcome = await realResolve(input);
+        if (outcome === "resolved") decisions.push(input.decision);
+        return outcome;
+      },
       wsFactory: () => { const ws: WsLike = { send: () => {}, close: () => {}, onopen: null, onmessage: null, onclose: null, onerror: null }; sockets.push(ws); return ws; },
       inboundMaxConnects: 1,
       inboundRetryIntervalMs: 50,
@@ -122,7 +131,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       await say("answer: actually wait", "2004.1");
       expect(repo.getById(decisionId)?.state).toBe("done");
       expect(resolutions()).toHaveLength(1);
-      expect(resolutions()[0]?.transitionNote).toContain("ship the schema migration only");
+      expect(decisions).toEqual(["ship the schema migration only"]);
       const answers = toSeat().filter((q) => q.tags?.includes("human-answer"));
       expect(answers).toHaveLength(2);
       expect(answers.map((q) => q.body).join("\n")).toContain("ship the schema migration only");
@@ -139,7 +148,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       await say("answer: ship the schema migration", "2011.1");
       expect(repo.getById(decisionId)?.state).toBe("done");
       expect(resolutions()).toHaveLength(1);
-      expect(resolutions()[0]?.transitionNote).toContain("ship the schema migration");
+      expect(decisions).toEqual(["ship the schema migration"]);
     });
 
     it("tells the seat that a conversation reply resolves nothing and how to answer in the thread", async () => {
@@ -182,7 +191,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(await click(`or-confirm:${offer.qitemId}`, "or-confirm", offer.messageTs)).not.toMatchObject({ status: "handler-failed" });
       expect(repo.getById(decisionId)?.state).toBe("done");
       expect(resolutions()).toHaveLength(1);
-      expect(resolutions()[0]?.transitionNote).toBe(`direct human reply received: ${reading}`);
+      expect(decisions).toEqual([reading]);
       expect(toSeat().filter((q) => q.tags?.includes("human-answer"))).toHaveLength(1);
     });
 
@@ -212,7 +221,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       const offer = await offerConfirm("Ship only the schema migration.");
       expect(await react(offer.messageTs)).toMatchObject({ status: "accepted" });
       expect(resolutions()).toHaveLength(1);
-      expect(resolutions()[0]?.transitionNote).toBe("direct human reply received: Ship only the schema migration.");
+      expect(decisions).toEqual(["Ship only the schema migration."]);
     });
 
     it("✅ on the human's own reply resolves with that reply's text", async () => {
@@ -220,12 +229,12 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(repo.getById(decisionId)?.state).toBe("pending");
       expect(await react("2030.1")).toMatchObject({ status: "accepted" });
       expect(resolutions()).toHaveLength(1);
-      expect(resolutions()[0]?.transitionNote).toBe("direct human reply received: Ship the schema migration, hold the data one.");
+      expect(decisions).toEqual(["Ship the schema migration, hold the data one."]);
     });
 
     it("✅ on the root of a plain decision resolves it as approved", async () => {
       expect(await react("1.1")).toMatchObject({ status: "accepted" });
-      expect(resolutions()[0]?.transitionNote).toBe("direct human reply received: approved");
+      expect(decisions).toEqual(["approved"]);
     });
 
     it("resolves once across a replayed ✅, a second ✅ and an `answer:`", async () => {
@@ -248,6 +257,8 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
 
     it("`cancel` from the asked human closes the request; from anyone else it is conversation", async () => {
       await sayAs("UOTHER", "cancel", "2040.1");
+      expect(repo.getById(decisionId)?.state).toBe("pending");
+      await say("Cancel the data migration, keep the schema one", "2043.1");
       expect(repo.getById(decisionId)?.state).toBe("pending");
       await say("Cancel: we dropped this", "2041.1");
       expect(repo.getById(decisionId)?.state).toBe("canceled");
@@ -286,7 +297,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       await say("yes", "2100.1");
       expect(repo.getById(decisionId)?.state).toBe("done");
       expect(resolutions()).toHaveLength(1);
-      expect(resolutions()[0]?.transitionNote).toContain("yes");
+      expect(decisions).toEqual(["yes"]);
     });
   });
 });

@@ -22,6 +22,8 @@ export interface RequestLifecycleDeps {
   queueRepo: QueueRepository;
   threadMap: ThreadSeatMap;
   staleReminderDays: number;
+  /** Requests whose root was posted before this instant predate the lifecycle and are left alone. */
+  floorMs?: number;
   /** State of a PR or issue link (queue links are read from the queue itself). */
   linkState: (link: RequestLink) => Promise<LinkState>;
   postInThread: (channel: string, threadTs: string, text: string) => Promise<boolean>;
@@ -57,7 +59,7 @@ async function remind(deps: RequestLifecycleDeps, root: ThreadMapping, days: num
   const item = deps.queueRepo.getById(root.conversationId);
   if (isResolved(deps.queueRepo, root.conversationId)) {
     await deps.queueRepo.create({
-      sourceSession: root.human,
+      sourceSession: "daemon@kernel",
       destinationSession: root.seat,
       tags: [REQUEST_REMINDER_PREFIX],
       summary: `Request ${root.conversationId} answered but still open`,
@@ -76,6 +78,7 @@ export async function sweepRequests(deps: RequestLifecycleDeps, now = new Date()
   const closed: string[] = [];
   const reminded: string[] = [];
   for (const root of deps.threadMap.listOpenConversations()) {
+    if (Number(root.threadTs) * 1000 < (deps.floorMs ?? 0)) continue;
     try {
       const item = deps.queueRepo.getById(root.conversationId);
       if (!item || item.humanIntent === "update") continue;
