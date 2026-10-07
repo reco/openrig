@@ -100,6 +100,9 @@ function project(q: RepoQueueItem, transition: QueueTransition, entities: readon
     notificationKey: `${q.qitemId}:${transition.transitionId}`,
     ownerNotificationKind: transition.ownerNotificationKind,
     ownerNotificationLevel: transition.ownerNotificationLevel,
+    ...(transition.ownerNotificationKind === "human-decision-resolved"
+      ? { summary: null, body: `Resolved: ${transition.transitionNote ?? "done"}`, humanQuestions: null, humanConfirm: null, evidenceRef: null }
+      : {}),
   };
 }
 

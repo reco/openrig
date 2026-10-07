@@ -159,6 +159,18 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       expect(repo.getById(update.qitemId)).toMatchObject({ state: "done", replyToFallback: null });
     });
 
+    it("a resolved park reports its outcome in its own thread: no new root, no mention, no restated decision", async () => {
+      const work = await park();
+      await deliver(work.qitemId);
+      await resolvePark(work.qitemId);
+      await vi.waitFor(() => expect(postWith("Resolved: approved")).toBeDefined());
+      const resolved = postWith("Resolved: approved")!;
+      expect(resolved.thread_ts).toBe("1.1");
+      expect(String(resolved.text)).not.toContain("<@");
+      expect(String(resolved.text)).not.toContain("Merge the fix?");
+      expect(posts.filter((p) => p.thread_ts === undefined)).toHaveLength(1);
+    });
+
     it("a re-park after an update shared the root posts the new decision outside that shared root", async () => {
       const work = await park();
       await deliver(work.qitemId);

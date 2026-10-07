@@ -79,6 +79,8 @@ interface HumanReplyActionPort {
   act(input: { verb: "resolve"; qitemId: string; actorSession: string; decision: string }): Promise<unknown>;
 }
 
+const isResolvedNotice = (q: { ownerNotificationKind?: string | null }) => q.ownerNotificationKind === "human-decision-resolved";
+
 /** Compose an inbound reply with Mission Control's existing human-park resolver.
  * A replay after the durable resolve but before inbound seen-mark is absorbed by
  * the typed transition, so the waiting owner is resumed exactly once. */
@@ -577,6 +579,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         // Re-delivery/new notification episodes for one qitem still reuse its exact root.
         // #96: an update may name an earlier qitem's root; the guard lives in deriveReplyToChoice.
         resolveThreadTs: (p) => {
+          if (isResolvedNotice(p)) return threadMap.resolveByConversation(p.qitemId)?.threadTs;
           if (p.replyTo) {
             const choice = chooseReplyToThread(p);
             if (choice.kind === "thread") return choice.threadTs;
@@ -593,7 +596,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         },
         // S14: posting and interruption are separate threshold dials over one vocabulary.
         resolveMentionUserId: (p) => {
-          if (p.humanIntent === "update") return undefined;
+          if (p.humanIntent === "update" || isResolvedNotice(p)) return undefined;
           // OPR.0.5.6.1: the engine's decided loudness is the mention rule for
           // registered humans; the dial pair remains only for the null degrade.
           if ((p as { deliveryDigestPost?: boolean }).deliveryDigestPost) return undefined; // notify-class aggregate, never a mention
@@ -786,7 +789,9 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   if (outboundReady) {
     const driver = new SlackOutboundDriver({
       home: opts.home,
-      queue: ports,
+      // A resolved decision reports back only into a Slack thread it already has.
+      queue: { listHumanAlerts: async (filter) => (await ports.listHumanAlerts(filter))
+        .filter((q) => !isResolvedNotice(q) || threadMap.resolveByConversation(q.qitemId)) },
       seen: outboundSeen,
       filter: { minimumLevel: cfg.minimumLevelThatPosts },
       dispatch: (op, ref, payload) => wire.dispatcher.dispatch(op, ref, payload),
