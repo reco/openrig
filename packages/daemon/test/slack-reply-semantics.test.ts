@@ -457,6 +457,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       const row = repo.list({ limit: 100 }).find((q) => q.body.includes("answer: yes"));
       expect(row?.sourceSession).toBe("lee@external");
       expect(row?.tags).toEqual(expect.arrayContaining(["untrusted-requester"]));
+      expect(row?.summary).toContain("Requester lee@external (untrusted) via Slack");
     });
 
     it("a canceled park's thread no longer answers its gate", async () => {
