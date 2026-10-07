@@ -21,7 +21,7 @@ import { ThreadSeatMap } from "../src/domain/gateway/slack/thread-seat-map.js";
 
 const human = "human-founder@external";
 const person = (entityId: string, handle: string) => ({ entityId, class: "human" as const, displayName: entityId, address: `${entityId}@external`, connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:SLACK_BOT_TOKEN", role: "primary" as const, handle }], prefs: { deliveryClass: "A" as const } });
-const registry = { ok: true as const, entities: [person("human-founder", "UFOUNDER"), person("human-other", "UOTHER")] };
+const registry = { ok: true as const, entities: [person("human-founder", "UFOUNDER"), person("human-other", "UOTHER"), { ...person("lee", "ULEE"), role: "requester" as const }] };
 const request = { sourceSession: "author@rig", destinationSession: human, summary: "Ship the migration?", body: "Tell me whether to ship it this week.", evidenceRef: "/private/proof.md", nudge: false };
 
 describe("phase 1 reply semantics through the real Slack wire", () => {
@@ -439,6 +439,26 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       await vi.waitFor(() => expect(finals(envelopeId)).toHaveLength(1));
     };
     const sayIn = (threadTs: string, text: string, ts: string) => sayAsIn("UFOUNDER", threadTs, text, ts);
+
+    it("another registered human's `answer:` on a park resolves nothing", async () => {
+      const { workId, rootTs } = await park();
+      await sayAsIn("UOTHER", rootTs, "answer: approved", "2091.1");
+      expect(repo.getById(workId)?.state).toBe("blocked");
+      expect(decisions).toEqual([]);
+    });
+
+    it("a requester's `answer:`, ✅ and Confirm on an approver's park resolve nothing; his words reach the seat as untrusted conversation", async () => {
+      const { workId, rootTs } = await park();
+      await sayAsIn("ULEE", rootTs, "answer: yes", "2092.1");
+      expect(await react(rootTs, { user: "ULEE" })).toMatchObject({ status: "refused" });
+      expect(await click(`or-confirm:${workId}`, "or-confirm", rootTs, "ULEE", "3951.1", rootTs)).toMatchObject({ status: "refused" });
+      expect(repo.getById(workId)?.state).toBe("blocked");
+      expect(decisions).toEqual([]);
+      const row = repo.list({ limit: 100 }).find((q) => q.body.includes("answer: yes"));
+      expect(row?.sourceSession).toBe("lee@external");
+      expect(row?.tags).toEqual(expect.arrayContaining(["untrusted-requester"]));
+      expect(row?.summary).toContain("Requester lee@external (untrusted) via Slack");
+    });
 
     it("a canceled park's thread no longer answers its gate", async () => {
       const { workId, rootTs } = await park();

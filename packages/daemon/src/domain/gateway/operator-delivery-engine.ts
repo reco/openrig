@@ -80,7 +80,7 @@ export function makeOperatorDeliveryEngine(deps: {
         return { decision: "unavailable:human-registry", resolved: false, dispatched: false };
       }
       if (!reg.ok) return { decision: "unavailable:human-registry", resolved: false, dispatched: false };
-      const human = reg.entities[0];
+      const human = reg.entities.find((e) => e.role !== "requester");
       if (!human) {
         return { decision: "undeliverable:no-registered-human", resolved: false, dispatched: false };
       }

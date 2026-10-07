@@ -137,7 +137,8 @@ export class MissionControlReadLayer {
   getDefaultOperatorSession(): string {
     if (this.defaultOperatorSession) return this.defaultOperatorSession;
     const registry = loadHumanRegistry();
-    return registry.ok && registry.entities.length === 1 ? registry.entities[0]!.address : "";
+    const approvers = registry.ok ? registry.entities.filter((e) => e.role !== "requester") : [];
+    return approvers.length === 1 ? approvers[0]!.address : "";
   }
 
   async readView(

@@ -23,7 +23,7 @@ export const DELIVERY_DIGEST_FLUSH_POLICY = "delivery-digest-flush";
 interface RegistrySurfaceLike {
   loadHumanRegistry: (home: string) => {
     ok: boolean;
-    entities?: Array<{ entityId: string; address: string }>;
+    entities?: Array<{ entityId: string; address: string; role?: string }>;
   };
 }
 
@@ -38,8 +38,8 @@ export interface RunDeliveryDigestFlushInput {
 
 export async function runDeliveryDigestFlush(input: RunDeliveryDigestFlushInput): Promise<{ dispatched: number; members: number }> {
   const reg = input.registry.loadHumanRegistry(input.home);
-  if (!reg.ok || !reg.entities || reg.entities.length === 0) return { dispatched: 0, members: 0 };
-  const human = reg.entities[0]!;
+  const human = reg.ok ? reg.entities?.find((e) => e.role !== "requester") : undefined;
+  if (!reg.ok || !human) return { dispatched: 0, members: 0 };
 
   const ports = makeQueuePorts(input.queueRepo, {
     loadHumanRegistry: () => reg,

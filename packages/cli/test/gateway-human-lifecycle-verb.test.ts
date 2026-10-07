@@ -182,18 +182,16 @@ describe("rig gateway human lifecycle verbs (S12)", () => {
     }
   });
 
-  it("A1 advisory receipt: with several hand-authored fragments list --json renders all + the 0.5.7 advisory", async () => {
-    // Fix-r1 F1: the SECOND human arrives by hand-authoring (the registry surface), never
-    // through the add verb — the verb is the single-human boundary.
+  it("list --json renders every human with its role and no advisory", async () => {
     seedSecondHuman("ana");
     logSpy.mockClear();
     const p = program();
     p.exitOverride();
     await p.parseAsync(["node", "rig", "gateway", "human", "list", "--json"]);
-    const out = JSON.parse(logSpy.mock.calls.at(-1)![0] as string) as { ok: boolean; humans: unknown[]; advisory?: string };
+    const out = JSON.parse(logSpy.mock.calls.at(-1)![0] as string) as { ok: boolean; humans: Array<{ role: string }>; advisory?: string };
     expect(out.ok).toBe(true);
-    expect(out.humans).toHaveLength(2); // honest display
-    expect(out.advisory).toContain("0.5.7"); // never a management surface
+    expect(out.humans.map((h) => h.role)).toEqual(["approver", "approver"]);
+    expect(out.advisory).toBeUndefined();
   });
 
   it("show --json carries authored-vs-default provenance and the fragment path", async () => {
@@ -257,25 +255,19 @@ describe("rig gateway human lifecycle verbs (S12)", () => {
 
   // ── fix-r1 F1: the add verb IS the single-human boundary ──
 
-  it("F1: a second DISTINCT add REFUSES with teaching (existing human named, hand-authoring + 0.5.7 pointed at) and writes ZERO fragment bytes", async () => {
-    const dirBefore = readdirSync(humansDir(home)).sort();
-    const mikeBytes = readFileSync(join(humansDir(home), "mike.yaml"), "utf8");
+  it("adds a second human as a requester", async () => {
     const p = program();
     p.exitOverride();
-    try { await p.parseAsync([
-      "node", "rig", "gateway", "human", "add", "ana",
-      "--display-name", "Ana",
-      "--binding", "slack:main:vault://slack/ana:primary",
-      "--delivery-class", "A",
-    ]); } catch { /* exitCode path */ }
-    expect(process.exitCode).toBe(1);
-    const err = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
-    expect(err).toContain("mike");        // the existing human, named
-    expect(err).toContain("0.5.7");       // where multi-human management lives
-    expect(err).toContain("hand-author"); // the sanctioned several-fragment path
-    // Zero new fragment bytes: directory unchanged, existing fragment byte-identical.
-    expect(readdirSync(humansDir(home)).sort()).toEqual(dirBefore);
-    expect(readFileSync(join(humansDir(home), "mike.yaml"), "utf8")).toBe(mikeBytes);
+    await p.parseAsync([
+      "node", "rig", "gateway", "human", "add", "lee",
+      "--display-name", "Lee",
+      "--binding", "slack:main:vault://slack/lee:primary:handle=ULEE",
+      "--delivery-class", "B",
+      "--role", "requester",
+    ]);
+    expect(process.exitCode ?? 0).toBe(0);
+    expect(readFileSync(join(humansDir(home), "lee.yaml"), "utf8")).toContain("role: requester");
+    expect(readFileSync(join(humansDir(home), "mike.yaml"), "utf8")).not.toContain("role: requester");
   });
 
   it("F1 companion: re-add of the SAME human with --replace stays allowed (boundary blocks distinct humans only)", async () => {

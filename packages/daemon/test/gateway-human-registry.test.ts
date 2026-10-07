@@ -40,6 +40,12 @@ describe("A3 human-fragment validation (add-time == load-time)", () => {
     expect(r.ok).toBe(true);
   });
 
+  it("keeps a requester role and rejects an unknown one", () => {
+    const requester = validateHumanFragment(fragment({ role: "requester" }));
+    expect(requester.ok && requester.fragment.role).toBe("requester");
+    expect(validateHumanFragment(fragment({ role: "admin" as HumanFragment["role"] })).ok).toBe(false);
+  });
+
   it("rejects an unknown class (closed enum)", () => {
     const r = validateHumanFragment(fragment({ class: "agent" as HumanFragment["class"] }));
     expect(r.ok).toBe(false);

@@ -32,7 +32,7 @@ import { attributionFromSession, buildOutboundMessage, DEFAULT_CONFIRM_DECISION 
 import { makeThreadRouteResolver } from "./thread-routing.js";
 import { closeRequest, currentGateResolved, entityOf, gateOpenedAt, githubLinkState, isRequestHuman, sweepRequests, type LinkState, type RequestLifecycleDeps, type RequestLink } from "./request-lifecycle.js";
 import { startSocketInbound, type SocketInboundHandle, type WsLike } from "./socket-inbound.js";
-import { loadHumanRegistry, resolveSlackHandle } from "../human-registry.js";
+import { loadHumanRegistry, resolveRegisteredHumanAddress, resolveSlackHandle } from "../human-registry.js";
 import { hasLiveHumanGate, type QueueRepository } from "../../queue-repository.js";
 import { formatReplyToChoice, REPLY_TO_CHOICE_ACTOR, type ReplyToChoice } from "../../reply-to-choice.js";
 import { isHumanSeatSessionRef, parseSessionName } from "../../session-name.js";
@@ -839,7 +839,14 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
           const root = threadMap.resolveByConversation(conversationId);
           return !!item && !!root && entityOf(item.sourceSession) === entityOf(root.human);
         } }),
-      resolveHumanReply: opts.resolveHumanReply,
+      resolveHumanReply: opts.resolveHumanReply && (async (input) => {
+        // Only the human the item waits on may resolve it (its park's blocked_on, or a direct request's destination).
+        const item = opts.queueRepo.getById(input.qitemId);
+        const registry = registrySurface.loadHumanRegistry(opts.home);
+        const asked = item && registry.ok ? resolveRegisteredHumanAddress(item.blockedOn || item.destinationSession, registry.entities) : null;
+        if (!asked || asked !== input.actorSession) return "not-applicable";
+        return opts.resolveHumanReply!(input);
+      }),
       explicitAnswersOnly: cfg.explicitAnswersOnly,
       // #193 — a button click records its answer on the decision the clicked root belongs to;
       // a failed hand-back is retried with the event dead-letters, and each click is confirmed
