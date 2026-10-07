@@ -805,11 +805,15 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       sweepTimer.unref?.();
     });
     stops.push(() => clearInterval(sweepTimer));
+    let unsubscribeOutbound: (() => void) | undefined;
     starts.push(() => {
       driver.start();
+      unsubscribeOutbound = opts.queueRepo.events.subscribe((event) => {
+        if (event.type === "queue.created" || event.type === "queue.updated" || event.type === "queue.handed_off") driver.kick();
+      });
       log("slack outbound driver started (subsystem path)");
     });
-    stops.push(() => driver.stop());
+    stops.push(() => { unsubscribeOutbound?.(); driver.stop(); });
   }
 
   if (inboundReady) {

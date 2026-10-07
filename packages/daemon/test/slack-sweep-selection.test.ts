@@ -136,6 +136,17 @@ describe("Slack sweep selection", () => {
     expect((await driver.sweepOnce()).dispatched).toEqual([]);
   });
 
+  it("a sweep asked for while one runs is run again after it, not dropped", async () => {
+    const seen = new SeenStore(join(home, "seen"));
+    const dispatch = vi.fn((..._args: unknown[]) => ({ ok: true as const, decisionId: "d" }));
+    const driver = new SlackOutboundDriver({ home, queue: ports(), seen, filter: {}, dispatch });
+    const running = driver.sweepOnce();
+    row("late"); notify("late");
+    await driver.sweepOnce();
+    await running;
+    await vi.waitFor(() => expect(dispatch.mock.calls.map((c) => (c[2] as { qitemId: string }).qitemId)).toContain("late"));
+  });
+
   it("dispatch refusal retries, while pending-buffer reconstruction suppresses a duplicate dispatch", async () => {
     row("retry"); const key = notify("retry");
     const seen = new SeenStore(join(home, "seen"));
