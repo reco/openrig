@@ -31,12 +31,14 @@ describe("weekly 👍/👎 report", () => {
     await message("dev@rig", "Good plan", ["+1", "+1"]);
     await message("dev@rig", "Bad plan", ["-1"]);
     await message("ops@rig", "Worse plan", ["-1", "-1"]);
+    const started = await repo.create({ sourceSession: "reco@external", destinationSession: "ops@rig", summary: "Human-started", body: "hi", nudge: false });
+    repo.update({ qitemId: started.qitemId, actorSession: "reco@external", transitionNote: "human-feedback reaction=+1 message_ts=9.1 channel=C1 key=kh" });
     const r = await run(monday10());
     expect(r.posted).toMatch(/^qitem-feedback-report-/);
     const report = repo.getById(r.posted!)!;
-    expect(report).toMatchObject({ destinationSession: "reco@external", humanIntent: "update", summary: "Weekly feedback: 👍 2 · 👎 3" });
+    expect(report).toMatchObject({ destinationSession: "reco@external", humanIntent: "update", summary: "Weekly feedback: 👍 3 · 👎 3" });
     expect(report.body).toContain("1. `dev@rig`: 👍 2 · 👎 1");
-    expect(report.body).toContain("2. `ops@rig`: 👍 0 · 👎 2");
+    expect(report.body).toContain("2. `ops@rig`: 👍 1 · 👎 2");
     expect(report.body).toMatch(/1\. Worse plan \(score -2\) https:\/\/example\.slack\.com\/archives\/C1\/p/);
     expect(report.body).toContain("2. Bad plan (score -1)");
     expect(report.body).not.toContain("Good plan");

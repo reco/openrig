@@ -3,6 +3,7 @@
 // Rides the watchdog scheduler on an hourly job; no loop of its own.
 
 import type { QueueRepository } from "../queue-repository.js";
+import { isHumanSeatSessionRef } from "../session-name.js";
 import type { Policy, PolicyJob, PolicyEvaluation } from "./types.js";
 
 export const HUMAN_FEEDBACK_REPORT_POLICY = "human-feedback-report";
@@ -49,7 +50,7 @@ export async function runHumanFeedbackReport(deps: HumanFeedbackReportDeps): Pro
   const perMessage = new Map<string, Feedback & { score: number; summary: string }>();
   for (const f of feedback) {
     const item = deps.queueRepo.getById(f.qitemId);
-    const seat = item ? (item.blockedOn ? item.destinationSession : item.sourceSession) : "(unknown seat)";
+    const seat = item ? (item.blockedOn || isHumanSeatSessionRef(item.sourceSession) ? item.destinationSession : item.sourceSession) : "(unknown seat)";
     const tally = perSeat.get(seat) ?? { up: 0, down: 0 };
     if (f.reaction === "+1") tally.up++; else if (f.reaction === "-1") tally.down++;
     perSeat.set(seat, tally);
