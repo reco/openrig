@@ -137,6 +137,43 @@ describe("several Slack channels", () => {
     expect(repo.getById(work.qitemId)?.state).toBe("blocked");
   });
 
+  const click = async (user: string, blockId: string, messageTs: string, rootTs: string) => {
+    socket.onmessage?.({ data: JSON.stringify({ envelope_id: `e-click-${user}-${messageTs}`, type: "interactive", payload: {
+      type: "block_actions", user: { id: user }, channel: { id: "C-PSA" },
+      container: { type: "message", message_ts: messageTs, thread_ts: rootTs, channel_id: "C-PSA" },
+      message: { ts: messageTs, thread_ts: rootTs },
+      actions: [{ type: "button", block_id: blockId, action_id: "or-confirm", action_ts: `${Date.now()}` }],
+    } }) });
+    await new Promise((r) => setTimeout(r, 80));
+  };
+
+  it("a seat answers one human inside another human's thread in the same channel; only the addressed human can confirm there", async () => {
+    await say("ULEE", "C-PSA", "<@UBOT> can the logo be bigger?", "120.1");
+    const lees = rowWith("can the logo be bigger")!;
+    await repo.create({ sourceSession: "psa-dev@psa", destinationSession: "human-founder@external", humanIntent: "update", summary: "FYI", body: "Lee asks for a bigger logo.", replyTo: lees.qitemId, nudge: false });
+    await vi.waitFor(() => expect(posts.some((p) => String(p.text).includes("Lee asks for a bigger logo."))).toBe(true));
+    expect(posts.find((p) => String(p.text).includes("Lee asks for a bigger logo."))).toMatchObject({ channel: "C-PSA", thread_ts: "120.1" });
+
+    const decision = await repo.create({ sourceSession: "psa-dev@psa", destinationSession: "human-founder@external", humanIntent: "decision", summary: "Bigger logo?", body: "Approve?", replyTo: lees.qitemId, humanConfirm: "Make it bigger", nudge: false });
+    await vi.waitFor(() => expect(posts.some((p) => String(p.text).includes("Bigger logo?"))).toBe(true));
+    const post = posts.find((p) => String(p.text).includes("Bigger logo?"))!;
+    expect(post).toMatchObject({ channel: "C-PSA", thread_ts: "120.1" });
+    const ts = `${posts.indexOf(post) + 1}.1`;
+    await click("ULEE", `or-confirm:${decision.qitemId}`, ts, "120.1");
+    expect(repo.getById(decision.qitemId)?.state).toBe("pending");
+    await click("UFOUNDER", `or-confirm:${decision.qitemId}`, ts, "120.1");
+    await vi.waitFor(() => expect(repo.getById(decision.qitemId)?.state).toBe("done"));
+  });
+
+  it("a reply into a thread of an unconfigured channel still posts top-level", async () => {
+    await say("UFOUNDER", "C-ELSEWHERE", "From another channel", "130.1");
+    const there = rowWith("From another channel")!;
+    const update = await repo.create({ sourceSession: "advisor@kernel", destinationSession: "human-founder@external", humanIntent: "update", summary: "Answer", body: "Answered elsewhere.", replyTo: there.qitemId, nudge: false });
+    await vi.waitFor(() => expect(posts.some((p) => String(p.text).includes("Answered elsewhere."))).toBe(true));
+    expect(posts.find((p) => String(p.text).includes("Answered elsewhere."))?.thread_ts).toBeUndefined();
+    expect(repo.getById(update.qitemId)?.replyToFallback).toContain("root-other-channel");
+  });
+
   it("a requester bound to one channel is heard only there, as untrusted conversation", async () => {
     await say("ULEE", "C-MAIN", "Hello from main", "104.1");
     await say("ULEE", "C-PSA", "Make the logo bigger", "105.1");

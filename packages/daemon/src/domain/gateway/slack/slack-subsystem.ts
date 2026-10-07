@@ -357,6 +357,11 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const appUserId = (): Promise<string | undefined> => appUser ??= bot
     ? callWebApi("auth.test", bot, {}, opts.fetchImpl).then((r) => (typeof r.json.user_id === "string" ? r.json.user_id : undefined)).catch(() => undefined)
     : Promise.resolve(undefined);
+  const askedHumanOf = (qitemId: string): string | null => {
+    const item = opts.queueRepo.getById(qitemId);
+    const registry = registrySurface.loadHumanRegistry(opts.home);
+    return item && registry.ok ? resolveRegisteredHumanAddress(item.blockedOn || item.destinationSession, registry.entities) : null;
+  };
   const isConfiguredChannel = (channel: string) => channels.some((c) => c.id === channel);
   // A new root goes to the channel whose seat is posting; replies stay in their thread's channel.
   const channelForPost = (p: OutboundPostPayload, threadTs: string | undefined): string =>
@@ -398,7 +403,6 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       if (root) {
         if (root.state === "closed") return { kind: "fallback", reason: "root-closed", threadTs: root.threadTs };
         if (!isConfiguredChannel(root.channel)) return { kind: "fallback", reason: "root-other-channel", threadTs: root.threadTs };
-        if (root.human !== (p.destinationSession ?? "")) return { kind: "fallback", reason: "root-other-human", threadTs: root.threadTs };
         if (root.seat !== (p.sourceSession ?? "")) return { kind: "fallback", reason: "root-other-seat", threadTs: root.threadTs };
         return { kind: "thread", threadTs: root.threadTs };
       }
@@ -407,7 +411,6 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       const humanMessage = receivedMessage(item.tags);
       if (humanMessage && !item.tags?.some((t) => t.startsWith("reply-to:"))) {
         if (!isConfiguredChannel(humanMessage.channel)) return { kind: "fallback", reason: "root-other-channel", threadTs: humanMessage.ts };
-        if (entityOf(item.sourceSession) !== entityOf(p.destinationSession)) return { kind: "fallback", reason: "root-other-human", threadTs: humanMessage.ts };
         const root = { threadTs: humanMessage.ts, channel: humanMessage.channel, human: item.sourceSession, seat: p.sourceSession ?? "", conversationId: item.qitemId };
         threadMap.open(root);
         opts.queueRepo.update({ qitemId: item.qitemId, actorSession: "daemon@kernel", transitionNote: formatPostedStamp({ ...root, messageTs: humanMessage.ts }) });
@@ -830,10 +833,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         } }),
       resolveHumanReply: opts.resolveHumanReply && (async (input) => {
         // Only the human the item waits on may resolve it (its park's blocked_on, or a direct request's destination).
-        const item = opts.queueRepo.getById(input.qitemId);
-        const registry = registrySurface.loadHumanRegistry(opts.home);
-        const asked = item && registry.ok ? resolveRegisteredHumanAddress(item.blockedOn || item.destinationSession, registry.entities) : null;
-        if (!asked || asked !== input.actorSession) return "not-applicable";
+        if (askedHumanOf(input.qitemId) !== input.actorSession) return "not-applicable";
         return opts.resolveHumanReply!(input);
       }),
       explicitAnswersOnly: cfg.explicitAnswersOnly,
@@ -906,11 +906,10 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         const defaultConfirm = cfg.explicitAnswersOnly && !offer?.humanConfirm && offer?.humanIntent !== "update" && !offer?.humanQuestions?.length;
         const reading = offer?.humanConfirm ?? (defaultConfirm ? DEFAULT_CONFIRM_DECISION : null);
         if (!offer || !reading) return { ok: false, reason: "not-a-confirm-offer" };
-        const askedRoot = threadMap.resolveByConversation(offer.humanIntent !== "update" ? offer.qitemId : offer.replyTo ?? "")
-          ?? threadMap.resolveByThread(opts.queueRepo.postedThreadForQitem(offer.qitemId) ?? "");
-        if (!askedRoot || !isRequestHuman(askedRoot, actorSession)) return { ok: false, reason: "not-the-asked-human" };
         const decisionQitemId = offer.humanIntent !== "update" ? offer.qitemId : offer.replyTo;
         if (!decisionQitemId) return { ok: false, reason: "not-a-confirm-offer" };
+        // The decision's own addressed human answers it, whoever started the thread it sits in.
+        if (askedHumanOf(decisionQitemId) !== actorSession) return { ok: false, reason: "not-the-asked-human" };
         if (offer.humanIntent === "update" && offer.tsCreated < gateOpenedAt(opts.queueRepo, decisionQitemId)) return { ok: false, reason: "offer-from-an-earlier-gate" };
         const won = opts.queueRepo.transitionLog.listForQitem(offer.qitemId).some((t) => t.transitionNote === CONFIRM_WON_NOTE && t.actorSession === "daemon@kernel" && t.identityProvenance === null);
         return { ok: true, decisionQitemId, reading, decided: currentGateResolved(opts.queueRepo, decisionQitemId), won };
