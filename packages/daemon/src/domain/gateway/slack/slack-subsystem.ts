@@ -18,7 +18,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { buildInProcessWire, type GatewayWire, type SubsystemDeliverFn } from "../gateway-subsystem.js";
-import { addReaction, downloadPrivateFile, postChatMessage, removeReaction, setThreadStatus, updateChatMessage } from "./slack-api.js";
+import { addReaction, callWebApi, downloadPrivateFile, postChatMessage, removeReaction, setThreadStatus, updateChatMessage } from "./slack-api.js";
 import { channelsOf, loadConfig } from "./config.js";
 import { resolveSecret } from "./secrets.js";
 import { SeenStore, DeadLetterStore, InboundReceiptStore } from "./state-store.js";
@@ -261,6 +261,14 @@ function stateDir(home: string): string {
 
 /** Build the production Slack gateway wire from config + secrets. Never throws on a missing
  *  configuration — that is an honest inert wire, not a boot failure. */
+/** A message's Slack link (chat.getPermalink), or null when Slack cannot give one. */
+export async function slackPermalink(home: string, channel: string, messageTs: string, fetchImpl?: FetchImpl): Promise<string | null> {
+  const bot = resolveSecret(SECRET_BOT, { envFile: loadConfig(home).secretsEnvFile ?? undefined });
+  if (!bot) return null;
+  const r = await callWebApi("chat.getPermalink", bot, { channel, message_ts: messageTs }, fetchImpl, undefined, "get-query");
+  return r.ok && typeof r.json.permalink === "string" ? r.json.permalink : null;
+}
+
 export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const log = opts.log ?? (() => {});
   const cfg = loadConfig(opts.home);
@@ -871,13 +879,13 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       markConfirmWon: (offerQitemId) => {
         opts.queueRepo.update({ qitemId: offerQitemId, actorSession: "daemon@kernel", transitionNote: CONFIRM_WON_NOTE });
       },
-      recordFeedback: async ({ messageTs, actorSession, reaction, key }) => {
+      recordFeedback: async ({ channel, messageTs, actorSession, reaction, key }) => {
         const threadTs = opts.queueRepo.postedThreadForMessage(messageTs) ?? messageTs;
         const root = threadMap.resolveByThread(threadTs);
         const qitemId = opts.queueRepo.postedQitemForMessage(messageTs) ?? root?.conversationId;
         const item = qitemId ? opts.queueRepo.getById(qitemId) : null;
         if (!root || !item || !isRequestHuman(root, actorSession)) return "not-applicable";
-        const note = `human-feedback reaction=${reaction} message_ts=${messageTs} key=${createHash("sha256").update(key).digest("hex").slice(0, 20)}`;
+        const note = `human-feedback reaction=${reaction} message_ts=${messageTs} channel=${channel} key=${createHash("sha256").update(key).digest("hex").slice(0, 20)}`;
         if (!opts.queueRepo.transitionLog.listForQitem(item.qitemId).some((t) => t.transitionNote === note)) {
           opts.queueRepo.update({ qitemId: item.qitemId, actorSession, transitionNote: note });
         }
@@ -888,7 +896,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
             destinationSession: root.seat,
             tags: ["founder-slack", "inbound", "human-feedback", `reply-to:${root.conversationId}`],
             summary: `👎 on "${(item.summary ?? item.qitemId).slice(0, 80)}"`,
-            body: `The human gave 👎 to ${item.qitemId} (${item.summary ?? "no summary"}). Do not ask why; propose something different in its thread: rig queue create --human-intent update --reply-to ${root.conversationId} (with --confirm for a new button).`,
+            body: `The human gave 👎 to ${item.qitemId} (${item.summary ?? "no summary"}). Do not ask why. Record ONE short lesson in your durable memory or notes (what was wrong, what to do instead), then propose something different in its thread: rig queue create --human-intent update --reply-to ${root.conversationId} (with --confirm for a new button).`,
             nudge: true,
           });
         }

@@ -2098,6 +2098,12 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
             return { ok: res.ok };
           },
         }),
+        (await import("./domain/policies/human-feedback-report.js")).makeHumanFeedbackReportPolicy({
+          queueRepo: queueRepoInstance,
+          registry: { loadHumanRegistry: (home: string) => loadHumanRegistryForDelivery(home) },
+          home: OPENRIG_HOME,
+          permalink: async (channel, messageTs) => (await import("./domain/gateway/slack/slack-subsystem.js")).slackPermalink(OPENRIG_HOME, channel, messageTs),
+        }),
         (await import("./domain/policies/delivery-digest-flush.js")).makeDeliveryDigestFlushPolicy({
           queueRepo: queueRepoInstance,
           registry: { loadHumanRegistry: (home: string) => loadHumanRegistryForDelivery(home) },
@@ -2167,6 +2173,15 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       };
       ensureDigestJob("4h", 4 * 60 * 60);
       ensureDigestJob("daily", 24 * 60 * 60);
+      watchdogJobsRepoInstance.ensureAutoRegistration({
+        policy: "human-feedback-report",
+        targetSession: "human-feedback-report@kernel",
+        registeredBySession: "daemon@kernel",
+        intervalSeconds: 60 * 60,
+        activeWakeIntervalSeconds: null,
+        scanIntervalSeconds: null,
+        specYaml: "policy: human-feedback-report\ntarget:\n  session: human-feedback-report@kernel\n",
+      });
     }
 
     // B8 / slice-07 A3 — the MODEL-DIVERGENCE MONITOR: cause-agnostic effective-vs-pinned

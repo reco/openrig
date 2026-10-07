@@ -114,7 +114,9 @@ On every kind the human may type instead; that reaches you as conversation.
 Each received message shows 👀 in Slack, 🤔 once you claim its row, and nothing
 once you answer in its thread (`--reply-to`) or close its row. Always answer.
 👍/👎 on any of your messages is feedback, never a decision; on 👎
-you get a row: propose an alternative, do not ask why. For a yes/go decision,
+you get a row: record one short lesson in your durable memory or notes (what
+was wrong, what to do instead), then propose an alternative; do not ask why.
+On Mondays the human gets a weekly 👍/👎 summary per seat. For a yes/go decision,
 put the action on a button with
 `--confirm "<call to action>"` on the decision itself (e.g. "Build it", "Write the
 issue"); a click approves with exactly that text. The decision resolves, once,

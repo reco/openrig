@@ -41,6 +41,8 @@ export const PHASE_D_POLICIES = [
   // additionalPolicies like parked-owner-consumer.
   "delivery-deferral",
   "delivery-digest-flush",
+  // The weekly 👍/👎 report to the human (Monday 09:00 local), on an hourly job.
+  "human-feedback-report",
 ] as const;
 
 /** @deprecated since Phase D — use PHASE_D_POLICIES. */

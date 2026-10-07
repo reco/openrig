@@ -156,6 +156,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       const asks = toSeat().filter((q) => q.tags?.includes("human-feedback"));
       expect(asks).toHaveLength(1);
       expect(asks[0]?.summary).toContain("👎");
+      expect(asks[0]?.body).toContain("Record ONE short lesson");
       expect(asks[0]?.body).toContain(`--reply-to ${decisionId}`);
       expect(await react("1.1", { reaction: "-1", user: "UOTHER" })).not.toMatchObject({ status: "accepted" });
     });
