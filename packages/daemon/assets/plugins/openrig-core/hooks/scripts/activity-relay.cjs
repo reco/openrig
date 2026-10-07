@@ -68,6 +68,7 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
   );
 
   if ((!sessionName && !nodeId) || !runtime || !hookEvent) return null;
+  if (hookEvent === "PreToolUse" && providerPayload.agent_id) return null;
 
   const subtype = firstString(
     providerPayload.subtype,

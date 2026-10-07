@@ -39,6 +39,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
   let marks: Map<string, Set<string>>;
   let statuses: Array<Record<string, unknown>>;
   let statusSupported = true;
+  let statusError: string | undefined;
   const marksOn = (ts: string) => { if (!marks.has(ts)) marks.set(ts, new Set()); return marks.get(ts)!; };
   const holding = (name: string) => ({ has: (ts: string) => marks.get(ts)?.has(name) === true });
   const eyes = holding("eyes");
@@ -83,7 +84,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       fetchImpl: async (url, init) => {
         if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
         if (url.endsWith("chat.update")) { updates.push(JSON.parse(String(init?.body))); return reply({ ok: true }); }
-        if (url.endsWith("assistant.threads.setStatus")) { statuses.push(JSON.parse(String(init?.body))); return reply(statusSupported ? { ok: true } : { ok: false, error: "channel_not_found" }); }
+        if (url.endsWith("assistant.threads.setStatus")) { statuses.push(JSON.parse(String(init?.body))); return reply(statusError ? { ok: false, error: statusError } : statusSupported ? { ok: true } : { ok: false, error: "channel_not_found" }); }
         if (url.endsWith("reactions.add")) { const b = JSON.parse(String(init?.body)); seen.push(b); marksOn(b.timestamp).add(b.name); return reply({ ok: true }); }
         if (url.endsWith("reactions.remove")) { const b = JSON.parse(String(init?.body)); unseen.push(b); marksOn(b.timestamp).delete(b.name); return reply({ ok: true }); }
         posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
@@ -561,6 +562,24 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
         await vi.waitFor(() => expect(updates.some((u) => /done/i.test(String(u.text)))).toBe(true));
         expect(posts.filter((p) => /Working/.test(String(p.text)))).toHaveLength(1);
       } finally { statusSupported = true; }
+    });
+
+    it("a rate-limited status line stays a status line, and an unchanged step is not resent per event", async () => {
+      await say("Refactor the parser", "2960.1");
+      const row = toSeat().find((q) => q.body.includes("Refactor the parser"))!;
+      repo.claim({ qitemId: row.qitemId, destinationSession: "author@rig" });
+      statusError = "ratelimited";
+      try {
+        activity("author@rig", "running");
+        await vi.waitFor(() => expect(statuses.filter((s) => s.thread_ts === "1.1").length).toBeGreaterThan(1));
+      } finally { statusError = undefined; }
+      await vi.waitFor(() => expect(statuses.at(-1)).toMatchObject({ thread_ts: "1.1" }));
+      expect(posts.some((p) => /Working/.test(String(p.text)))).toBe(false);
+      await new Promise((r) => setTimeout(r, 80));
+      const before = statuses.length;
+      for (let i = 0; i < 20; i++) activity("author@rig", "running");
+      await new Promise((r) => setTimeout(r, 30));
+      expect(statuses.length - before).toBeLessThanOrEqual(1);
     });
 
     const toolUse = (sessionName: string, runtime: string, rawSubtype: string, target?: string) => bus.emit({ type: "agent.activity", rigId: "r", nodeId: "n", sessionName, runtime,

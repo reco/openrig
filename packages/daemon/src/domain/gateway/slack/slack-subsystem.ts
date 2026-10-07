@@ -463,7 +463,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   // message's thread, re-sent before Slack's 2-minute timeout. Where the status line fails (e.g.
   // a channel type it does not support), one live reply in the thread carries the step instead,
   // edited in place and ended as done.
-  interface Progress { since: number; mode: "status" | "reply" | "off"; replyTs?: string; timer?: ReturnType<typeof setInterval> }
+  interface Progress { since: number; mode: "status" | "reply" | "off"; replyTs?: string; shown?: string; timer?: ReturnType<typeof setInterval> }
+  const TRANSIENT_SLACK_ERROR = /ratelimited|http 429|http 5\d\d|transport/;
   const PROGRESS_REPLY_PREFIX = "slack-progress-reply";
   const savedReplyTs = (qitemId: string): string | undefined => opts.queueRepo.transitionLog.listForQitem(qitemId)
     .find((t) => t.actorSession === "daemon@kernel" && t.transitionNote?.startsWith(`${PROGRESS_REPLY_PREFIX} ts=`))
@@ -477,18 +478,23 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     if (stage === cfg.receipts.typing) return "is writing a reply…";
     return /tool/.test(reason) ? "is running tools…" : /prompt/.test(reason) ? "is reading…" : "is working…";
   };
-  const showProgress = async (qitemId: string, channel: string, threadTs: string, session: string): Promise<void> => {
+  const showProgress = async (qitemId: string, channel: string, threadTs: string, session: string, refresh = false): Promise<void> => {
     const saved = progress.has(qitemId) ? undefined : savedReplyTs(qitemId);
     const state: Progress = progress.get(qitemId) ?? (saved ? { since: Date.now(), mode: "reply", replyTs: saved } : { since: Date.now(), mode: "status" });
     progress.set(qitemId, state);
     if (state.mode === "off") return;
     if (state.mode === "status") {
-      const r = await setThreadStatus(bot!, { channel_id: channel, thread_ts: threadTs, status: stepOf(session) }, opts.fetchImpl);
-      if (r.ok) return;
+      const step = stepOf(session);
+      if (!refresh && state.shown === step) return;
+      const r = await setThreadStatus(bot!, { channel_id: channel, thread_ts: threadTs, status: step }, opts.fetchImpl);
+      if (r.ok) { state.shown = step; return; }
+      if (TRANSIENT_SLACK_ERROR.test(r.error ?? "")) { log(`status line not refreshed thread=${threadTs}: ${r.error}`); return; }
       log(`status line unavailable thread=${threadTs}: ${r.error}; using a live reply`);
       state.mode = "reply";
     }
     const text = `Working · ${elapsed(state.since)}`;
+    if (state.shown === text) return;
+    state.shown = text;
     if (state.replyTs) {
       await updateChatMessage(bot!, { channel, ts: state.replyTs, text, blocks: [] }, opts.fetchImpl);
     } else {
@@ -503,7 +509,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     if (working) {
       await showProgress(qitemId, channel, threadTs, session);
       const current = progress.get(qitemId)!;
-      current.timer ??= setInterval(() => { void showProgress(qitemId, channel, threadTs, session); }, opts.statusRefreshMs ?? 90_000);
+      current.timer ??= setInterval(() => { void showProgress(qitemId, channel, threadTs, session, true); }, opts.statusRefreshMs ?? 90_000);
       current.timer.unref?.();
       return;
     }

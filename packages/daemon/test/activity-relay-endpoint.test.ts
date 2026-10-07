@@ -103,4 +103,8 @@ describe("activity-relay PreToolUse classification", () => {
   it("reports any other shell command as Bash with no target", () => {
     expect(pre("Bash", { command: "npm test" })).toMatchObject({ subtype: "Bash", target: null });
   });
+
+  it("ignores tool calls made inside a subagent", () => {
+    expect(relay.buildOpenRigPayload({ hook_event_name: "PreToolUse", tool_name: "Edit", tool_input: {}, agent_id: "sub-1" }, env)).toBeNull();
+  });
 });
