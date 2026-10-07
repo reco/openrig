@@ -347,7 +347,9 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     let item = p.replyTo ? opts.queueRepo.getById(p.replyTo) : null;
     for (let depth = 0; item && depth < MAX_REPLY_TO_CHAIN; depth++) {
       if (!cfg.explicitAnswersOnly && hasLiveHumanGate(item)) return { kind: "fallback", reason: "reference-has-live-gate", qitemId: item.qitemId };
-      const root = threadMap.resolveByConversation(item.qitemId);
+      // An inbound reply answers in the thread the human wrote in, even a superseded root.
+      const inThread = item.tags?.find((t) => t.startsWith("thread-ts:"))?.slice("thread-ts:".length);
+      const root = (inThread ? threadMap.resolveByThread(inThread) : null) ?? threadMap.resolveByConversation(item.qitemId);
       if (root) {
         if (root.state === "closed") return { kind: "fallback", reason: "root-closed", threadTs: root.threadTs };
         if (root.channel !== cfg.channel) return { kind: "fallback", reason: "root-other-channel", threadTs: root.threadTs };
