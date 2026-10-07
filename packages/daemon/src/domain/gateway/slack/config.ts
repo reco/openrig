@@ -69,9 +69,10 @@ function validateLevel(field: string, value: unknown): asserts value is OwnerNot
 function validateConfig(cfg: SlackConnectorConfig): void {
   validateLevel("minimumLevelThatPosts", cfg.minimumLevelThatPosts);
   validateLevel("minimumLevelThatInterrupts", cfg.minimumLevelThatInterrupts);
-  for (const [stage, name] of Object.entries(cfg.receipts)) {
+  for (const [stage, name] of Object.entries(cfg.receipts ?? {})) {
     if (typeof name !== "string" || !/^[a-z0-9_+'-]+$/.test(name)) throw new Error(`receipts.${stage} must be a Slack emoji name without colons (got ${String(name)})`);
   }
+  if (new Set(Object.values(cfg.receipts ?? {})).size !== 4) throw new Error("receipts needs four different emoji names (received, picked, working, done)");
   if (typeof cfg.staleReminderDays !== "number" || !(cfg.staleReminderDays > 0)) {
     throw new Error(`staleReminderDays must be a positive number of days (got ${String(cfg.staleReminderDays)})`);
   }
@@ -90,7 +91,7 @@ export function loadConfig(home?: string): SlackConnectorConfig {
     return { ...DEFAULT_CONFIG };
   }
   const { alertTag: _retiredAlertTag, ...supported } = raw;
-  const cfg = { ...DEFAULT_CONFIG, ...supported, receipts: { ...DEFAULT_CONFIG.receipts, ...supported.receipts } };
+  const cfg = { ...DEFAULT_CONFIG, ...supported, receipts: { ...DEFAULT_CONFIG.receipts, ...(supported.receipts ?? {}) } };
   validateConfig(cfg);
   return cfg;
 }

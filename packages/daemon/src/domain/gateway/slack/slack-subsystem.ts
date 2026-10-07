@@ -427,12 +427,16 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const handled = (state: string | undefined): boolean => ["done", "canceled", "handed-off", "failed", "denied"].includes(state ?? "");
   const threadAnsweredAt = new Map<string, string>(); // conversation -> last seat answer in its thread
   const RECEIPTS = [cfg.receipts.received, cfg.receipts.picked, cfg.receipts.working, cfg.receipts.done];
-  const seatIsWorking = (session: string): boolean => {
-    const row = opts.queueRepo.db.prepare(
-      "SELECT json_extract(payload, '$.activity.state') AS state FROM events WHERE type = 'agent.activity' AND json_extract(payload, '$.sessionName') = ? ORDER BY seq DESC LIMIT 1",
-    ).get(session) as { state: string | null } | undefined;
-    return row?.state === "running";
+  // The seat's latest activity, through the indexed (node_id, type, seq) lookup.
+  const latestActivity = (session: string): { state: string | null; reason: string | null } => {
+    const node = opts.queueRepo.db.prepare("SELECT node_id FROM sessions WHERE session_name = ? ORDER BY rowid DESC LIMIT 1").get(session) as { node_id: string } | undefined;
+    const pick = "SELECT json_extract(payload, '$.activity.state') AS state, json_extract(payload, '$.activity.reason') AS reason FROM events WHERE type = 'agent.activity'";
+    const row = (node
+      ? opts.queueRepo.db.prepare(`${pick} AND node_id = ? ORDER BY seq DESC LIMIT 1`).get(node.node_id)
+      : opts.queueRepo.db.prepare(`${pick} AND json_extract(payload, '$.sessionName') = ? ORDER BY seq DESC LIMIT 1`).get(session)) as { state: string | null; reason: string | null } | undefined;
+    return row ?? { state: null, reason: null };
   };
+  const seatIsWorking = (session: string): boolean => latestActivity(session).state === "running";
   const wantedReceipt = (row: { qitemId: string; state: string; tsCreated: string; destinationSession: string; tags?: string[] | null }): string => {
     const conversation = row.tags?.find((t) => t.startsWith("reply-to:"))?.slice("reply-to:".length) ?? row.qitemId;
     const answeredAt = threadAnsweredAt.get(conversation);
@@ -445,19 +449,22 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   // message's thread, re-sent before Slack's 2-minute timeout. Where the status line fails (e.g.
   // a channel type it does not support), one live reply in the thread carries the step instead,
   // edited in place and ended as done.
-  interface Progress { since: number; mode: "status" | "reply"; replyTs?: string; timer?: ReturnType<typeof setInterval> }
+  interface Progress { since: number; mode: "status" | "reply" | "off"; replyTs?: string; timer?: ReturnType<typeof setInterval> }
+  const PROGRESS_REPLY_PREFIX = "slack-progress-reply";
+  const savedReplyTs = (qitemId: string): string | undefined => opts.queueRepo.transitionLog.listForQitem(qitemId)
+    .find((t) => t.actorSession === "daemon@kernel" && t.transitionNote?.startsWith(`${PROGRESS_REPLY_PREFIX} ts=`))
+    ?.transitionNote?.slice(`${PROGRESS_REPLY_PREFIX} ts=`.length);
   const progress = new Map<string, Progress>();
   const elapsed = (since: number) => `${Math.max(0, Math.round((Date.now() - since) / 60_000))}m`;
   const stepOf = (session: string): string => {
-    const row = opts.queueRepo.db.prepare(
-      "SELECT json_extract(payload, '$.activity.reason') AS reason FROM events WHERE type = 'agent.activity' AND json_extract(payload, '$.sessionName') = ? ORDER BY seq DESC LIMIT 1",
-    ).get(session) as { reason: string | null } | undefined;
-    const reason = row?.reason ?? "";
+    const reason = latestActivity(session).reason ?? "";
     return /tool/.test(reason) ? "is running tools…" : /prompt/.test(reason) ? "is reading…" : "is working…";
   };
   const showProgress = async (qitemId: string, channel: string, threadTs: string, session: string): Promise<void> => {
-    const state = progress.get(qitemId) ?? { since: Date.now(), mode: "status" as const };
+    const saved = progress.has(qitemId) ? undefined : savedReplyTs(qitemId);
+    const state: Progress = progress.get(qitemId) ?? (saved ? { since: Date.now(), mode: "reply", replyTs: saved } : { since: Date.now(), mode: "status" });
     progress.set(qitemId, state);
+    if (state.mode === "off") return;
     if (state.mode === "status") {
       const r = await setThreadStatus(bot!, { channel_id: channel, thread_ts: threadTs, status: stepOf(session) }, opts.fetchImpl);
       if (r.ok) return;
@@ -469,7 +476,9 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       await updateChatMessage(bot!, { channel, ts: state.replyTs, text, blocks: [] }, opts.fetchImpl);
     } else {
       const r = await postChatMessage(bot!, { channel, thread_ts: threadTs, text }, opts.fetchImpl);
-      if (r.ok) state.replyTs = r.ts;
+      if (!r.ok) { log(`progress reply not posted thread=${threadTs}: ${r.error}; giving up for this request`); state.mode = "off"; return; }
+      state.replyTs = r.ts;
+      opts.queueRepo.update({ qitemId, actorSession: "daemon@kernel", transitionNote: `${PROGRESS_REPLY_PREFIX} ts=${r.ts}` });
     }
   };
   const syncProgress = async (qitemId: string, channel: string, threadTs: string, session: string, working: boolean, done: boolean): Promise<void> => {
@@ -489,7 +498,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     } else if (state.replyTs) {
       await updateChatMessage(bot!, { channel, ts: state.replyTs, text: `${done ? "Done" : "Paused"} · ${elapsed(state.since)}`, blocks: [] }, opts.fetchImpl);
     }
-    if (done) progress.delete(qitemId);
+    if (done) { progress.delete(qitemId); appliedReceipt.delete(qitemId); }
   };
 
   const receiptChains = new Map<string, Promise<void>>();
