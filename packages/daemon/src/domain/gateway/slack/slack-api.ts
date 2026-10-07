@@ -377,6 +377,17 @@ export async function addReaction(
   return { ok: r.ok || r.error === "already_reacted", error: r.error };
 }
 
+/** Slack's AI-app status line on a thread (`assistant.threads.setStatus`; chat:write suffices in
+ *  channel threads since 2026-03). An empty status clears it; Slack also clears it on our reply. */
+export async function setThreadStatus(
+  token: string,
+  input: { channel_id: string; thread_ts: string; status: string },
+  fetchImpl: FetchImpl = defaultFetch,
+): Promise<{ ok: boolean; error?: string }> {
+  const r = await callWebApi("assistant.threads.setStatus", token, input, fetchImpl);
+  return { ok: r.ok, error: r.error };
+}
+
 /** Remove the app's own reaction (`reactions.remove`); an absent reaction counts as removed. */
 export async function removeReaction(
   token: string,

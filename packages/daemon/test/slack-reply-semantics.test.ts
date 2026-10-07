@@ -37,6 +37,8 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
   let seen: Array<Record<string, unknown>>;
   let unseen: Array<Record<string, unknown>>;
   let marks: Map<string, Set<string>>;
+  let statuses: Array<Record<string, unknown>>;
+  let statusSupported = true;
   const marksOn = (ts: string) => { if (!marks.has(ts)) marks.set(ts, new Set()); return marks.get(ts)!; };
   const holding = (name: string) => ({ has: (ts: string) => marks.get(ts)?.has(name) === true });
   const eyes = holding("eyes");
@@ -62,6 +64,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
     seen = [];
     unseen = [];
     marks = new Map();
+    statuses = [];
     const contract = new MissionControlWriteContract({ db, eventBus: bus, queueRepo: repo, actionLog: new MissionControlActionLog(db) });
     const realResolve = makeHumanReplyResolver(repo, contract);
     wire = buildSlackGatewayWire({
@@ -75,10 +78,12 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       inboundMaxConnects: 1,
       inboundRetryIntervalMs: 50,
       requestSweepIntervalMs: 50,
+      statusRefreshMs: 60,
       linkState: async () => "merged",
       fetchImpl: async (url, init) => {
         if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
         if (url.endsWith("chat.update")) { updates.push(JSON.parse(String(init?.body))); return reply({ ok: true }); }
+        if (url.endsWith("assistant.threads.setStatus")) { statuses.push(JSON.parse(String(init?.body))); return reply(statusSupported ? { ok: true } : { ok: false, error: "channel_not_found" }); }
         if (url.endsWith("reactions.add")) { const b = JSON.parse(String(init?.body)); seen.push(b); marksOn(b.timestamp).add(b.name); return reply({ ok: true }); }
         if (url.endsWith("reactions.remove")) { const b = JSON.parse(String(init?.body)); unseen.push(b); marksOn(b.timestamp).delete(b.name); return reply({ ok: true }); }
         posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
@@ -528,6 +533,34 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       await vi.waitFor(() => expect([...marksOn("2700.1")]).toEqual(["thinking_face"]));
       repo.update({ qitemId: row.qitemId, actorSession: "author@rig", state: "done", closureReason: "no-follow-on", transitionNote: "done" });
       await vi.waitFor(() => expect([...marksOn("2700.1")]).toEqual(["white_check_mark"]));
+    });
+
+    it("while the seat works, Slack's status line shows it in the message's thread, refreshed, and cleared after", async () => {
+      statusSupported = true;
+      await say("Run the tests please", "2900.1");
+      const row = toSeat().find((q) => q.body.includes("Run the tests please"))!;
+      repo.claim({ qitemId: row.qitemId, destinationSession: "author@rig" });
+      activity("author@rig", "running");
+      await vi.waitFor(() => expect(statuses.some((s) => s.thread_ts === "1.1" && String(s.status).length > 0)).toBe(true));
+      const first = statuses.length;
+      await vi.waitFor(() => expect(statuses.length).toBeGreaterThan(first));
+      expect(posts.some((p) => /Working/.test(String(p.text)))).toBe(false);
+      repo.update({ qitemId: row.qitemId, actorSession: "author@rig", state: "done", closureReason: "no-follow-on", transitionNote: "done" });
+      await vi.waitFor(() => expect(statuses.at(-1)).toMatchObject({ thread_ts: "1.1", status: "" }));
+    });
+
+    it("where the status line is unsupported, one live reply in the thread shows the step and ends as done", async () => {
+      statusSupported = false;
+      try {
+        await say("Deploy the preview", "2950.1");
+        const row = toSeat().find((q) => q.body.includes("Deploy the preview"))!;
+        repo.claim({ qitemId: row.qitemId, destinationSession: "author@rig" });
+        activity("author@rig", "running");
+        await vi.waitFor(() => expect(posts.filter((p) => p.thread_ts === "1.1" && /Working/.test(String(p.text)))).toHaveLength(1));
+        repo.update({ qitemId: row.qitemId, actorSession: "author@rig", state: "done", closureReason: "no-follow-on", transitionNote: "done" });
+        await vi.waitFor(() => expect(updates.some((u) => /done/i.test(String(u.text)))).toBe(true));
+        expect(posts.filter((p) => /Working/.test(String(p.text)))).toHaveLength(1);
+      } finally { statusSupported = true; }
     });
 
     it("swaps 👀 for 🤔 when the seat claims the message, and clears it when done", async () => {

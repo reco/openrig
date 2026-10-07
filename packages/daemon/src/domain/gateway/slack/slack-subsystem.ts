@@ -18,7 +18,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { buildInProcessWire, type GatewayWire, type SubsystemDeliverFn } from "../gateway-subsystem.js";
-import { addReaction, downloadPrivateFile, postChatMessage, removeReaction, updateChatMessage } from "./slack-api.js";
+import { addReaction, downloadPrivateFile, postChatMessage, removeReaction, setThreadStatus, updateChatMessage } from "./slack-api.js";
 import { loadConfig } from "./config.js";
 import { resolveSecret } from "./secrets.js";
 import { SeenStore, DeadLetterStore, InboundReceiptStore } from "./state-store.js";
@@ -69,6 +69,8 @@ export interface SlackWireOpts {
   registry?: RegistrySurface;
   /** Phase 1 request sweep cadence and PR/issue state source (tests inject both). */
   requestSweepIntervalMs?: number;
+  /** How often a "working" status line is re-sent (Slack drops it after 2 minutes). */
+  statusRefreshMs?: number;
   linkState?: (link: RequestLink) => Promise<LinkState>;
   resolveHumanReply?: (input: { qitemId: string; actorSession: string; decision: string }) => Promise<"resolved" | "already-resolved" | "not-applicable">;
 }
@@ -439,6 +441,57 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     return seatIsWorking(row.destinationSession) ? cfg.receipts.working : cfg.receipts.picked;
   };
   const appliedReceipt = new Map<string, string>(); // qitemId -> the reaction we last put on its message
+  // Phase 1 — while the seat works on a received message, Slack's status line shows it in that
+  // message's thread, re-sent before Slack's 2-minute timeout. Where the status line fails (e.g.
+  // a channel type it does not support), one live reply in the thread carries the step instead,
+  // edited in place and ended as done.
+  interface Progress { since: number; mode: "status" | "reply"; replyTs?: string; timer?: ReturnType<typeof setInterval> }
+  const progress = new Map<string, Progress>();
+  const elapsed = (since: number) => `${Math.max(0, Math.round((Date.now() - since) / 60_000))}m`;
+  const stepOf = (session: string): string => {
+    const row = opts.queueRepo.db.prepare(
+      "SELECT json_extract(payload, '$.activity.reason') AS reason FROM events WHERE type = 'agent.activity' AND json_extract(payload, '$.sessionName') = ? ORDER BY seq DESC LIMIT 1",
+    ).get(session) as { reason: string | null } | undefined;
+    const reason = row?.reason ?? "";
+    return /tool/.test(reason) ? "is running tools…" : /prompt/.test(reason) ? "is reading…" : "is working…";
+  };
+  const showProgress = async (qitemId: string, channel: string, threadTs: string, session: string): Promise<void> => {
+    const state = progress.get(qitemId) ?? { since: Date.now(), mode: "status" as const };
+    progress.set(qitemId, state);
+    if (state.mode === "status") {
+      const r = await setThreadStatus(bot!, { channel_id: channel, thread_ts: threadTs, status: stepOf(session) }, opts.fetchImpl);
+      if (r.ok) return;
+      log(`status line unavailable thread=${threadTs}: ${r.error}; using a live reply`);
+      state.mode = "reply";
+    }
+    const text = `Working · ${elapsed(state.since)}`;
+    if (state.replyTs) {
+      await updateChatMessage(bot!, { channel, ts: state.replyTs, text, blocks: [] }, opts.fetchImpl);
+    } else {
+      const r = await postChatMessage(bot!, { channel, thread_ts: threadTs, text }, opts.fetchImpl);
+      if (r.ok) state.replyTs = r.ts;
+    }
+  };
+  const syncProgress = async (qitemId: string, channel: string, threadTs: string, session: string, working: boolean, done: boolean): Promise<void> => {
+    const state = progress.get(qitemId);
+    if (working) {
+      await showProgress(qitemId, channel, threadTs, session);
+      const current = progress.get(qitemId)!;
+      current.timer ??= setInterval(() => { void showProgress(qitemId, channel, threadTs, session); }, opts.statusRefreshMs ?? 90_000);
+      current.timer.unref?.();
+      return;
+    }
+    if (!state) return;
+    clearInterval(state.timer);
+    state.timer = undefined;
+    if (state.mode === "status") {
+      await setThreadStatus(bot!, { channel_id: channel, thread_ts: threadTs, status: "" }, opts.fetchImpl);
+    } else if (state.replyTs) {
+      await updateChatMessage(bot!, { channel, ts: state.replyTs, text: `${done ? "Done" : "Paused"} · ${elapsed(state.since)}`, blocks: [] }, opts.fetchImpl);
+    }
+    if (done) progress.delete(qitemId);
+  };
+
   const receiptChains = new Map<string, Promise<void>>();
   const syncReceipt = (qitemId: string): Promise<void> => {
     const run = (receiptChains.get(qitemId) ?? Promise.resolve()).catch(() => {}).then(async () => {
@@ -446,6 +499,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       const message = receivedMessage(row?.tags);
       if (!bot || !row || !message) return;
       const wanted = wantedReceipt(row);
+      const threadTs = row.tags?.find((t) => t.startsWith("thread-ts:"))?.slice("thread-ts:".length) ?? message.ts;
+      await syncProgress(qitemId, message.channel, threadTs, row.destinationSession, wanted === cfg.receipts.working, wanted === cfg.receipts.done);
       const applied = appliedReceipt.get(qitemId);
       if (applied === wanted) return;
       const add = await addReaction(bot, { channel: message.channel, timestamp: message.ts, name: wanted }, opts.fetchImpl);
@@ -854,6 +909,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       });
     });
     stops.push(() => unsubscribe?.());
+    stops.push(() => { for (const state of progress.values()) clearInterval(state.timer); });
     recovery = new ChannelRecovery({ channel: cfg.channel, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl });
     starts.push(() => {
       recovery!.initialize(); // persist the once-only floor before any live events
