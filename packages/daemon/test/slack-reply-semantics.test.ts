@@ -764,6 +764,20 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(repo.transitionLog.listForQitem(inbound.qitemId).some((t) => t.transitionNote?.startsWith("slack-posted thread_ts=2600.1"))).toBe(true);
     });
 
+    it("a Confirm button on a decision posted into a human-started thread resolves that decision", async () => {
+      socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-top3", type: "events_api", payload: { event: { type: "message", user: "UFOUNDER", text: "Plan the PSA rig", ts: "2700.1", channel: "C-TEST" } } }) });
+      await vi.waitFor(() => expect(finals("e-top3")).toHaveLength(1));
+      const inbound = repo.list({ limit: 100 }).find((q) => q.body.includes("Plan the PSA rig"))!;
+      const plan = await repo.create({ ...request, humanIntent: "decision", summary: "PSA rig plan", body: "Dedicated rig, Lee as requester.", replyTo: inbound.qitemId, humanConfirm: "Build the PSA rig" });
+      await deliver(plan.qitemId);
+      expect(posts.at(-1)?.thread_ts).toBe("2700.1");
+      const ts = `${posts.length}.1`;
+      expect(await click(`or-confirm:${plan.qitemId}`, "or-confirm", ts, "UFOUNDER", "3900.1", "2700.1")).toMatchObject({ status: "accepted" });
+      expect(repo.getById(plan.qitemId)?.state).toBe("done");
+      expect(decisions).toEqual(["Build the PSA rig"]);
+      expect(updates.map((u) => u.ts)).toEqual([ts]);
+    });
+
     it("an empty `answer:` is conversation, not a resolution", async () => {
       await say("answer:   ", "2005.1");
       expect(repo.getById(decisionId)?.state).toBe("pending");

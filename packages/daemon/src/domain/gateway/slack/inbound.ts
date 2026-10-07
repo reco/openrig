@@ -495,7 +495,7 @@ export class InboundRouter {
 
   private async confirm(actorSession: string, offerQitemId: string, rootTs: string, channel: string | undefined, live: boolean, offerTs?: string): Promise<{ status: InboundDisposition; reason?: string }> {
     const route = this.deps.resolveRoute?.({ type: "message", thread_ts: rootTs, channel });
-    if (!route?.correlationQitemId) return { status: "ignored", reason: "unmapped-message" };
+    if (!route) return { status: "ignored", reason: "unmapped-message" };
     const offer = this.deps.confirmOffer?.({ offerQitemId, actorSession });
     if (!offer?.ok) return { status: "refused", reason: offer?.reason ?? "confirm-unavailable" };
     const ownPostInThread = offer.decisionQitemId === offerQitemId && !!offerTs && this.deps.postedQitem?.(offerTs) === offerQitemId;
