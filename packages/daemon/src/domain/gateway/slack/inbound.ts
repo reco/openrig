@@ -171,7 +171,7 @@ export interface InboundDeps {
   markReceived?: (input: { channel: string; ts: string; qitemId: string }) => Promise<void>;
   /** False when a channel has more than one human and the message does not @mention the app:
    *  it reaches the seat as quiet context only. */
-  isAddressed?: (ev: SlackEvent) => boolean;
+  isAddressed?: (ev: SlackEvent) => boolean | Promise<boolean>;
   /** A member joined or left a channel: its human count is stale. */
   onMembershipChanged?: (channel: string) => void;
   /** Phase 1 — replace a fully answered decision's button rows with its answers. Best-effort. */
@@ -328,7 +328,8 @@ export class InboundRouter {
       // S10 — deterministic route (thread map) when wired; static destination otherwise.
       const route = this.deps.resolveRoute?.(ev) ?? { destination: this.deps.destination };
       // A requester's words never resolve or cancel a gate: they reach the seat as conversation.
-      const addressed = this.deps.isAddressed?.(ev) ?? true;
+      const addressedCheck = this.deps.isAddressed?.(ev) ?? true;
+      const addressed = typeof addressedCheck === "boolean" ? addressedCheck : await addressedCheck;
       const decision = who.requester || !addressed ? null : this.replyDecision(ev, route.correlationQitemId);
       const cancel = who.requester || !addressed ? null : this.replyCancel(ev, route.correlationQitemId);
       const replyTags = this.replyTags(route.correlationQitemId, decision, cancel);

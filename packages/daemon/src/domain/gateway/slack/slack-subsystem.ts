@@ -233,6 +233,7 @@ export function makeReactionTarget(queueRepo: QueueRepository, threadMap: Thread
     const conversation = reply?.tags?.find((t) => t.startsWith("reply-to:"))?.slice("reply-to:".length);
     const threadTs = reply?.tags?.find((t) => t.startsWith("thread-ts:"))?.slice("thread-ts:".length);
     if (!reply || !conversation || !threadTs || reply.sourceSession !== actorSession || !askedIn(threadTs, actorSession)) return null;
+    if (reply.tags?.includes(NOT_ADDRESSED_TAG)) return null;
     if (reply.tsCreated < gateOpenedAt(queueRepo, conversation)) return null;
     const text = reply.body.split("\n\n---\nSource: ")[0]?.trim();
     return text ? { kind: "answer", decisionQitemId: conversation, threadTs, text } : null;
@@ -325,26 +326,37 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const threadMap = new ThreadSeatMap(opts.queueRepo.db);
   const channels = channelsOf(cfg);
   // The addressed-only rule: a channel with more than one human answers only messages that
-  // @mention the app. Counts refresh every 10 minutes, and at once on
-  // member_joined/left_channel; until a count is known every message counts as addressed.
+  // @mention the app. A message waits for its channel's first count; later counts refresh every
+  // 10 minutes in the background, and at once on member_joined/left_channel. When Slack cannot
+  // give a count (cached as unknown for 10 minutes) every message counts as addressed.
   const HUMAN_COUNT_TTL_MS = 10 * 60_000;
-  const humanCounts = new Map<string, { count: number; at: number }>();
-  const refreshing = new Set<string>();
+  const humanCounts = new Map<string, { count: number | null; at: number }>();
+  const counting = new Map<string, Promise<number | null>>();
   const userIsHuman = new Map<string, boolean>();
-  const refreshHumans = (channel: string) => {
-    if (!bot || refreshing.has(channel)) return;
-    refreshing.add(channel);
-    void countChannelHumans(bot, channel, userIsHuman, opts.fetchImpl)
-      .then((count) => { if (count !== null) humanCounts.set(channel, { count, at: Date.now() }); else log(`human count unavailable for ${channel}; every message counts as addressed`); })
-      .catch(() => {})
-      .finally(() => refreshing.delete(channel));
+  const recount = (channel: string): Promise<number | null> => {
+    const running = counting.get(channel);
+    if (running) return running;
+    const next = (bot ? countChannelHumans(bot, channel, userIsHuman, opts.fetchImpl) : Promise.resolve(null))
+      .catch(() => null)
+      .then((count) => {
+        humanCounts.set(channel, { count, at: Date.now() });
+        counting.delete(channel);
+        if (count === null) log(`human count unavailable for ${channel}; every message counts as addressed for 10 minutes`);
+        return count;
+      });
+    counting.set(channel, next);
+    return next;
   };
-  const humansIn = (channel: string): number | null => {
+  const humansIn = async (channel: string): Promise<number | null> => {
     const known = humanCounts.get(channel);
-    if (!known || Date.now() - known.at > HUMAN_COUNT_TTL_MS) refreshHumans(channel);
-    return known?.count ?? null;
+    if (!known) return recount(channel);
+    if (Date.now() - known.at > HUMAN_COUNT_TTL_MS) void recount(channel);
+    return known.count;
   };
-  let botUserId: string | undefined;
+  let appUser: Promise<string | undefined> | undefined;
+  const appUserId = (): Promise<string | undefined> => appUser ??= bot
+    ? callWebApi("auth.test", bot, {}, opts.fetchImpl).then((r) => (typeof r.json.user_id === "string" ? r.json.user_id : undefined)).catch(() => undefined)
+    : Promise.resolve(undefined);
   const isConfiguredChannel = (channel: string) => channels.some((c) => c.id === channel);
   // A new root goes to the channel whose seat is posting; replies stay in their thread's channel.
   const channelForPost = (p: OutboundPostPayload, threadTs: string | undefined): string =>
@@ -465,7 +477,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   };
   const handled = (state: string | undefined): boolean => ["done", "canceled", "handed-off", "failed", "denied"].includes(state ?? "");
   const threadAnsweredAt = new Map<string, string>(); // conversation -> last seat answer in its thread
-  const RECEIPTS = Object.values(cfg.receipts);
+  // hammer_and_wrench: the retired working stage, still cleared from messages that carry it.
+  const RECEIPTS = [...new Set([...Object.values(cfg.receipts), "hammer_and_wrench"])];
   const FILE_EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
   // The seat's latest activity, through the indexed (node_id, type, seq) lookup.
   interface LatestActivity { state: string | null; reason: string | null; rawEvent: string | null; rawSubtype: string | null; target: string | null; runtime: string | null }
@@ -834,12 +847,13 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         opts.queueRepo.update({ qitemId: offerQitemId, actorSession: "daemon@kernel", transitionNote: CONFIRM_WON_NOTE });
       },
       feedbackReactions: cfg.feedbackReactions,
-      isAddressed: (ev) => {
+      isAddressed: async (ev) => {
         // In a channel with more than one human only an @mention addresses the app, in its threads too.
-        if (!ev.channel || (humansIn(ev.channel) ?? 0) <= 1) return true;
-        return !botUserId || String(ev.text ?? "").includes(`<@${botUserId}>`);
+        if (!ev.channel || ((await humansIn(ev.channel)) ?? 0) <= 1) return true;
+        const me = await appUserId();
+        return !me || String(ev.text ?? "").includes(`<@${me}>`);
       },
-      onMembershipChanged: (channel) => { humanCounts.delete(channel); refreshHumans(channel); },
+      onMembershipChanged: (channel) => { humanCounts.delete(channel); void recount(channel); },
       recordFeedback: async ({ channel, messageTs, actorSession, reaction, key }) => {
         const threadTs = opts.queueRepo.postedThreadForMessage(messageTs) ?? messageTs;
         const root = threadMap.resolveByThread(threadTs);
@@ -926,12 +940,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     });
     let unsubscribe: (() => void) | undefined;
     starts.push(() => {
-      if (bot) {
-        void callWebApi("auth.test", bot, {}, opts.fetchImpl).then((r) => {
-          botUserId = typeof r.json.user_id === "string" ? r.json.user_id : undefined;
-          for (const c of channels) refreshHumans(c.id);
-        });
-      }
+      void appUserId();
+      for (const c of channels) void humansIn(c.id);
     });
     starts.push(() => {
       unsubscribe = opts.queueRepo.events.subscribe((event) => {

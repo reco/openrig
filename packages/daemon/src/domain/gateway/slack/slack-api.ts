@@ -273,7 +273,8 @@ export async function countChannelHumans(
   for (const user of members) {
     if (!userIsHuman.has(user)) {
       const r = await callWebApi("users.info", token, { user }, fetchImpl, undefined, "get-query");
-      if (!r.ok) return null;
+      // A member Slack will not describe (rate limit, another org) counts as a person, uncached.
+      if (!r.ok) { humans++; continue; }
       const u = (r.json.user ?? {}) as { is_bot?: boolean; deleted?: boolean; id?: string };
       userIsHuman.set(user, !u.is_bot && !u.deleted && user !== "USLACKBOT");
     }

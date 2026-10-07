@@ -125,6 +125,18 @@ describe("several Slack channels", () => {
     await vi.waitFor(() => expect(counted.filter((c) => c === "C-PSA").length).toBe(before + 1));
   });
 
+  it("a ✅ on a reply that did not @mention the app answers nothing in a channel with several people", async () => {
+    await vi.waitFor(() => expect(counted).toContain("C-PSA"));
+    const work = await repo.create({ sourceSession: "psa-dev@psa", destinationSession: "psa-dev@psa", body: "Ship it.", nudge: false });
+    repo.update({ qitemId: work.qitemId, actorSession: "psa-dev@psa", state: "blocked", blockedOn: "human-founder@kernel", summary: "Ship it?", evidenceRef: "/proof/ship.md", transitionNote: "parked" });
+    await vi.waitFor(() => expect(posts.some((p) => String(p.text).includes("Ship it?"))).toBe(true));
+    const root = `${posts.findIndex((p) => String(p.text).includes("Ship it?")) + 1}.1`;
+    await say("UFOUNDER", "C-PSA", "go ahead", "110.1", root);
+    socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-check", type: "events_api", payload: { event: { type: "reaction_added", user: "UFOUNDER", reaction: "white_check_mark", item: { type: "message", channel: "C-PSA", ts: "110.1" }, event_ts: "111.1" } } }) });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(repo.getById(work.qitemId)?.state).toBe("blocked");
+  });
+
   it("a requester bound to one channel is heard only there, as untrusted conversation", async () => {
     await say("ULEE", "C-MAIN", "Hello from main", "104.1");
     await say("ULEE", "C-PSA", "Make the logo bigger", "105.1");
