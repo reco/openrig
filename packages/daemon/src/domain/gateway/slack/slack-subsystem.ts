@@ -789,9 +789,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   if (outboundReady) {
     const driver = new SlackOutboundDriver({
       home: opts.home,
-      // A resolved decision reports back only into a Slack thread it already has.
-      queue: { listHumanAlerts: async (filter) => (await ports.listHumanAlerts(filter))
-        .filter((q) => !isResolvedNotice(q) || threadMap.resolveByConversation(q.qitemId)) },
+      queue: ports,
       seen: outboundSeen,
       filter: { minimumLevel: cfg.minimumLevelThatPosts },
       dispatch: (op, ref, payload) => wire.dispatcher.dispatch(op, ref, payload),
