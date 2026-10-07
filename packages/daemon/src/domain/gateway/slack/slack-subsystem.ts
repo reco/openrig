@@ -809,7 +809,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     starts.push(() => {
       driver.start();
       unsubscribeOutbound = opts.queueRepo.events.subscribe((event) => {
-        if (event.type === "queue.created" || event.type === "queue.updated" || event.type === "queue.handed_off") driver.kick();
+        if ((event.type === "queue.created" || event.type === "queue.updated" || event.type === "queue.handed_off")
+          && opts.queueRepo.transitionLog.latestOwnerNotificationForQitem(event.qitemId)) driver.kick();
       });
       log("slack outbound driver started (subsystem path)");
     });
