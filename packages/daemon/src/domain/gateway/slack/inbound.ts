@@ -516,7 +516,7 @@ export class InboundRouter {
     if (!route) return { status: "ignored", reason: "unmapped-message" };
     const offer = this.deps.confirmOffer?.({ offerQitemId, actorSession });
     if (!offer?.ok) return { status: "refused", reason: offer?.reason ?? "confirm-unavailable" };
-    const ownPostInThread = offer.decisionQitemId === offerQitemId && !!offerTs && this.deps.postedQitem?.(offerTs) === offerQitemId;
+    const ownPostInThread = !!offerTs && this.deps.postedQitem?.(offerTs) === offerQitemId;
     if (offer.decisionQitemId !== route.correlationQitemId && !ownPostInThread) return { status: "ignored", reason: "offer-not-in-this-thread" };
     const previous = this.confirmChains.get(offer.decisionQitemId) ?? Promise.resolve();
     const run = previous.catch(() => {}).then(() => this.confirmInTurn(actorSession, offerQitemId, route, channel, offerTs));

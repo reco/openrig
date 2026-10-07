@@ -165,6 +165,23 @@ describe("several Slack channels", () => {
     await vi.waitFor(() => expect(repo.getById(decision.qitemId)?.state).toBe("done"));
   });
 
+  it("a Confirm offer for a decision in another human's thread is confirmable by the addressed human only", async () => {
+    await say("ULEE", "C-PSA", "<@UBOT> new colors please", "140.1");
+    const lees = rowWith("new colors please")!;
+    const decision = await repo.create({ sourceSession: "psa-dev@psa", destinationSession: "human-founder@external", humanIntent: "decision", summary: "Colors?", body: "Which palette?", replyTo: lees.qitemId, humanConfirm: "Go", nudge: false });
+    await vi.waitFor(() => expect(posts.some((p) => String(p.text).includes("Which palette?"))).toBe(true));
+    const offer = await repo.create({ sourceSession: "psa-dev@psa", destinationSession: "human-founder@external", humanIntent: "update", summary: "My reading", body: "Blue it is?", replyTo: decision.qitemId, humanConfirm: "Blue palette", nudge: false });
+    await vi.waitFor(() => expect(posts.some((p) => String(p.text).includes("Blue it is?"))).toBe(true));
+    const post = posts.find((p) => String(p.text).includes("Blue it is?"))!;
+    expect(post.thread_ts).toBe("140.1");
+    const ts = `${posts.indexOf(post) + 1}.1`;
+    socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-lee-check", type: "events_api", payload: { event: { type: "reaction_added", user: "ULEE", reaction: "white_check_mark", item: { type: "message", channel: "C-PSA", ts }, event_ts: "141.1" } } }) });
+    await click("ULEE", `or-confirm:${offer.qitemId}`, ts, "140.1");
+    expect(repo.getById(decision.qitemId)?.state).toBe("pending");
+    await click("UFOUNDER", `or-confirm:${offer.qitemId}`, ts, "140.1");
+    await vi.waitFor(() => expect(repo.getById(decision.qitemId)?.state).toBe("done"));
+  });
+
   it("a reply into a thread of an unconfigured channel still posts top-level", async () => {
     await say("UFOUNDER", "C-ELSEWHERE", "From another channel", "130.1");
     const there = rowWith("From another channel")!;

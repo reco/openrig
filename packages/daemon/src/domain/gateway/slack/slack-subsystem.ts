@@ -209,7 +209,7 @@ const CONFIRM_WON_NOTE = "slack-confirm-won";
  *  reply in the decision's thread. The target keeps the reacted message's own root, so the
  *  router's current-root check applies, and anything from an earlier gate answers nothing.
  *  Only the request's asked human may answer. */
-export function makeReactionTarget(queueRepo: QueueRepository, threadMap: ThreadSeatMap, explicitAnswersOnly = false): (input: { channel: string; messageTs: string; actorSession: string }) => ReactionTarget | null {
+export function makeReactionTarget(queueRepo: QueueRepository, threadMap: ThreadSeatMap, explicitAnswersOnly = false, askedHuman?: (qitemId: string) => string | null): (input: { channel: string; messageTs: string; actorSession: string }) => ReactionTarget | null {
   const askedIn = (threadTs: string, actorSession: string) => {
     const root = threadMap.resolveByThread(threadTs);
     return root && isRequestHuman(root, actorSession) ? root : null;
@@ -227,7 +227,8 @@ export function makeReactionTarget(queueRepo: QueueRepository, threadMap: Thread
     const offer = offerId ? queueRepo.getById(offerId) : null;
     if (offer?.humanConfirm && offer.replyTo) {
       const threadTs = queueRepo.postedThreadForMessage(messageTs);
-      return threadTs && askedIn(threadTs, actorSession) ? { kind: "confirm", offerQitemId: offer.qitemId, threadTs } : null;
+      const asked = askedHuman ? askedHuman(offer.replyTo) === actorSession : !!(threadTs && askedIn(threadTs, actorSession));
+      return threadTs && asked ? { kind: "confirm", offerQitemId: offer.qitemId, threadTs } : null;
     }
     const reply = queueRepo.getById(inboundQitemIdFor(channel, messageTs));
     const conversation = reply?.tags?.find((t) => t.startsWith("reply-to:"))?.slice("reply-to:".length);
@@ -841,7 +842,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       // a failed hand-back is retried with the event dead-letters, and each click is confirmed
       // in the decision's thread (a bot post, so inbound never ingests it).
       recordHumanAnswer: (input) => opts.queueRepo.recordHumanAnswer(input),
-      reactionTarget: makeReactionTarget(opts.queueRepo, threadMap, cfg.explicitAnswersOnly),
+      reactionTarget: makeReactionTarget(opts.queueRepo, threadMap, cfg.explicitAnswersOnly, askedHumanOf),
       postedQitem: (messageTs) => opts.queueRepo.postedQitemForMessage(messageTs),
       markConfirmWon: (offerQitemId) => {
         opts.queueRepo.update({ qitemId: offerQitemId, actorSession: "daemon@kernel", transitionNote: CONFIRM_WON_NOTE });
@@ -859,7 +860,9 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         const root = threadMap.resolveByThread(threadTs);
         const qitemId = opts.queueRepo.postedQitemForMessage(messageTs) ?? root?.conversationId;
         const item = qitemId ? opts.queueRepo.getById(qitemId) : null;
-        if (!root || !item || !isRequestHuman(root, actorSession)) return "not-applicable";
+        // Feedback comes from the human the message was for; the thread's own human only as a fallback.
+        const asked = item ? askedHumanOf(item.qitemId) : null;
+        if (!root || !item || (asked ? asked !== actorSession : !isRequestHuman(root, actorSession))) return "not-applicable";
         const note = `human-feedback reaction=${reaction} message_ts=${messageTs} channel=${channel} key=${createHash("sha256").update(key).digest("hex").slice(0, 20)}`;
         if (!opts.queueRepo.transitionLog.listForQitem(item.qitemId).some((t) => t.transitionNote === note)) {
           opts.queueRepo.update({ qitemId: item.qitemId, actorSession, transitionNote: note });
