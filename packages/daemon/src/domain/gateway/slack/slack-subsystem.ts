@@ -793,6 +793,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const starts: Array<() => void> = [];
   let inboundHandle: SocketInboundHandle | undefined;
   let recovery: ChannelRecovery | undefined;
+  let extraRecoveries: ChannelRecovery[] = [];
 
   if (outboundReady) {
     const driver = new SlackOutboundDriver({
@@ -967,7 +968,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     stops.push(() => unsubscribe?.());
     stops.push(() => { for (const state of progress.values()) clearInterval(state.timer); });
     recovery = new ChannelRecovery({ channel: cfg.channel, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl });
-    const recoveries = [recovery, ...cfg.extraChannels.map((c) => new ChannelRecovery({ channel: c.id, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl }))];
+    extraRecoveries = cfg.extraChannels.map((c) => new ChannelRecovery({ channel: c.id, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl }));
+    const recoveries = [recovery, ...extraRecoveries];
     starts.push(() => {
       for (const r of recoveries) r.initialize(); // persist the once-only floor before any live events
       inboundHandle = startSocketInbound(app!, router, {
@@ -1004,6 +1006,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       outboundReady,
       inboundReady,
       recovery: recovery?.status() ?? { state: "unavailable", reason: "inbound-not-configured" },
+      ...(extraRecoveries.length ? { extraRecoveries: extraRecoveries.map((r) => r.status()) } : {}),
       inbound: inboundHandle?.status() ?? { state: inboundReady ? "not-started" : "not-configured", generation: 0, reconnects: 0 },
     }),
   };

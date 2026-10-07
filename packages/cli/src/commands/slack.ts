@@ -234,8 +234,10 @@ export function slackCommand(deps: SlackDeps = {}): Command {
         run: async () => {
           const scope = s.bot ? await surface.verifyScopes(s.bot, cfg.requiredScopes, deps.fetchImpl) : null;
           const member = s.bot && cfg.channel ? await surface.verifyChannelMembership(s.bot, cfg.channel, deps.fetchImpl) : null;
-          const ready = scope === null || scope.error || member?.error ? null : scope.ok && (member?.isMember ?? false);
-          return { value: { scope, member }, after: { ready }, effect: "observed" };
+          const extraMembers = s.bot ? await Promise.all((cfg.extraChannels ?? []).map(async (c) => ({ id: c.id, ...(await surface.verifyChannelMembership(s.bot!, c.id, deps.fetchImpl)) }))) : [];
+          const ready = scope === null || scope.error || member?.error || extraMembers.some((m) => m.error) ? null
+            : scope.ok && (member?.isMember ?? false) && extraMembers.every((m) => m.isMember);
+          return { value: { scope, member, extraMembers }, after: { ready }, effect: "observed" };
         },
       }, deps.home);
       if (!s.bot) {
@@ -245,19 +247,21 @@ export function slackCommand(deps: SlackDeps = {}): Command {
       }
       const scope = verification.value.scope!;
       const member = verification.value.member;
-      const ready = scope.ok && (member ? member.isMember : false);
+      const extraMembers = verification.value.extraMembers;
+      const ready = scope.ok && (member ? member.isMember : false) && extraMembers.every((m) => m.isMember);
       // Failed scope requests or an absent/empty grant header cannot prove
       // which optional features are available. Baseline readiness is unchanged.
       const missingFeatures = scope.error || scope.granted.length === 0 ? null
         : surface.FEATURE_SCOPES.filter((feature) => !scope.granted.includes(feature.scope));
       if (opts.json) {
-        log(JSON.stringify({ scope, member, ready, missingFeatures, receipt: verification.receipt }));
+        log(JSON.stringify({ scope, member, extraMembers, ready, missingFeatures, receipt: verification.receipt }));
       } else {
         log(`granted scopes: ${scope.granted.join(", ") || "(none)"}`);
         if (!scope.ok) log(`✗ MISSING scopes (configured != granted — reinstall the app): ${scope.missing.join(", ")}${scope.error ? ` [${scope.error}]` : ""}`);
         else log("✓ all required scopes granted");
         if (member) log(member.isMember ? `✓ channel member (${member.name ?? cfg.channel})` : `✗ NOT a member of channel ${cfg.channel} — invite the app`);
         else log("… channel not configured — set --channel to verify membership");
+        for (const m of extraMembers) log(m.isMember ? `✓ channel member (${m.name ?? m.id})` : `✗ NOT a member of channel ${m.id} — invite the app`);
         for (const feature of missingFeatures ?? []) {
           log(`⚠ ${feature.scope} missing: ${feature.usedBy}. Reinstall the app with this scope to use the feature.`);
         }
