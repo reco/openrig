@@ -64,17 +64,17 @@ export async function runHumanFeedbackReport(deps: HumanFeedbackReportDeps): Pro
   const links = await Promise.all(lowest.map(async (m) => (m.channel && deps.permalink ? await deps.permalink(m.channel, m.messageTs).catch(() => null) : null)));
   const total = seats.reduce((sum, [, t]) => ({ up: sum.up + t.up, down: sum.down + t.down }), { up: 0, down: 0 });
 
-  const lines = [
-    "*Per seat, last 7 days:*",
-    ...seats.map(([seat, t], i) => `${i + 1}. \`${seat}\`: 👍 ${t.up} · 👎 ${t.down}`),
-    ...(lowest.length ? ["", "*Lowest rated:*", ...lowest.map((m, i) => `${i + 1}. ${m.summary} (score ${m.score})${links[i] ? ` ${links[i]}` : ""}`)] : []),
+  const items = [
+    ...seats.map(([seat, t]) => `*\`${seat}\`:* 👍 ${t.up} · 👎 ${t.down}`),
+    ...lowest.map((m, i) => `*Lowest rated:* ${m.summary} (score ${m.score})${links[i] ? ` ${links[i]}` : ""}`),
   ];
+  const lines = items.map((item, i) => `${i + 1}. ${item}`);
   await deps.queueRepo.create({
     qitemId: reportId,
     sourceSession: "daemon@kernel",
     destinationSession: human.address,
     humanIntent: "update",
-    summary: `Weekly feedback: 👍 ${total.up} · 👎 ${total.down}`,
+    summary: `Weekly feedback, last 7 days: 👍 ${total.up} · 👎 ${total.down}`,
     body: lines.join("\n"),
     nudge: false,
   });

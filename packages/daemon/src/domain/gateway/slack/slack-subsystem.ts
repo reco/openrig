@@ -879,6 +879,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       markConfirmWon: (offerQitemId) => {
         opts.queueRepo.update({ qitemId: offerQitemId, actorSession: "daemon@kernel", transitionNote: CONFIRM_WON_NOTE });
       },
+      feedbackReactions: cfg.feedbackReactions,
       recordFeedback: async ({ channel, messageTs, actorSession, reaction, key }) => {
         const threadTs = opts.queueRepo.postedThreadForMessage(messageTs) ?? messageTs;
         const root = threadMap.resolveByThread(threadTs);

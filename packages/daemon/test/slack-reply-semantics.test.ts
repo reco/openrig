@@ -48,7 +48,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
   const stops: Array<() => void> = [];
   const reply = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 
-  async function start(explicitAnswersOnly: boolean, receipts?: Record<string, string>): Promise<void> {
+  async function start(explicitAnswersOnly: boolean, receipts?: Record<string, string>, extra: Record<string, unknown> = {}): Promise<void> {
     home = mkdtempSync(join(tmpdir(), "reply-semantics-"));
     db = createDb(); migrate(db, ALL_MIGRATIONS);
     bus = new EventBus(db);
@@ -57,7 +57,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
     writeFileSync(join(home, "state", "slack-request-lifecycle-floor"), "0\n");
     const secrets = join(home, "fake.env");
     writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
-    saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE", explicitAnswersOnly, ...(receipts ? { receipts: receipts as never } : {}) }, home);
+    saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE", explicitAnswersOnly, ...(receipts ? { receipts: receipts as never } : {}), ...extra }, home);
     posts = [];
     const sockets: WsLike[] = [];
     decisions = [];
@@ -143,6 +143,15 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
 
     it("refuses an acknowledgement request: information needs no acknowledgement", async () => {
       await expect(repo.create({ ...request, humanIntent: "decision", humanAck: true })).rejects.toMatchObject({ code: "invalid_human_ack" });
+    });
+
+    it("the workspace's own rating emoji count as 👍/👎 when configured, skin tones ignored", async () => {
+      for (const stop of stops.splice(0)) stop();
+      await start(true, undefined, { feedbackReactions: { up: ["rr-thumbsup", "rr-plus1"], down: ["rr-thumbsdown", "rr-minus1"] } });
+      expect(await react("1.1", { reaction: "rr-plus1" })).toMatchObject({ status: "accepted", reason: "feedback-+1" });
+      expect(await react("1.1", { reaction: "rr-minus1::skin-tone-3" })).toMatchObject({ status: "accepted", reason: "feedback--1" });
+      expect(await react("1.1", { reaction: "+1" })).not.toMatchObject({ status: "accepted" });
+      expect(toSeat().filter((q) => q.tags?.includes("human-feedback"))).toHaveLength(1);
     });
 
     it("👍 and 👎 are recorded as feedback and never decide; 👎 asks the seat for an alternative", async () => {

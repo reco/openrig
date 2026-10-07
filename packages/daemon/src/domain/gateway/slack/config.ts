@@ -44,6 +44,8 @@ export interface SlackConnectorConfig {
   receipts: { received: string; picked: string; working: string; coding: string; typing: string; done: string };
   /** More channels beside `channel`, each landing its new messages on its own seat. */
   extraChannels: Array<{ id: string; inboundDestination: string }>;
+  /** Reaction names (the workspace's custom ones included) that count as 👍 or 👎 feedback. */
+  feedbackReactions: { up: string[]; down: string[] };
 }
 
 export const DEFAULT_CONFIG: SlackConnectorConfig = {
@@ -61,6 +63,7 @@ export const DEFAULT_CONFIG: SlackConnectorConfig = {
   staleReminderDays: 3,
   receipts: { received: "eyes", picked: "thinking_face", working: "hammer_and_wrench", coding: "keyboard", typing: "writing_hand", done: "white_check_mark" },
   extraChannels: [],
+  feedbackReactions: { up: ["+1", "thumbsup"], down: ["-1", "thumbsdown"] },
 };
 
 /** Every configured channel with the seat its new messages land on; `channel` first. */
@@ -89,6 +92,11 @@ function validateConfig(cfg: SlackConnectorConfig): void {
   }
   const ids = channelsOf(cfg).map((c) => c.id);
   if (new Set(ids).size !== ids.length) throw new Error("each Slack channel may be configured once (channel + extraChannels)");
+  const { up, down } = cfg.feedbackReactions ?? {};
+  if (!Array.isArray(up) || !Array.isArray(down) || [...up, ...down].some((n) => typeof n !== "string" || !/^[a-z0-9_+'-]+$/.test(n))) {
+    throw new Error("feedbackReactions must be { up: [emoji names], down: [emoji names] } without colons");
+  }
+  if (up.some((n) => down.includes(n))) throw new Error("feedbackReactions: an emoji cannot be both up and down");
   if (typeof cfg.staleReminderDays !== "number" || !(cfg.staleReminderDays > 0)) {
     throw new Error(`staleReminderDays must be a positive number of days (got ${String(cfg.staleReminderDays)})`);
   }
@@ -107,7 +115,8 @@ export function loadConfig(home?: string): SlackConnectorConfig {
     return { ...DEFAULT_CONFIG };
   }
   const { alertTag: _retiredAlertTag, ...supported } = raw;
-  const cfg = { ...DEFAULT_CONFIG, ...supported, receipts: { ...DEFAULT_CONFIG.receipts, ...(supported.receipts ?? {}) } };
+  const cfg = { ...DEFAULT_CONFIG, ...supported, receipts: { ...DEFAULT_CONFIG.receipts, ...(supported.receipts ?? {}) },
+    feedbackReactions: { ...DEFAULT_CONFIG.feedbackReactions, ...(supported.feedbackReactions ?? {}) } };
   validateConfig(cfg);
   return cfg;
 }

@@ -36,11 +36,12 @@ describe("weekly 👍/👎 report", () => {
     const r = await run(monday10());
     expect(r.posted).toMatch(/^qitem-feedback-report-/);
     const report = repo.getById(r.posted!)!;
-    expect(report).toMatchObject({ destinationSession: "reco@external", humanIntent: "update", summary: "Weekly feedback: 👍 3 · 👎 3" });
-    expect(report.body).toContain("1. `dev@rig`: 👍 2 · 👎 1");
-    expect(report.body).toContain("2. `ops@rig`: 👍 1 · 👎 2");
-    expect(report.body).toMatch(/1\. Worse plan \(score -2\) https:\/\/example\.slack\.com\/archives\/C1\/p/);
-    expect(report.body).toContain("2. Bad plan (score -1)");
+    expect(report).toMatchObject({ destinationSession: "reco@external", humanIntent: "update", summary: "Weekly feedback, last 7 days: 👍 3 · 👎 3" });
+    expect(report.body).toContain("1. *`dev@rig`:* 👍 2 · 👎 1");
+    expect(report.body).toContain("2. *`ops@rig`:* 👍 1 · 👎 2");
+    expect(report.body).toMatch(/3\. \*Lowest rated:\* Worse plan \(score -2\) https:\/\/example\.slack\.com\/archives\/C1\/p/);
+    expect(report.body).toContain("4. *Lowest rated:* Bad plan (score -1)");
+    expect(report.body).not.toMatch(/^\*[^`]/m);
     expect(report.body).not.toContain("Good plan");
     expect((await run(monday10())).posted).toBeNull();
   });

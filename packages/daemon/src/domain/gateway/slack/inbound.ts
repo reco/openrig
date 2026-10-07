@@ -62,7 +62,6 @@ export type ReactionTarget =
 export const CHECK_REACTION = "white_check_mark";
 /** The received Slack message's identity on its inbound row, written by the gateway only. */
 export const SLACK_MESSAGE_TAG = "slack-message:";
-const FEEDBACK_REACTIONS: Record<string, "+1" | "-1"> = { "+1": "+1", thumbsup: "+1", "-1": "-1", thumbsdown: "-1" };
 
 /** Slack message ts is unique within a channel, so every inbound id uses both fields. */
 export function inboundQitemIdFor(channel: string | undefined, ts: string | undefined): string {
@@ -173,6 +172,8 @@ export interface InboundDeps {
   retireConfirmOffer?: (input: { channel: string; messageTs: string; offerQitemId: string; outcome: ConfirmOutcome }) => Promise<void>;
   /** Phase 1 — record 👍/👎 on one of our messages from its asked human; 👎 also asks the seat
    *  for an alternative. Feedback never decides anything. */
+  /** Reaction names counted as 👍/👎 (skin tones ignored). */
+  feedbackReactions?: { up: string[]; down: string[] };
   recordFeedback?: (input: { channel: string; messageTs: string; actorSession: string; reaction: "+1" | "-1"; key: string }) => Promise<"recorded" | "not-applicable">;
   /** Phase 1 — record that this offer's click resolved its decision (so only it shows Confirmed). */
   markConfirmWon?: (offerQitemId: string) => void;
@@ -571,7 +572,9 @@ export class InboundRouter {
   private async attemptReaction(ev: SlackEvent, live: boolean): Promise<{ status: InboundDisposition; reason?: string }> {
     const channel = ev.item?.channel;
     const messageTs = ev.item?.ts;
-    const feedback = FEEDBACK_REACTIONS[ev.reaction ?? ""];
+    const name = (ev.reaction ?? "").split("::")[0] ?? "";
+    const reactions = this.deps.feedbackReactions ?? { up: ["+1", "thumbsup"], down: ["-1", "thumbsdown"] };
+    const feedback = reactions.up.includes(name) ? "+1" : reactions.down.includes(name) ? "-1" : null;
     if (feedback && channel && messageTs) return this.feedback(ev, channel, messageTs, feedback);
     if (ev.reaction !== CHECK_REACTION || !channel || !messageTs) return { status: "ignored", reason: "not-a-check-on-a-message" };
     const key = `reaction:${channel}:${messageTs}:${ev.user ?? "-"}`;
