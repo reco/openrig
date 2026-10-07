@@ -36,7 +36,7 @@ export const ENTITY_ID_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
 export const ADDRESS_DOMAIN = "external";
 
 // Closed key sets — a typo'd field must fail LOUD, never silently degrade behavior.
-const ALLOWED_FRAGMENT_KEYS = new Set(["entityId", "class", "displayName", "address", "connectorBindings", "prefs", "role"]);
+const ALLOWED_FRAGMENT_KEYS = new Set(["entityId", "class", "displayName", "address", "connectorBindings", "prefs", "role", "channels"]);
 export const HUMAN_ROLES = new Set(["approver", "requester"]);
 const ALLOWED_BINDING_KEYS = new Set(["kind", "connectorRef", "secretsRef", "role", "handle"]);
 // A connector handle (M1 A6 v3 schema 9e468b2f): the platform-native id of the human ON that
@@ -91,6 +91,8 @@ export interface HumanFragment {
   prefs: HumanPrefs;
   /** Absent = approver. A requester talks to seats but never resolves a gate. */
   role?: "approver" | "requester";
+  /** Slack channel ids this human may write in; absent = any configured channel. */
+  channels?: string[];
 }
 
 export type ValidateResult =
@@ -108,7 +110,10 @@ export function validateHumanFragment(raw: unknown): ValidateResult {
   if (!isObj(raw)) return { ok: false, error: "human fragment must be a mapping" };
   const uk = unknownKey(raw, ALLOWED_FRAGMENT_KEYS);
   if (uk) return { ok: false, error: `unknown fragment key "${uk}" — allowed: ${[...ALLOWED_FRAGMENT_KEYS].join(", ")} (a typo must not silently degrade)` };
-  const { entityId, class: cls, displayName, address, connectorBindings, prefs, role } = raw;
+  const { entityId, class: cls, displayName, address, connectorBindings, prefs, role, channels } = raw;
+  if (channels !== undefined && (!Array.isArray(channels) || channels.length === 0 || channels.some((c) => typeof c !== "string" || !/^[A-Z0-9-]+$/.test(c)))) {
+    return { ok: false, error: "channels must be a non-empty list of Slack channel ids" };
+  }
   if (role !== undefined && !HUMAN_ROLES.has(String(role))) {
     return { ok: false, error: `role "${String(role)}" must be one of ${[...HUMAN_ROLES].join("|")}` };
   }
@@ -205,7 +210,7 @@ export function validateHumanFragment(raw: unknown): ValidateResult {
 
   return {
     ok: true,
-    fragment: { entityId, class: "human", displayName, address, connectorBindings: bindings, prefs: validatedPrefs, ...(role !== undefined ? { role: role as HumanFragment["role"] } : {}) },
+    fragment: { entityId, class: "human", displayName, address, connectorBindings: bindings, prefs: validatedPrefs, ...(role !== undefined ? { role: role as HumanFragment["role"] } : {}), ...(channels !== undefined ? { channels: channels as string[] } : {}) },
   };
 }
 

@@ -42,6 +42,8 @@ export interface SlackConnectorConfig {
   /** Phase 1: the reaction emoji (standard or the workspace's custom names) a received human
    *  message shows as the seat progresses. */
   receipts: { received: string; picked: string; working: string; coding: string; typing: string; done: string };
+  /** More channels beside `channel`, each landing its new messages on its own seat. */
+  extraChannels: Array<{ id: string; inboundDestination: string }>;
 }
 
 export const DEFAULT_CONFIG: SlackConnectorConfig = {
@@ -58,7 +60,13 @@ export const DEFAULT_CONFIG: SlackConnectorConfig = {
   explicitAnswersOnly: true,
   staleReminderDays: 3,
   receipts: { received: "eyes", picked: "thinking_face", working: "hammer_and_wrench", coding: "keyboard", typing: "writing_hand", done: "white_check_mark" },
+  extraChannels: [],
 };
+
+/** Every configured channel with the seat its new messages land on; `channel` first. */
+export function channelsOf(cfg: SlackConnectorConfig): Array<{ id: string; inboundDestination: string }> {
+  return [...(cfg.channel ? [{ id: cfg.channel, inboundDestination: cfg.inboundDestination }] : []), ...cfg.extraChannels];
+}
 
 function validateLevel(field: string, value: unknown): asserts value is OwnerNotificationLevel {
   if (!OWNER_NOTIFICATION_LEVELS.includes(value as OwnerNotificationLevel)) {
@@ -76,6 +84,11 @@ function validateConfig(cfg: SlackConnectorConfig): void {
   if (new Set(names).size !== names.length) {
     throw new Error("receipts needs a different emoji name for each stage (received, picked, working, coding, typing, done)");
   }
+  if (!Array.isArray(cfg.extraChannels) || cfg.extraChannels.some((c) => !c || typeof c.id !== "string" || !/^[A-Z0-9-]+$/.test(c.id) || typeof c.inboundDestination !== "string" || !c.inboundDestination)) {
+    throw new Error("extraChannels must be a list of { id: <Slack channel id>, inboundDestination: <seat> }");
+  }
+  const ids = channelsOf(cfg).map((c) => c.id);
+  if (new Set(ids).size !== ids.length) throw new Error("each Slack channel may be configured once (channel + extraChannels)");
   if (typeof cfg.staleReminderDays !== "number" || !(cfg.staleReminderDays > 0)) {
     throw new Error(`staleReminderDays must be a positive number of days (got ${String(cfg.staleReminderDays)})`);
   }

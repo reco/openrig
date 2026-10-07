@@ -91,6 +91,7 @@ export function slackCommand(deps: SlackDeps = {}): Command {
     .description("Configure the connector (first-class config; secrets stay in the env file, never here)")
     .option("--channel <id>", "Slack channel id the connector app must be a member of")
     .option("--inbound-destination <session>", "where inbound human messages land (default operator-agent@kernel)")
+    .option("--extra-channel <id=session>", "another channel and the seat its new messages land on (repeatable; replaces the list)", (v: string, acc: string[] = []) => { acc.push(v); return acc; })
     .option("--minimum-level-that-posts <level>", "minimum OWNER level posted to Slack: RECORD|NOTICE|ALERT")
     .option("--minimum-level-that-interrupts <level>", "minimum OWNER level that mentions/interrupts: RECORD|NOTICE|ALERT")
     .option("--source-label <label>", "label shown in the posted message footer (where the queue lives)")
@@ -105,6 +106,9 @@ export function slackCommand(deps: SlackDeps = {}): Command {
         ...cur,
         channel: opts.channel ?? cur.channel,
         inboundDestination: opts.inboundDestination ?? cur.inboundDestination,
+        extraChannels: opts.extraChannel
+          ? (opts.extraChannel as string[]).map((spec) => { const [id = "", inboundDestination = ""] = spec.split("="); return { id, inboundDestination }; })
+          : cur.extraChannels,
         minimumLevelThatPosts: opts.minimumLevelThatPosts ?? cur.minimumLevelThatPosts,
         minimumLevelThatInterrupts: opts.minimumLevelThatInterrupts ?? cur.minimumLevelThatInterrupts,
         sourceLabel: opts.sourceLabel ?? cur.sourceLabel,

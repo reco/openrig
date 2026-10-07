@@ -1,7 +1,7 @@
 // OPR.0.6.0.5 — `rig slack manifest` is offline: it runs on the real lazily-imported daemon
 // surface with no daemon client, no tokens and no network.
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
@@ -96,6 +96,13 @@ describe("next-step routing names `rig slack manifest` first", () => {
     const { deps, logs } = offline({ surface: surface(true) as SlackDeps["surface"] });
     await run(deps, ["status", "--json"]);
     expect(JSON.parse(logs[0]!).next).toBeNull();
+  });
+
+  it("setup records extra channels with their seats", async () => {
+    const { deps } = offline();
+    await run(deps, ["setup", "--channel", "C123", "--extra-channel", "C456=psa-dev@psa", "--reason", "fixture", "--actor", "fixture-operator"]);
+    const saved = JSON.parse(readFileSync(join(deps.home!, "slack-connector.json"), "utf8")) as { extraChannels: unknown };
+    expect(saved.extraChannels).toEqual([{ id: "C456", inboundDestination: "psa-dev@psa" }]);
   });
 
   it("setup's next-step hint starts with the manifest", async () => {

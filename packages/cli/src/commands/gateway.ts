@@ -139,11 +139,12 @@ export function gatewayCommand(deps: GatewayCommandDeps = {}): Command {
     )
     .requiredOption("--delivery-class <A|B|C|D>", "Notification loudness class (the notifications register selection)")
     .option("--away", "Set the AWAY preset")
+    .option("--channel <id>", "Slack channel this human may write in (repeatable; absent = any configured channel)", (v: string, acc: string[] = []) => { acc.push(v); return acc; })
     .option("--role <approver|requester>", "approver (default) resolves gates; a requester only talks to seats, never resolves a gate")
     .option("--replace", "Explicitly replace an existing human (no silent overwrite)")
     .option("--reason <reason>", "Reason recorded with connector binding changes", "register human delivery")
     .option("--actor <actor>", "Named operator when outside a managed seat")
-    .action(async (entityId: string, opts: { displayName: string; binding: string[]; deliveryClass: string; away?: boolean; role?: string; replace?: boolean; reason: string; actor?: string }) => {
+    .action(async (entityId: string, opts: { displayName: string; binding: string[]; deliveryClass: string; away?: boolean; role?: string; channel?: string[]; replace?: boolean; reason: string; actor?: string }) => {
       // LAZY import the narrow daemon surface at invocation (dep rail 2).
       const registry = await import("@openrig/daemon/gateway-human-registry");
       const { addHumanFragment, parseBindingSpec } = registry as unknown as {
@@ -164,6 +165,7 @@ export function gatewayCommand(deps: GatewayCommandDeps = {}): Command {
         connectorBindings: bindings,
         prefs: { deliveryClass: opts.deliveryClass, ...(opts.away ? { away: true } : {}) },
         ...(opts.role ? { role: opts.role } : {}),
+        ...(opts.channel ? { channels: opts.channel } : {}),
       };
       const before = registry.showHuman(entityId);
       try {

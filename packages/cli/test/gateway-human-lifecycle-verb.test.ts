@@ -264,9 +264,11 @@ describe("rig gateway human lifecycle verbs (S12)", () => {
       "--binding", "slack:main:vault://slack/lee:primary:handle=ULEE",
       "--delivery-class", "B",
       "--role", "requester",
+      "--channel", "C0PSA",
     ]);
     expect(process.exitCode ?? 0).toBe(0);
     expect(readFileSync(join(humansDir(home), "lee.yaml"), "utf8")).toContain("role: requester");
+    expect(readFileSync(join(humansDir(home), "lee.yaml"), "utf8")).toMatch(/channels:\n\s+- C0PSA/);
     expect(readFileSync(join(humansDir(home), "mike.yaml"), "utf8")).not.toContain("role: requester");
   });
 
