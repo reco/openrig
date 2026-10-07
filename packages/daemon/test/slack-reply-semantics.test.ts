@@ -32,33 +32,36 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
   let posts: Array<Record<string, unknown>>;
   let decisionId: string;
   let decisions: string[];
+  let bus: EventBus;
   let updates: Array<Record<string, unknown>>;
   let seen: Array<Record<string, unknown>>;
   let unseen: Array<Record<string, unknown>>;
-  let eyes: Set<string>;
-  let thinking: Set<string>;
+  let marks: Map<string, Set<string>>;
+  const marksOn = (ts: string) => { if (!marks.has(ts)) marks.set(ts, new Set()); return marks.get(ts)!; };
+  const holding = (name: string) => ({ has: (ts: string) => marks.get(ts)?.has(name) === true });
+  const eyes = holding("eyes");
+  const thinking = holding("thinking_face");
   let wire: ReturnType<typeof buildSlackGatewayWire>;
   const stops: Array<() => void> = [];
   const reply = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 
-  async function start(explicitAnswersOnly: boolean): Promise<void> {
+  async function start(explicitAnswersOnly: boolean, receipts?: Record<string, string>): Promise<void> {
     home = mkdtempSync(join(tmpdir(), "reply-semantics-"));
     db = createDb(); migrate(db, ALL_MIGRATIONS);
-    const bus = new EventBus(db);
+    bus = new EventBus(db);
     repo = new QueueRepository(db, bus, { loadHumanRegistry: () => registry });
     mkdirSync(join(home, "state"), { recursive: true });
     writeFileSync(join(home, "state", "slack-request-lifecycle-floor"), "0\n");
     const secrets = join(home, "fake.env");
     writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
-    saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE", explicitAnswersOnly }, home);
+    saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE", explicitAnswersOnly, ...(receipts ? { receipts: receipts as never } : {}) }, home);
     posts = [];
     const sockets: WsLike[] = [];
     decisions = [];
     updates = [];
     seen = [];
     unseen = [];
-    eyes = new Set();
-    thinking = new Set();
+    marks = new Map();
     const contract = new MissionControlWriteContract({ db, eventBus: bus, queueRepo: repo, actionLog: new MissionControlActionLog(db) });
     const realResolve = makeHumanReplyResolver(repo, contract);
     wire = buildSlackGatewayWire({
@@ -76,8 +79,8 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       fetchImpl: async (url, init) => {
         if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
         if (url.endsWith("chat.update")) { updates.push(JSON.parse(String(init?.body))); return reply({ ok: true }); }
-        if (url.endsWith("reactions.add")) { const b = JSON.parse(String(init?.body)); seen.push(b); (b.name === "eyes" ? eyes : thinking).add(b.timestamp); return reply({ ok: true }); }
-        if (url.endsWith("reactions.remove")) { const b = JSON.parse(String(init?.body)); unseen.push(b); (b.name === "eyes" ? eyes : thinking).delete(b.timestamp); return reply({ ok: true }); }
+        if (url.endsWith("reactions.add")) { const b = JSON.parse(String(init?.body)); seen.push(b); marksOn(b.timestamp).add(b.name); return reply({ ok: true }); }
+        if (url.endsWith("reactions.remove")) { const b = JSON.parse(String(init?.body)); unseen.push(b); marksOn(b.timestamp).delete(b.name); return reply({ ok: true }); }
         posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
       },
     });
@@ -510,6 +513,23 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(seen).toEqual([{ channel: "C-TEST", timestamp: "2400.1", name: "eyes" }]);
     });
 
+    const activity = (sessionName: string, state: "running" | "idle") => bus.emit({ type: "agent.activity", rigId: "r", nodeId: "n", sessionName, runtime: "claude-code",
+      activity: { state, reason: "test", evidenceSource: "runtime_hook", sampledAt: new Date().toISOString(), evidence: null } } as never);
+
+    it("receipt follows the seat: 👀 received, 🤔 claimed, 🛠️ while working, ✅ when handled", async () => {
+      await say("Please check the build", "2700.1");
+      const row = toSeat().find((q) => q.body.includes("Please check the build"))!;
+      expect([...marksOn("2700.1")]).toEqual(["eyes"]);
+      repo.claim({ qitemId: row.qitemId, destinationSession: "author@rig" });
+      await vi.waitFor(() => expect([...marksOn("2700.1")]).toEqual(["thinking_face"]));
+      activity("author@rig", "running");
+      await vi.waitFor(() => expect([...marksOn("2700.1")]).toEqual(["hammer_and_wrench"]));
+      activity("author@rig", "idle");
+      await vi.waitFor(() => expect([...marksOn("2700.1")]).toEqual(["thinking_face"]));
+      repo.update({ qitemId: row.qitemId, actorSession: "author@rig", state: "done", closureReason: "no-follow-on", transitionNote: "done" });
+      await vi.waitFor(() => expect([...marksOn("2700.1")]).toEqual(["white_check_mark"]));
+    });
+
     it("swaps 👀 for 🤔 when the seat claims the message, and clears it when done", async () => {
       await say("Can you look into this?", "2405.1");
       const row = toSeat().find((q) => q.body.includes("Can you look into this?"))!;
@@ -671,6 +691,18 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       await say("answer:   ", "2005.1");
       expect(repo.getById(decisionId)?.state).toBe("pending");
       expect(toSeat()[0]?.tags).toContain("conversation");
+    });
+  });
+
+  describe("configured receipt emoji", () => {
+    beforeEach(() => start(true, { received: "openrig-received", picked: "openrig-picked", working: "openrig-working", done: "openrig-done" }));
+
+    it("uses the configured names", async () => {
+      await say("Hello", "2800.1");
+      expect([...marksOn("2800.1")]).toEqual(["openrig-received"]);
+      const row = toSeat().find((q) => q.body.includes("Hello"))!;
+      repo.update({ qitemId: row.qitemId, actorSession: "author@rig", state: "done", closureReason: "no-follow-on", transitionNote: "ok" });
+      await vi.waitFor(() => expect([...marksOn("2800.1")]).toEqual(["openrig-done"]));
     });
   });
 

@@ -424,13 +424,21 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   };
   const handled = (state: string | undefined): boolean => ["done", "canceled", "handed-off", "failed", "denied"].includes(state ?? "");
   const threadAnsweredAt = new Map<string, string>(); // conversation -> last seat answer in its thread
-  const RECEIPTS = ["eyes", "thinking_face"] as const;
-  const wantedReceipt = (row: { qitemId: string; state: string; tsCreated: string; tags?: string[] | null }): (typeof RECEIPTS)[number] | null => {
+  const RECEIPTS = [cfg.receipts.received, cfg.receipts.picked, cfg.receipts.working, cfg.receipts.done];
+  const seatIsWorking = (session: string): boolean => {
+    const row = opts.queueRepo.db.prepare(
+      "SELECT json_extract(payload, '$.activity.state') AS state FROM events WHERE type = 'agent.activity' AND json_extract(payload, '$.sessionName') = ? ORDER BY seq DESC LIMIT 1",
+    ).get(session) as { state: string | null } | undefined;
+    return row?.state === "running";
+  };
+  const wantedReceipt = (row: { qitemId: string; state: string; tsCreated: string; destinationSession: string; tags?: string[] | null }): string => {
     const conversation = row.tags?.find((t) => t.startsWith("reply-to:"))?.slice("reply-to:".length) ?? row.qitemId;
     const answeredAt = threadAnsweredAt.get(conversation);
-    if (handled(row.state) || (answeredAt && answeredAt >= row.tsCreated)) return null;
-    return row.state === "in-progress" ? "thinking_face" : "eyes";
+    if (handled(row.state) || (answeredAt && answeredAt >= row.tsCreated)) return cfg.receipts.done;
+    if (row.state !== "in-progress") return cfg.receipts.received;
+    return seatIsWorking(row.destinationSession) ? cfg.receipts.working : cfg.receipts.picked;
   };
+  const appliedReceipt = new Map<string, string>(); // qitemId -> the reaction we last put on its message
   const receiptChains = new Map<string, Promise<void>>();
   const syncReceipt = (qitemId: string): Promise<void> => {
     const run = (receiptChains.get(qitemId) ?? Promise.resolve()).catch(() => {}).then(async () => {
@@ -438,10 +446,15 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       const message = receivedMessage(row?.tags);
       if (!bot || !row || !message) return;
       const wanted = wantedReceipt(row);
-      for (const name of RECEIPTS) {
-        const input = { channel: message.channel, timestamp: message.ts, name };
-        const r = name === wanted ? await addReaction(bot, input, opts.fetchImpl) : await removeReaction(bot, input, opts.fetchImpl);
-        if (!r.ok) log(`receipt ${name} not ${name === wanted ? "added" : "removed"} ts=${message.ts}: ${r.error}`);
+      const applied = appliedReceipt.get(qitemId);
+      if (applied === wanted) return;
+      const add = await addReaction(bot, { channel: message.channel, timestamp: message.ts, name: wanted }, opts.fetchImpl);
+      if (!add.ok) { log(`receipt ${wanted} not added ts=${message.ts}: ${add.error}`); return; }
+      appliedReceipt.set(qitemId, wanted);
+      // Unknown history (first sync, or after a restart): clear every other stage once.
+      for (const name of applied ? [applied] : RECEIPTS.filter((n) => n !== wanted)) {
+        const r = await removeReaction(bot, { channel: message.channel, timestamp: message.ts, name }, opts.fetchImpl);
+        if (!r.ok) log(`receipt ${name} not removed ts=${message.ts}: ${r.error}`);
       }
     });
     receiptChains.set(qitemId, run);
@@ -831,6 +844,12 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       unsubscribe = opts.queueRepo.events.subscribe((event) => {
         if (event.type === "queue.claimed" || (event.type === "queue.updated" && event.fromState !== event.toState)) {
           void syncReceipt(event.qitemId);
+        }
+        if (event.type === "agent.activity") {
+          const rows = opts.queueRepo.db
+            .prepare(`SELECT qitem_id FROM queue_items WHERE destination_session = ? AND state = 'in-progress' AND tags LIKE '%"${SLACK_MESSAGE_TAG}%'`)
+            .all(event.sessionName) as Array<{ qitem_id: string }>;
+          for (const row of rows) void syncReceipt(row.qitem_id);
         }
       });
     });

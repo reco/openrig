@@ -39,6 +39,9 @@ export interface SlackConnectorConfig {
   explicitAnswersOnly: boolean;
   /** Phase 1: an open request quiet this many days gets a reminder; reminders never close. */
   staleReminderDays: number;
+  /** Phase 1: the reaction emoji (standard or the workspace's custom names) a received human
+   *  message shows as the seat progresses. */
+  receipts: { received: string; picked: string; working: string; done: string };
 }
 
 export const DEFAULT_CONFIG: SlackConnectorConfig = {
@@ -54,6 +57,7 @@ export const DEFAULT_CONFIG: SlackConnectorConfig = {
   minimumLevelThatInterrupts: "ALERT",
   explicitAnswersOnly: true,
   staleReminderDays: 3,
+  receipts: { received: "eyes", picked: "thinking_face", working: "hammer_and_wrench", done: "white_check_mark" },
 };
 
 function validateLevel(field: string, value: unknown): asserts value is OwnerNotificationLevel {
@@ -65,6 +69,9 @@ function validateLevel(field: string, value: unknown): asserts value is OwnerNot
 function validateConfig(cfg: SlackConnectorConfig): void {
   validateLevel("minimumLevelThatPosts", cfg.minimumLevelThatPosts);
   validateLevel("minimumLevelThatInterrupts", cfg.minimumLevelThatInterrupts);
+  for (const [stage, name] of Object.entries(cfg.receipts)) {
+    if (typeof name !== "string" || !/^[a-z0-9_+'-]+$/.test(name)) throw new Error(`receipts.${stage} must be a Slack emoji name without colons (got ${String(name)})`);
+  }
   if (typeof cfg.staleReminderDays !== "number" || !(cfg.staleReminderDays > 0)) {
     throw new Error(`staleReminderDays must be a positive number of days (got ${String(cfg.staleReminderDays)})`);
   }
@@ -83,7 +90,7 @@ export function loadConfig(home?: string): SlackConnectorConfig {
     return { ...DEFAULT_CONFIG };
   }
   const { alertTag: _retiredAlertTag, ...supported } = raw;
-  const cfg = { ...DEFAULT_CONFIG, ...supported };
+  const cfg = { ...DEFAULT_CONFIG, ...supported, receipts: { ...DEFAULT_CONFIG.receipts, ...supported.receipts } };
   validateConfig(cfg);
   return cfg;
 }
