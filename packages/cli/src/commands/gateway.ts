@@ -139,35 +139,17 @@ export function gatewayCommand(deps: GatewayCommandDeps = {}): Command {
     )
     .requiredOption("--delivery-class <A|B|C|D>", "Notification loudness class (the notifications register selection)")
     .option("--away", "Set the AWAY preset")
+    .option("--role <approver|requester>", "approver (default) resolves gates; a requester only talks to seats, never resolves a gate")
     .option("--replace", "Explicitly replace an existing human (no silent overwrite)")
     .option("--reason <reason>", "Reason recorded with connector binding changes", "register human delivery")
     .option("--actor <actor>", "Named operator when outside a managed seat")
-    .action(async (entityId: string, opts: { displayName: string; binding: string[]; deliveryClass: string; away?: boolean; replace?: boolean; reason: string; actor?: string }) => {
+    .action(async (entityId: string, opts: { displayName: string; binding: string[]; deliveryClass: string; away?: boolean; role?: string; replace?: boolean; reason: string; actor?: string }) => {
       // LAZY import the narrow daemon surface at invocation (dep rail 2).
       const registry = await import("@openrig/daemon/gateway-human-registry");
       const { addHumanFragment, parseBindingSpec } = registry as unknown as {
         addHumanFragment: typeof AddHumanFragment;
         parseBindingSpec: (spec: string) => { ok: true; binding: Record<string, unknown> } | { ok: false; error: string };
       };
-      // Fix-r1 F1 (R2 blocking, A1/R5): the add VERB is the single-human boundary. A second
-      // DISTINCT human is refused BEFORE any parse or write — the several-fragment state A1
-      // describes as hand-authored must never be produced by the product's own surface.
-      // Fail closed: an unverifiable registry refuses too (never add into an unknown state).
-      const existing = registry.listHumans();
-      if (!existing.ok) {
-        console.error(`refused: cannot verify the single-human boundary — ${existing.error}`);
-        process.exitCode = 1;
-        return;
-      }
-      if (existing.humans.length > 0 && !existing.humans.some((h) => h.entityId === entityId)) {
-        const ids = existing.humans.map((h) => h.entityId).join(", ");
-        console.error(
-          `refused: a human is already configured (${ids}) — 0.5.5 ships the SIMPLE SINGLE-HUMAN surface (amendment A1, founder R5), so \`rig gateway human add\` manages one human. ` +
-          `If you truly need several, hand-author a fragment YAML under ${registry.humansDir()} (several fragments are displayed honestly, with an advisory); multi-human MANAGEMENT arrives in 0.5.7.`,
-        );
-        process.exitCode = 1;
-        return;
-      }
       const bindings: Record<string, unknown>[] = [];
       for (const spec of opts.binding) {
         const b = parseBindingSpec(spec);
@@ -181,6 +163,7 @@ export function gatewayCommand(deps: GatewayCommandDeps = {}): Command {
         address: `${entityId}@external`,
         connectorBindings: bindings,
         prefs: { deliveryClass: opts.deliveryClass, ...(opts.away ? { away: true } : {}) },
+        ...(opts.role ? { role: opts.role } : {}),
       };
       const before = registry.showHuman(entityId);
       try {
@@ -218,21 +201,20 @@ Example:
 
   human
     .command("list")
-    .description("Show the configured human (single-human surface per A1/R5; several fragments render honestly with a 0.5.7 advisory)")
+    .description("Show the registered humans and their roles")
     .option("--json", "Complete record(s) as JSON")
     .action(async (opts: { json?: boolean }) => {
       const { listHumans } = await import("@openrig/daemon/gateway-human-registry");
       const res = listHumans();
       if (!res.ok) { console.error(`refused: ${res.error}`); process.exitCode = 1; return; }
       const humans = await Promise.all(res.humans.map(async (record) => ({ ...record, deliveryReadiness: await humanReadiness(record.entityId) })));
-      if (opts.json) { console.log(JSON.stringify({ ok: true, humans, ...(res.advisory ? { advisory: res.advisory } : {}) })); return; }
+      if (opts.json) { console.log(JSON.stringify({ ok: true, humans })); return; }
       if (res.humans.length === 0) { console.log("no human configured yet — register one: rig gateway human add <entityId> --display-name … --binding … --delivery-class …"); return; }
       for (const h of humans) {
         const inbound = h.bindings.inboundResolvable ? "" : "  [outbound-only]";
-        console.log(`${h.entityId}  "${h.displayName}"  class=${h.deliveryClass}  ${h.away ? "away" : "available"}  bindings=${h.bindings.count} (primary ${h.bindings.primary.kind}:${h.bindings.primary.connectorRef})  delivery=${h.deliveryReadiness.state}${inbound}`);
+        console.log(`${h.entityId}  "${h.displayName}"  role=${h.role}  class=${h.deliveryClass}  ${h.away ? "away" : "available"}  bindings=${h.bindings.count} (primary ${h.bindings.primary.kind}:${h.bindings.primary.connectorRef})  delivery=${h.deliveryReadiness.state}${inbound}`);
         if (!h.deliveryReadiness.ready) console.log(`  delivery: ${h.deliveryReadiness.reason}${h.deliveryReadiness.nextAction ? `; next: ${h.deliveryReadiness.nextAction}` : ""}`);
       }
-      if (res.advisory) console.log(`advisory: ${res.advisory}`);
     });
 
   human

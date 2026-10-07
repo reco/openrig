@@ -135,8 +135,11 @@ export function shouldIngest(ev: SlackEvent): boolean {
  *  qitem ONLY if its sender resolves to a REGISTERED human (admit-iff-registered); the stamped
  *  `source` is that human's canonical ref (never a raw platform id). An unregistered sender — or a
  *  registry that itself failed to load — is REFUSED with LOUD teaching, never a fabricated seat. */
+/** A requester's message is conversation from someone who may not direct the work. */
+export const UNTRUSTED_REQUESTER_TAG = "untrusted-requester";
+
 export type InboundSenderResolution =
-  | { admitted: true; source: string }
+  | { admitted: true; source: string; requester?: boolean }
   | { admitted: false; teaching: string };
 
 export interface InboundDeps {
@@ -315,8 +318,9 @@ export class InboundRouter {
       if (!isCurrent()) return { landed: false, reason: "inactive" };
       // S10 — deterministic route (thread map) when wired; static destination otherwise.
       const route = this.deps.resolveRoute?.(ev) ?? { destination: this.deps.destination };
-      const decision = this.replyDecision(ev, route.correlationQitemId);
-      const cancel = this.replyCancel(ev, route.correlationQitemId);
+      // A requester's words never resolve or cancel a gate: they reach the seat as conversation.
+      const decision = who.requester ? null : this.replyDecision(ev, route.correlationQitemId);
+      const cancel = who.requester ? null : this.replyCancel(ev, route.correlationQitemId);
       const replyTags = this.replyTags(route.correlationQitemId, decision, cancel);
       const { summary, body } = this.summaryOf(ev, transfer, route.correlationQitemId, replyTags.includes("conversation"));
       let qitemId: string;
@@ -326,7 +330,7 @@ export class InboundRouter {
           source: who.source, // the REGISTERED human's canonical ref (human-class), never a raw platform id
           destination: route.destination,
           priority: "routine",
-          tags: [...route.tags ?? ["founder-slack", "inbound"], ...replyTags, `${SLACK_MESSAGE_TAG}${ev.channel ?? "-"}:${ts}`],
+          tags: [...route.tags ?? ["founder-slack", "inbound"], ...replyTags, `${SLACK_MESSAGE_TAG}${ev.channel ?? "-"}:${ts}`, ...(who.requester ? [UNTRUSTED_REQUESTER_TAG] : [])],
           summary,
           body,
         });
@@ -418,6 +422,7 @@ export class InboundRouter {
       this.deps.log?.(`click REFUSED — unregistered sender ${payload.user?.id}: ${who.teaching}`);
       return { status: "refused", reason: "unregistered" };
     }
+    if (who.requester) return { status: "refused", reason: "requester-cannot-answer" };
     const rootTs = clickedRootTs(payload);
     const route = rootTs ? this.deps.resolveRoute?.({ type: "message", thread_ts: rootTs, channel: payload.channel?.id }) : undefined;
     // Buttons on a decision posted inside another item's thread answer that decision, not the thread's item.
@@ -488,6 +493,7 @@ export class InboundRouter {
       this.deps.log?.(`confirm REFUSED — unregistered sender ${payload.user?.id}: ${who.teaching}`);
       return { status: "refused", reason: "unregistered" };
     }
+    if (who.requester) return { status: "refused", reason: "requester-cannot-answer" };
     const rootTs = clickedRootTs(payload);
     if (!rootTs) return { status: "ignored", reason: "unmapped-message" };
     return this.confirm(who.source, offerQitemId, rootTs, payload.channel?.id, live, payload.container?.message_ts ?? payload.message?.ts);
@@ -575,6 +581,7 @@ export class InboundRouter {
       this.deps.log?.(`reaction REFUSED — unregistered sender ${ev.user}: ${who.teaching}`);
       return { status: "refused", reason: "unregistered" };
     }
+    if (who.requester) return { status: "refused", reason: "requester-cannot-answer" };
     const target = this.deps.reactionTarget?.({ channel, messageTs, actorSession: who.source });
     if (!target) return { status: "ignored", reason: "not-a-decision-message" };
     this.inflight.add(key);

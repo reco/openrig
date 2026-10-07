@@ -11,7 +11,7 @@
 import type { InboundSenderResolution } from "./inbound.js";
 // S10 re-home: this module now lives IN the daemon, so the registry surface types resolve
 // relatively (the lazy-import dep rail was a CLI concern; the injectable surface stays for tests).
-import type { loadHumanRegistry as LoadFn, resolveSlackHandle as ResolveFn } from "../human-registry.js";
+import { isRequesterAddress, type loadHumanRegistry as LoadFn, type resolveSlackHandle as ResolveFn } from "../human-registry.js";
 
 export interface RegistrySurface {
   loadHumanRegistry: typeof LoadFn;
@@ -25,6 +25,7 @@ export function makeInboundSenderResolver(reg: RegistrySurface, home?: string): 
       return { admitted: false, teaching: `human registry unavailable — inbound refused (fail-closed): ${loaded.error}` };
     }
     const r = reg.resolveSlackHandle(slackUserId, loaded.entities);
-    return r.kind === "registered" ? { admitted: true, source: r.address } : { admitted: false, teaching: r.error };
+    if (r.kind !== "registered") return { admitted: false, teaching: r.error };
+    return isRequesterAddress(r.address, loaded.entities) ? { admitted: true, source: r.address, requester: true } : { admitted: true, source: r.address };
   };
 }
