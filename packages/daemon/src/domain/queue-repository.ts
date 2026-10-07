@@ -3662,13 +3662,11 @@ export class QueueRepository {
   private currentDeliveryEpisode(item: QueueItem, knownOwner?: QueueTransition): { notificationKey: string; startedAt: string } | "inactive" | null {
     let transition = knownOwner ?? this.transitionLog.latestOwnerNotificationForQitem(item.qitemId);
     if (!transition) return null;
-    // A human-decision-resolved notice written BY the transition that closed the row (a human's direct reply closing
-    // it) is never posted: the Slack outbound lists active rows only (listHumanAlerts), and that human just answered.
-    // It opens no new delivery episode; the delivery that happened is the latest OUTBOUND notice's, to that human.
-    // Judged by the notice's own transition, not the row's current state: a resolved notice written while the row
-    // stayed active is a real delivery and keeps its outcome after an agent later closes the row.
+    // A human-decision-resolved notice opens no new delivery episode: the human just answered, and Slack reports the
+    // outcome only as a reply in a thread the conversation already has (none when it never had one). The delivery
+    // that counts is the latest OUTBOUND notice's, to that human.
     let resolvedBy: string | null = null;
-    if (transition.ownerNotificationKind === "human-decision-resolved" && !["pending", "in-progress", "blocked"].includes(transition.state)) {
+    if (transition.ownerNotificationKind === "human-decision-resolved") {
       const outbound = this.transitionLog.listForQitem(item.qitemId)
         .filter((t) => t.ownerNotificationLevel != null && t.ownerNotificationKind != null && t.ownerNotificationKind !== "human-decision-resolved")
         .sort((a, b) => b.transitionId - a.transitionId)[0];

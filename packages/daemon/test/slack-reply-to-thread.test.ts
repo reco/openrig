@@ -160,10 +160,16 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
     });
 
     it("a resolved park reports its outcome in its own thread: no new root, no mention, no restated decision", async () => {
+      wire.stop();
+      saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: join(home, "fake.env"), minimumLevelThatInterrupts: "NOTICE", explicitAnswersOnly: true }, home);
+      wire = buildSlackGatewayWire({ home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
+      stops.push(() => wire.stop()); wire.startServices?.();
       const work = await park();
       await deliver(work.qitemId);
       await resolvePark(work.qitemId);
       await vi.waitFor(() => expect(postWith("Resolved: approved")).toBeDefined());
+      expect(JSON.stringify(postWith("Resolved: approved")!.blocks)).not.toContain("or-confirm");
+      expect(repo.getById(work.qitemId)?.deliveryOutcome).toBe("posted");
       const resolved = postWith("Resolved: approved")!;
       expect(resolved.thread_ts).toBe("1.1");
       expect(String(resolved.text)).not.toContain("<@");

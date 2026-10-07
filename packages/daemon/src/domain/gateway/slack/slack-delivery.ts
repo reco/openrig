@@ -197,7 +197,7 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
       },
       {
         sourceLabel: opts.sourceLabel,
-        answerHint: opts.answerHint,
+        answerHint: opts.answerHint && q.ownerNotificationKind !== "human-decision-resolved",
         bodyExcerpt: opts.bodyExcerpt,
         mediaRefs,
         evidenceLink,
@@ -420,7 +420,7 @@ export function subsystemSlackDeliver(opts: SubsystemSlackDeliveryOpts): Subsyst
         const partEvidence = evidenceAttachment(part.media, part.evidenceRef, part.summary);
         buildOutboundMessage(part, {
           sourceLabel: opts.sourceLabel,
-          answerHint: opts.answerHint,
+          answerHint: opts.answerHint && q.ownerNotificationKind !== "human-decision-resolved",
           attribution: attributionFromSession(part.sourceSession),
           mentionUserId: index === 0 ? opts.resolveMentionUserId?.(q) : undefined,
           reconcileMarker: reconcileToken(partId(index)),
