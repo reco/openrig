@@ -1,7 +1,7 @@
 // --attach: a seat's files ride its Slack post, uploaded into that post's thread and channel.
 // Hermetic: a fake Slack at the fetch boundary, real files on disk for the default reader.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { subsystemSlackDeliver } from "../src/domain/gateway/slack/slack-delivery.js";
@@ -22,7 +22,7 @@ function memFs(): StateFsOps {
 describe("--attach uploads", () => {
   let dir: string;
   let calls: { url: string; body: string }[];
-  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "attach-")); calls = []; });
+  beforeEach(() => { dir = realpathSync(mkdtempSync(join(tmpdir(), "attach-"))); calls = []; });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   const fetchImpl: FetchImpl = async (url, init) => {
@@ -61,11 +61,43 @@ describe("--attach uploads", () => {
     expect(completes().join()).toContain("after.pdf");
   });
 
-  it("never follows a symlink and never uploads from a human's row", async () => {
+  it("uploads a file once when the post has a supplemental reply", async () => {
+    writeFileSync(join(dir, "shot.png"), "png");
+    await deliver({ sourceSession: "psa-dev@psa", humanDetail: "More detail.", tags: [`attachment:${join(dir, "shot.png")}`] });
+    expect(completes()).toHaveLength(1);
+  });
+
+  it("never follows a symlink, uploads no video by tag, and never uploads from a human's row", async () => {
     writeFileSync(join(dir, "real.png"), "png");
+    writeFileSync(join(dir, "clip.mov"), "mov");
     symlinkSync(join(dir, "real.png"), join(dir, "link.png"));
-    await deliver({ sourceSession: "psa-dev@psa", tags: [`attachment:${join(dir, "link.png")}`] });
+    mkdirSync(join(dir, "real"));
+    writeFileSync(join(dir, "real", "inner.png"), "png");
+    symlinkSync(join(dir, "real"), join(dir, "via"));
+    await deliver({ sourceSession: "psa-dev@psa", tags: [`attachment:${join(dir, "link.png")}`, `attachment:${join(dir, "via", "inner.png")}`, `attachment:${join(dir, "clip.mov")}`] });
     await deliver({ sourceSession: "lee@external", tags: [`attachment:${join(dir, "real.png")}`] });
     expect(completes()).toHaveLength(0);
+  });
+});
+
+describe("--attach rides only the row's own first post", () => {
+  it("a park or later notice of the row carries no attachment", async () => {
+    const { createDb } = await import("../src/db/connection.js");
+    const { migrate } = await import("../src/db/migrate.js");
+    const { ALL_MIGRATIONS } = await import("../src/db/all-migrations.js");
+    const { EventBus } = await import("../src/domain/event-bus.js");
+    const { QueueRepository } = await import("../src/domain/queue-repository.js");
+    const { makeQueuePorts } = await import("../src/domain/gateway/slack/queue-access.js");
+    const human = { entityId: "reco", class: "human" as const, displayName: "Reco", address: "reco@external", connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:X", role: "primary" as const, handle: "U1" }], prefs: { deliveryClass: "A" as const } };
+    const registry = { ok: true as const, entities: [human] };
+    const db = createDb(); migrate(db, ALL_MIGRATIONS);
+    const repo = new QueueRepository(db, new EventBus(db), { loadHumanRegistry: () => registry });
+    const alertsFor = async (id: string) => (await makeQueuePorts(repo, { loadHumanRegistry: () => registry }).listHumanAlerts({})).find((q) => q.qitemId === id);
+    const direct = await repo.create({ sourceSession: "psa-dev@psa", destinationSession: "reco@external", humanIntent: "update", summary: "Shot", body: "see", tags: ["attachment:/x/a.png"], nudge: false });
+    expect((await alertsFor(direct.qitemId))?.tags).toContain("attachment:/x/a.png");
+    const work = await repo.create({ sourceSession: "other@rig", destinationSession: "psa-dev@psa", body: "w", tags: ["attachment:/x/b.png"], nudge: false });
+    repo.update({ qitemId: work.qitemId, actorSession: "psa-dev@psa", state: "blocked", blockedOn: "human-reco@kernel", summary: "Merge?", evidenceRef: "/x/p.md", transitionNote: "parked" });
+    expect((await alertsFor(work.qitemId))?.tags ?? []).not.toContain("attachment:/x/b.png");
+    db.close();
   });
 });

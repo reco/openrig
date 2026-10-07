@@ -178,9 +178,7 @@ export class MissionControlWriteContract {
             tier: source.tier ?? undefined,
             summary: source.summary,
             evidenceRef: source.evidenceRef,
-            tags: source.tags
-              ? [...source.tags, `mission-control:${input.verb}`]
-              : [`mission-control:${input.verb}`],
+            tags: [...(source.tags ?? []).filter((t) => !t.startsWith("attachment:")), `mission-control:${input.verb}`],
             chainOfRecord: [...(source.chainOfRecord ?? []), input.qitemId],
             // Default nudge handled post-commit per Phase D pattern.
             nudge: input.notify,

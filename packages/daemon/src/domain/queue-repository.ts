@@ -1726,7 +1726,8 @@ export class QueueRepository {
     const body = input.body ?? source.body;
     const priority = input.priority ?? source.priority;
     const tier = input.tier ?? source.tier;
-    const tags = input.tags ? JSON.stringify(input.tags) : (source.tags ? JSON.stringify(source.tags) : null);
+    const inherited = source.tags?.filter((t) => !t.startsWith("attachment:"));
+    const tags = input.tags ? JSON.stringify(input.tags) : (inherited ? JSON.stringify(inherited) : null);
     const chain = JSON.stringify([...(source.chainOfRecord ?? []), source.qitemId]);
     const targetRepo = input.targetRepo === undefined ? source.targetRepo : input.targetRepo;
 
@@ -1903,7 +1904,8 @@ export class QueueRepository {
     const body = input.body ?? source.body;
     const priority = input.priority ?? source.priority;
     const tier = input.tier ?? source.tier;
-    const tags = input.tags ? JSON.stringify(input.tags) : (source.tags ? JSON.stringify(source.tags) : null);
+    const inherited = source.tags?.filter((t) => !t.startsWith("attachment:"));
+    const tags = input.tags ? JSON.stringify(input.tags) : (inherited ? JSON.stringify(inherited) : null);
     const chain = JSON.stringify([...(source.chainOfRecord ?? []), source.qitemId]);
     const targetRepo = input.targetRepo === undefined ? source.targetRepo : input.targetRepo;
 

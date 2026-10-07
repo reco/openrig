@@ -76,6 +76,11 @@ export const LOCAL_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024;
 /** `rig queue create --attach <path>` rides the row as this tag. */
 export const ATTACHMENT_TAG = "attachment:";
 const ATTACHED_MAX_BYTES = 10 * 1024 * 1024;
+const ATTACHED_EXT = new Set([...LOCAL_IMAGE_EXT, ".pdf"]);
+/** No symlink anywhere on the path: the file is exactly where the path says. */
+function realPathIs(ref: string): boolean {
+  try { return fs.realpathSync(ref) === ref; } catch { return false; }
+}
 export type LocalAttachment = { bytes: Uint8Array; filename: string } | { skipped: string };
 const TRANSPORT_FAILURE_RECEIPT_PREFIX = "::transport-failure-receipt::";
 const TRANSPORT_FAILURE_RECEIPT_REPAIRED = "::repaired";
@@ -380,6 +385,7 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
     const attached = isHumanSeatSessionRef(q.sourceSession ?? "") ? [] : (q.tags ?? [])
       .filter((t) => t.startsWith(ATTACHMENT_TAG))
       .map((t) => t.slice(ATTACHMENT_TAG.length))
+      .filter((ref) => ATTACHED_EXT.has(path.extname(ref).toLowerCase()) && realPathIs(ref))
       .map((ref) => ({ ref, title: null, local: read(ref, { maxBytes: ATTACHED_MAX_BYTES, noFollow: true }) }));
     for (const { ref, title, local } of [...evidence, ...attached]) {
       if (local && "skipped" in local) {
@@ -423,7 +429,7 @@ export function subsystemSlackDeliver(opts: SubsystemSlackDeliveryOpts): Subsyst
     const parts = q.humanDetail
       ? [
           { ...q, humanDetail: undefined, body: `${q.body ?? ""}\n\nSupplemental detail follows in this thread.` },
-          { ...q, humanDetail: undefined, humanQuestions: undefined, humanConfirm: undefined, summary: `Supplemental detail: ${q.summary ?? ""}`, body: q.humanDetail, media: [], evidenceRef: null },
+          { ...q, humanDetail: undefined, humanQuestions: undefined, humanConfirm: undefined, summary: `Supplemental detail: ${q.summary ?? ""}`, body: q.humanDetail, media: [], evidenceRef: null, tags: q.tags?.filter((t) => !t.startsWith(ATTACHMENT_TAG)) ?? null },
         ]
       : [q];
     const partId = (index: number) => parts.length === 1 ? decision.decisionId : `${decision.decisionId}:part:${index + 1}`;

@@ -86,7 +86,8 @@ function project(q: RepoQueueItem, transition: QueueTransition, entities: readon
     qitemId: String(r.qitemId),
     destinationSession,
     sourceSession,
-    tags: (r.tags as string[] | null) ?? null,
+    // A row's --attach files ride only its own first post, never a park, handoff or later notice.
+    tags: ((r.tags as string[] | null) ?? null)?.filter((t) => transition.transitionNote === "created" || !t.startsWith("attachment:")) ?? null,
     state: (r.state as string | null) ?? null,
     tier: (r.tier as string | null) ?? null,
     humanIntent: q.humanIntent,

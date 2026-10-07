@@ -233,6 +233,7 @@ export function attachmentProblem(file: string): string | null {
   let st: fs.Stats;
   try { st = fs.lstatSync(file); } catch { return "not found"; }
   if (st.isSymbolicLink()) return "a symlink; pass the file itself";
+  try { if (fs.realpathSync(file) !== path.resolve(file)) return "its path goes through a symlink; pass the real path"; } catch { return "not found"; }
   if (!st.isFile()) return "not a regular file";
   if (st.size > ATTACHMENT_MAX_BYTES) return `${st.size} bytes is over the 10 MB cap`;
   try { fs.accessSync(file, fs.constants.R_OK); } catch { return "not readable"; }
