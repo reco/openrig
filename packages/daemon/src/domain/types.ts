@@ -524,6 +524,8 @@ export type AgentActivityEvidenceSource =
 
 export interface AgentActivity {
   state: AgentActivityState;
+  /** PreToolUse rig-queue-create: the queue destination the seat is writing to. */
+  target?: string | null;
   reason: string;
   evidenceSource: AgentActivityEvidenceSource;
   sampledAt: string;

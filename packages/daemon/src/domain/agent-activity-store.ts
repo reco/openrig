@@ -10,6 +10,8 @@ export interface HookActivityInput {
   nodeId?: string | null;
   hookEvent: string;
   subtype?: string | null;
+  /** PreToolUse rig-queue-create: the queue destination the seat is writing to (never the command). */
+  target?: string | null;
   occurredAt?: string | null;
   /** W2a-1 — the EMITTING occupant's generation, CARRIED source-bound on the hook (the producer/relay
    *  supplies it at fire time; the route ingests it). NOT inferred from record-time state — that
@@ -97,7 +99,7 @@ export class AgentActivityStore {
     // absence recorded as its own state, never false-fresh). No record-time
     // resolver call — the live-gen resolver is used only at READ, for the comparison.
     const generation = input.generation ?? null;
-    const activity = normalizeHookActivity({
+    const normalized = normalizeHookActivity({
       // Stamp the emitter's claimed runtime (consumers such as the provider
       // tap filter on it); semantics that depend on the runtime use the seat's.
       runtime: input.runtime ?? session.runtime,
@@ -108,6 +110,7 @@ export class AgentActivityStore {
       eventAt,
       generation,
     });
+    const activity = input.target ? { ...normalized, target: input.target } : normalized;
 
     const event = this.eventBus.emit({
       type: "agent.activity",

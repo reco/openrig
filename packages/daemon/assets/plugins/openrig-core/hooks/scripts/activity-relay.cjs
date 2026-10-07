@@ -41,6 +41,19 @@ function firstString(...values) {
   return null;
 }
 
+// A PreToolUse names the tool. A shell `rig queue create` is reported as such with only its
+// --destination (the seat writing to someone); the command text itself never leaves the seat.
+function classifyToolUse(hookEvent, providerPayload) {
+  if (hookEvent !== "PreToolUse") return null;
+  const tool = firstString(providerPayload.tool_name, providerPayload.toolName);
+  if (tool !== "Bash") return tool ? { subtype: tool, target: null } : null;
+  const input = providerPayload.tool_input && typeof providerPayload.tool_input === "object" ? providerPayload.tool_input : {};
+  const command = typeof input.command === "string" ? input.command : "";
+  if (!/\brig\s+queue\s+create\b/.test(command)) return { subtype: "Bash", target: null };
+  const destination = /--destination[=\s]+(["']?)([^\s"']+)\1/.exec(command);
+  return { subtype: "rig-queue-create", target: destination ? destination[2] : null };
+}
+
 function buildOpenRigPayload(providerPayload, env = process.env, now = () => new Date()) {
   const sessionName = firstString(env.OPENRIG_SESSION_NAME, env.RIGGED_SESSION_NAME);
   const nodeId = firstString(env.OPENRIG_NODE_ID, env.RIGGED_NODE_ID);
@@ -66,13 +79,16 @@ function buildOpenRigPayload(providerPayload, env = process.env, now = () => new
     providerPayload.matcher
   );
 
+  const tool = classifyToolUse(hookEvent, providerPayload);
+
   return {
     sessionName,
     nodeId,
     runtime,
     generation,
     hookEvent,
-    subtype,
+    subtype: tool ? tool.subtype : subtype,
+    target: tool ? tool.target : null,
     occurredAt: now().toISOString(),
   };
 }

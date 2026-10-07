@@ -85,3 +85,22 @@ describe("activity-relay occupant generation carry (W2a producer)", () => {
     expect(payload).toHaveProperty("generation", null);
   });
 });
+
+describe("activity-relay PreToolUse classification", () => {
+  const env = { OPENRIG_SESSION_NAME: "dev-owner@openrig-dev", OPENRIG_NODE_ID: "n1", OPENRIG_RUNTIME: "claude-code" };
+  const pre = (tool_name: string, tool_input: Record<string, unknown>) => relay.buildOpenRigPayload({ hook_event_name: "PreToolUse", tool_name, tool_input }, env);
+
+  it("forwards the tool name for file edits", () => {
+    expect(pre("Edit", { file_path: "/a.ts" })).toMatchObject({ hookEvent: "PreToolUse", subtype: "Edit", target: null });
+  });
+
+  it("names a rig queue create and its destination, never the command text", () => {
+    const payload = pre("Bash", { command: "cd /x && rig queue create --destination reco@external --summary hi --body 'secret xoxb-1'" });
+    expect(payload).toMatchObject({ subtype: "rig-queue-create", target: "reco@external" });
+    expect(JSON.stringify(payload)).not.toContain("xoxb");
+  });
+
+  it("reports any other shell command as Bash with no target", () => {
+    expect(pre("Bash", { command: "npm test" })).toMatchObject({ subtype: "Bash", target: null });
+  });
+});

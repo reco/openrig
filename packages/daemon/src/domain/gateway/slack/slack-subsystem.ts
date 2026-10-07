@@ -35,7 +35,7 @@ import { startSocketInbound, type SocketInboundHandle, type WsLike } from "./soc
 import { loadHumanRegistry, resolveSlackHandle } from "../human-registry.js";
 import { hasLiveHumanGate, type QueueRepository } from "../../queue-repository.js";
 import { formatReplyToChoice, REPLY_TO_CHOICE_ACTOR, type ReplyToChoice } from "../../reply-to-choice.js";
-import { parseSessionName } from "../../session-name.js";
+import { isHumanSeatSessionRef, parseSessionName } from "../../session-name.js";
 import type { FetchImpl } from "./slack-api.js";
 import { ownerNotificationLevelAtLeast } from "../../queue-transition-log.js";
 // OPR.0.5.6.1 — the delivery rules engine: ONE decision per message replaces
@@ -426,23 +426,37 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   };
   const handled = (state: string | undefined): boolean => ["done", "canceled", "handed-off", "failed", "denied"].includes(state ?? "");
   const threadAnsweredAt = new Map<string, string>(); // conversation -> last seat answer in its thread
-  const RECEIPTS = [cfg.receipts.received, cfg.receipts.picked, cfg.receipts.working, cfg.receipts.done];
+  const RECEIPTS = Object.values(cfg.receipts);
+  const FILE_EDIT_TOOLS = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
   // The seat's latest activity, through the indexed (node_id, type, seq) lookup.
-  const latestActivity = (session: string): { state: string | null; reason: string | null } => {
+  interface LatestActivity { state: string | null; reason: string | null; rawEvent: string | null; rawSubtype: string | null; target: string | null; runtime: string | null }
+  const latestActivity = (session: string): LatestActivity => {
     const node = opts.queueRepo.db.prepare("SELECT node_id FROM sessions WHERE session_name = ? ORDER BY rowid DESC LIMIT 1").get(session) as { node_id: string } | undefined;
-    const pick = "SELECT json_extract(payload, '$.activity.state') AS state, json_extract(payload, '$.activity.reason') AS reason FROM events WHERE type = 'agent.activity'";
+    const pick = `SELECT json_extract(payload, '$.activity.state') AS state, json_extract(payload, '$.activity.reason') AS reason,
+      json_extract(payload, '$.activity.rawEvent') AS rawEvent, json_extract(payload, '$.activity.rawSubtype') AS rawSubtype,
+      json_extract(payload, '$.activity.target') AS target, json_extract(payload, '$.runtime') AS runtime FROM events WHERE type = 'agent.activity'`;
     const row = (node
       ? opts.queueRepo.db.prepare(`${pick} AND node_id = ? ORDER BY seq DESC LIMIT 1`).get(node.node_id)
-      : opts.queueRepo.db.prepare(`${pick} AND json_extract(payload, '$.sessionName') = ? ORDER BY seq DESC LIMIT 1`).get(session)) as { state: string | null; reason: string | null } | undefined;
-    return row ?? { state: null, reason: null };
+      : opts.queueRepo.db.prepare(`${pick} AND json_extract(payload, '$.sessionName') = ? ORDER BY seq DESC LIMIT 1`).get(session)) as LatestActivity | undefined;
+    return row ?? { state: null, reason: null, rawEvent: null, rawSubtype: null, target: null, runtime: null };
   };
-  const seatIsWorking = (session: string): boolean => latestActivity(session).state === "running";
+  // A Claude seat's tool use refines working: editing files is coding, a `rig queue create` to a
+  // human is typing (the seat writing its reply). Codex seats report no tools and stay working.
+  const workingStage = (session: string): string | null => {
+    const activity = latestActivity(session);
+    if (activity.state !== "running") return null;
+    if (activity.runtime === "claude-code" && activity.rawEvent === "PreToolUse") {
+      if (FILE_EDIT_TOOLS.has(activity.rawSubtype ?? "")) return cfg.receipts.coding;
+      if (activity.rawSubtype === "rig-queue-create" && isHumanSeatSessionRef(activity.target ?? "")) return cfg.receipts.typing;
+    }
+    return cfg.receipts.working;
+  };
   const wantedReceipt = (row: { qitemId: string; state: string; tsCreated: string; destinationSession: string; tags?: string[] | null }): string => {
     const conversation = row.tags?.find((t) => t.startsWith("reply-to:"))?.slice("reply-to:".length) ?? row.qitemId;
     const answeredAt = threadAnsweredAt.get(conversation);
     if (handled(row.state) || (answeredAt && answeredAt >= row.tsCreated)) return cfg.receipts.done;
     if (row.state !== "in-progress") return cfg.receipts.received;
-    return seatIsWorking(row.destinationSession) ? cfg.receipts.working : cfg.receipts.picked;
+    return workingStage(row.destinationSession) ?? cfg.receipts.picked;
   };
   const appliedReceipt = new Map<string, string>(); // qitemId -> the reaction we last put on its message
   // Phase 1 — while the seat works on a received message, Slack's status line shows it in that
@@ -458,6 +472,9 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const elapsed = (since: number) => `${Math.max(0, Math.round((Date.now() - since) / 60_000))}m`;
   const stepOf = (session: string): string => {
     const reason = latestActivity(session).reason ?? "";
+    const stage = workingStage(session);
+    if (stage === cfg.receipts.coding) return "is editing files…";
+    if (stage === cfg.receipts.typing) return "is writing a reply…";
     return /tool/.test(reason) ? "is running tools…" : /prompt/.test(reason) ? "is reading…" : "is working…";
   };
   const showProgress = async (qitemId: string, channel: string, threadTs: string, session: string): Promise<void> => {
@@ -509,7 +526,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       if (!bot || !row || !message) return;
       const wanted = wantedReceipt(row);
       const threadTs = row.tags?.find((t) => t.startsWith("thread-ts:"))?.slice("thread-ts:".length) ?? message.ts;
-      await syncProgress(qitemId, message.channel, threadTs, row.destinationSession, wanted === cfg.receipts.working, wanted === cfg.receipts.done);
+      await syncProgress(qitemId, message.channel, threadTs, row.destinationSession, [cfg.receipts.working, cfg.receipts.coding, cfg.receipts.typing].includes(wanted), wanted === cfg.receipts.done);
       const applied = appliedReceipt.get(qitemId);
       if (applied === wanted) return;
       const add = await addReaction(bot, { channel: message.channel, timestamp: message.ts, name: wanted }, opts.fetchImpl);

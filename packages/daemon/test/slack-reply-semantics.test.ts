@@ -563,6 +563,31 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       } finally { statusSupported = true; }
     });
 
+    const toolUse = (sessionName: string, runtime: string, rawSubtype: string, target?: string) => bus.emit({ type: "agent.activity", rigId: "r", nodeId: "n", sessionName, runtime,
+      activity: { state: "running", reason: "pre_tool_use", evidenceSource: "runtime_hook", sampledAt: new Date().toISOString(), evidence: null, rawEvent: "PreToolUse", rawSubtype, runtime, ...(target ? { target } : {}) } } as never);
+
+    it("a claimed message shows coding while the seat edits files and typing while it writes to the human", async () => {
+      await say("Fix the bug please", "3000.1");
+      const row = toSeat().find((q) => q.body.includes("Fix the bug please"))!;
+      repo.claim({ qitemId: row.qitemId, destinationSession: "author@rig" });
+      toolUse("author@rig", "claude-code", "Edit");
+      await vi.waitFor(() => expect([...marksOn("3000.1")]).toEqual(["keyboard"]));
+      toolUse("author@rig", "claude-code", "rig-queue-create", "human-founder@external");
+      await vi.waitFor(() => expect([...marksOn("3000.1")]).toEqual(["writing_hand"]));
+      toolUse("author@rig", "claude-code", "rig-queue-create", "worker@rig");
+      await vi.waitFor(() => expect([...marksOn("3000.1")]).toEqual(["hammer_and_wrench"]));
+      toolUse("author@rig", "codex", "Edit");
+      await new Promise((r) => setTimeout(r, 100));
+      expect([...marksOn("3000.1")]).toEqual(["hammer_and_wrench"]);
+    });
+
+    it("tool use on a seat with no claimed message changes nothing", async () => {
+      await say("Unclaimed", "3010.1");
+      toolUse("author@rig", "claude-code", "Edit");
+      await new Promise((r) => setTimeout(r, 100));
+      expect([...marksOn("3010.1")]).toEqual(["eyes"]);
+    });
+
     it("swaps 👀 for 🤔 when the seat claims the message, and clears it when done", async () => {
       await say("Can you look into this?", "2405.1");
       const row = toSeat().find((q) => q.body.includes("Can you look into this?"))!;

@@ -41,7 +41,7 @@ export interface SlackConnectorConfig {
   staleReminderDays: number;
   /** Phase 1: the reaction emoji (standard or the workspace's custom names) a received human
    *  message shows as the seat progresses. */
-  receipts: { received: string; picked: string; working: string; done: string };
+  receipts: { received: string; picked: string; working: string; coding: string; typing: string; done: string };
 }
 
 export const DEFAULT_CONFIG: SlackConnectorConfig = {
@@ -57,7 +57,7 @@ export const DEFAULT_CONFIG: SlackConnectorConfig = {
   minimumLevelThatInterrupts: "ALERT",
   explicitAnswersOnly: true,
   staleReminderDays: 3,
-  receipts: { received: "eyes", picked: "thinking_face", working: "hammer_and_wrench", done: "white_check_mark" },
+  receipts: { received: "eyes", picked: "thinking_face", working: "hammer_and_wrench", coding: "keyboard", typing: "writing_hand", done: "white_check_mark" },
 };
 
 function validateLevel(field: string, value: unknown): asserts value is OwnerNotificationLevel {
@@ -72,7 +72,10 @@ function validateConfig(cfg: SlackConnectorConfig): void {
   for (const [stage, name] of Object.entries(cfg.receipts ?? {})) {
     if (typeof name !== "string" || !/^[a-z0-9_+'-]+$/.test(name)) throw new Error(`receipts.${stage} must be a Slack emoji name without colons (got ${String(name)})`);
   }
-  if (new Set(Object.values(cfg.receipts ?? {})).size !== 4) throw new Error("receipts needs four different emoji names (received, picked, working, done)");
+  const names = Object.values(cfg.receipts ?? {});
+  if (new Set(names).size !== names.length) {
+    throw new Error("receipts needs a different emoji name for each stage (received, picked, working, coding, typing, done)");
+  }
   if (typeof cfg.staleReminderDays !== "number" || !(cfg.staleReminderDays > 0)) {
     throw new Error(`staleReminderDays must be a positive number of days (got ${String(cfg.staleReminderDays)})`);
   }
