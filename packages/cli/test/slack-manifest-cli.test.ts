@@ -105,6 +105,13 @@ describe("next-step routing names `rig slack manifest` first", () => {
     expect(saved.extraChannels).toEqual([{ id: "C456", inboundDestination: "psa-dev@psa" }]);
   });
 
+  it("setup records the workspace's rating emoji", async () => {
+    const { deps } = offline();
+    await run(deps, ["setup", "--channel", "C123", "--feedback-up", "+1,rr-plus1", "--feedback-down", "-1,rr-minus1", "--reason", "fixture", "--actor", "fixture-operator"]);
+    const saved = JSON.parse(readFileSync(join(deps.home!, "slack-connector.json"), "utf8")) as { feedbackReactions: unknown };
+    expect(saved.feedbackReactions).toEqual({ up: ["+1", "rr-plus1"], down: ["-1", "rr-minus1"] });
+  });
+
   it("setup's next-step hint starts with the manifest", async () => {
     const { deps, logs } = offline();
     await run(deps, ["setup", "--channel", "C123", "--reason", "fixture", "--actor", "fixture-operator"]);

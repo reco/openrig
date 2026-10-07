@@ -91,6 +91,8 @@ export function slackCommand(deps: SlackDeps = {}): Command {
     .description("Configure the connector (first-class config; secrets stay in the env file, never here)")
     .option("--channel <id>", "Slack channel id the connector app must be a member of")
     .option("--inbound-destination <session>", "where inbound human messages land (default operator-agent@kernel)")
+    .option("--feedback-up <csv>", "reaction names that count as 👍 feedback (replaces the list; e.g. +1,thumbsup,rr-plus1)")
+    .option("--feedback-down <csv>", "reaction names that count as 👎 feedback (replaces the list)")
     .option("--extra-channel <id=session>", "another channel and the seat its new messages land on (repeatable; replaces the list)", (v: string, acc: string[] = []) => { acc.push(v); return acc; })
     .option("--minimum-level-that-posts <level>", "minimum OWNER level posted to Slack: RECORD|NOTICE|ALERT")
     .option("--minimum-level-that-interrupts <level>", "minimum OWNER level that mentions/interrupts: RECORD|NOTICE|ALERT")
@@ -106,6 +108,10 @@ export function slackCommand(deps: SlackDeps = {}): Command {
         ...cur,
         channel: opts.channel ?? cur.channel,
         inboundDestination: opts.inboundDestination ?? cur.inboundDestination,
+        feedbackReactions: {
+          up: opts.feedbackUp ? String(opts.feedbackUp).split(",").map((s: string) => s.trim()).filter(Boolean) : cur.feedbackReactions.up,
+          down: opts.feedbackDown ? String(opts.feedbackDown).split(",").map((s: string) => s.trim()).filter(Boolean) : cur.feedbackReactions.down,
+        },
         extraChannels: opts.extraChannel
           ? (opts.extraChannel as string[]).map((spec) => { const [id = "", inboundDestination = ""] = spec.split("="); return { id, inboundDestination }; })
           : cur.extraChannels,
