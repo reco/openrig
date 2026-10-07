@@ -770,6 +770,20 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(followUp?.tags).toContain(`reply-to:${inbound.qitemId}`);
     });
 
+    it("--reply-to a human's reply inside a thread answers in that thread", async () => {
+      socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-top4", type: "events_api", payload: { event: { type: "message", user: "UFOUNDER", text: "Set up Lee", ts: "2800.1", channel: "C-TEST" } } }) });
+      await vi.waitFor(() => expect(finals("e-top4")).toHaveLength(1));
+      const inbound = repo.list({ limit: 100 }).find((q) => q.body.includes("Set up Lee"))!;
+      const first = await repo.create({ ...request, humanIntent: "update", summary: "Plan", body: "Three steps.", replyTo: inbound.qitemId });
+      await deliver(first.qitemId);
+      await sayIn("2800.1", "What about his accounts?", "2801.1");
+      const reply = repo.list({ limit: 100 }).find((q) => q.body.includes("What about his accounts?"))!;
+      const answer = await repo.create({ ...request, humanIntent: "update", summary: "Accounts", body: "Own Codex and Claude.", replyTo: reply.qitemId });
+      await deliver(answer.qitemId);
+      expect(posts.at(-1)?.thread_ts).toBe("2800.1");
+      expect(repo.getById(answer.qitemId)?.replyToFallback).toBeNull();
+    });
+
     it("a human-started thread is routing-only: answer: and cancel there resolve or close nothing", async () => {
       socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-top2", type: "events_api", payload: { event: { type: "message", user: "UFOUNDER", text: "Status please", ts: "2600.1", channel: "C-TEST" } } }) });
       await vi.waitFor(() => expect(finals("e-top2")).toHaveLength(1));

@@ -366,8 +366,10 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         opts.queueRepo.update({ qitemId: item.qitemId, actorSession: "daemon@kernel", transitionNote: formatPostedStamp({ ...root, messageTs: humanMessage.ts }) });
         return { kind: "thread", threadTs: humanMessage.ts };
       }
-      if (!item.replyTo) return { kind: "fallback", reason: "root-missing", qitemId: item.qitemId };
-      item = opts.queueRepo.getById(item.replyTo);
+      // An inbound reply inside a thread names its conversation by tag, not by the replyTo field.
+      const next = item.replyTo ?? item.tags?.find((t) => t.startsWith("reply-to:"))?.slice("reply-to:".length);
+      if (!next) return { kind: "fallback", reason: "root-missing", qitemId: item.qitemId };
+      item = opts.queueRepo.getById(next);
     }
     return item
       ? { kind: "fallback", reason: "chain-too-long", qitemId: item.qitemId }
