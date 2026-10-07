@@ -41,7 +41,7 @@ export interface SlackConnectorConfig {
   staleReminderDays: number;
   /** Phase 1: the reaction emoji (standard or the workspace's custom names) a received human
    *  message shows as the seat progresses. */
-  receipts: { received: string; picked: string; working: string; coding: string; typing: string; done: string };
+  receipts: { received: string; picked: string; coding: string; typing: string; done: string };
   /** More channels beside `channel`, each landing its new messages on its own seat. */
   extraChannels: Array<{ id: string; inboundDestination: string }>;
   /** Reaction names (the workspace's custom ones included) that count as 👍 or 👎 feedback. */
@@ -61,7 +61,7 @@ export const DEFAULT_CONFIG: SlackConnectorConfig = {
   minimumLevelThatInterrupts: "ALERT",
   explicitAnswersOnly: true,
   staleReminderDays: 3,
-  receipts: { received: "eyes", picked: "thinking_face", working: "hammer_and_wrench", coding: "keyboard", typing: "writing_hand", done: "white_check_mark" },
+  receipts: { received: "eyes", picked: "thinking_face", coding: "keyboard", typing: "writing_hand", done: "white_check_mark" },
   extraChannels: [],
   feedbackReactions: { up: ["+1", "thumbsup"], down: ["-1", "thumbsdown"] },
 };
@@ -85,7 +85,7 @@ function validateConfig(cfg: SlackConnectorConfig): void {
   }
   const names = Object.values(cfg.receipts ?? {});
   if (new Set(names).size !== names.length) {
-    throw new Error("receipts needs a different emoji name for each stage (received, picked, working, coding, typing, done)");
+    throw new Error("receipts needs a different emoji name for each stage (received, picked, coding, typing, done)");
   }
   if (!Array.isArray(cfg.extraChannels) || cfg.extraChannels.some((c) => !c || typeof c.id !== "string" || !/^[A-Z0-9-]+$/.test(c.id) || typeof c.inboundDestination !== "string" || !c.inboundDestination)) {
     throw new Error("extraChannels must be a list of { id: <Slack channel id>, inboundDestination: <seat> }");
@@ -102,6 +102,12 @@ function validateConfig(cfg: SlackConnectorConfig): void {
   }
 }
 
+/** The retired 'working' stage (thinking now lasts until coding, typing or done). */
+function withoutWorking(receipts: Partial<SlackConnectorConfig["receipts"]> & { working?: string } | undefined): Partial<SlackConnectorConfig["receipts"]> {
+  const { working: _retired, ...rest } = receipts ?? {};
+  return rest;
+}
+
 export function configPathFor(home?: string): string {
   return path.join(home ?? getOpenRigHome(), "slack-connector.json");
 }
@@ -115,7 +121,7 @@ export function loadConfig(home?: string): SlackConnectorConfig {
     return { ...DEFAULT_CONFIG };
   }
   const { alertTag: _retiredAlertTag, ...supported } = raw;
-  const cfg = { ...DEFAULT_CONFIG, ...supported, receipts: { ...DEFAULT_CONFIG.receipts, ...(supported.receipts ?? {}) },
+  const cfg = { ...DEFAULT_CONFIG, ...supported, receipts: { ...DEFAULT_CONFIG.receipts, ...withoutWorking(supported.receipts) },
     feedbackReactions: { ...DEFAULT_CONFIG.feedbackReactions, ...(supported.feedbackReactions ?? {}) } };
   validateConfig(cfg);
   return cfg;

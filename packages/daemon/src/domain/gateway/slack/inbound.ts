@@ -15,7 +15,7 @@
 import type { SeenStore, DeadLetterStore, DeadLetterEntry } from "./state-store.js";
 import type { InboundQueuePort } from "./queue-access.js";
 import { createHash } from "node:crypto";
-import { ADMITTED_EVENT_TYPES, REACTION_EVENT_TYPES } from "./capabilities.js";
+import { ADMITTED_EVENT_TYPES, MEMBER_EVENT_TYPES, REACTION_EVENT_TYPES } from "./capabilities.js";
 import { escapeSlackText, parseConfirmAction, parseQuestionAction, redactSecrets, type ConfirmOutcome } from "./message.js";
 import { formatHumanAnswers, unansweredQuestions, type RecordHumanAnswerResult } from "../../human-questions.js";
 
@@ -134,6 +134,9 @@ export function shouldIngest(ev: SlackEvent): boolean {
  *  qitem ONLY if its sender resolves to a REGISTERED human (admit-iff-registered); the stamped
  *  `source` is that human's canonical ref (never a raw platform id). An unregistered sender — or a
  *  registry that itself failed to load — is REFUSED with LOUD teaching, never a fabricated seat. */
+/** A message the app was not addressed in: context for the seat, no receipt, no nudge. */
+export const NOT_ADDRESSED_TAG = "not-addressed";
+
 /** A requester's message is conversation from someone who may not direct the work. */
 export const UNTRUSTED_REQUESTER_TAG = "untrusted-requester";
 
@@ -166,6 +169,11 @@ export interface InboundDeps {
   cancelRequest?: (input: { conversationId: string; actorSession: string; reason: string }) => Promise<"closed" | "not-authorized" | "not-applicable">;
   /** Phase 1 — show the human their message was received (a 👀 on it). Best-effort. */
   markReceived?: (input: { channel: string; ts: string; qitemId: string }) => Promise<void>;
+  /** False when a channel has more than one human and the message does not @mention the app:
+   *  it reaches the seat as quiet context only. */
+  isAddressed?: (ev: SlackEvent) => boolean;
+  /** A member joined or left a channel: its human count is stale. */
+  onMembershipChanged?: (channel: string) => void;
   /** Phase 1 — replace a fully answered decision's button rows with its answers. Best-effort. */
   retireQuestionButtons?: (input: { channel: string; messageTs: string; qitemId: string }) => Promise<void>;
   /** Phase 1 — replace a confirmed offer's button with its reading. Best-effort. */
@@ -320,8 +328,9 @@ export class InboundRouter {
       // S10 — deterministic route (thread map) when wired; static destination otherwise.
       const route = this.deps.resolveRoute?.(ev) ?? { destination: this.deps.destination };
       // A requester's words never resolve or cancel a gate: they reach the seat as conversation.
-      const decision = who.requester ? null : this.replyDecision(ev, route.correlationQitemId);
-      const cancel = who.requester ? null : this.replyCancel(ev, route.correlationQitemId);
+      const addressed = this.deps.isAddressed?.(ev) ?? true;
+      const decision = who.requester || !addressed ? null : this.replyDecision(ev, route.correlationQitemId);
+      const cancel = who.requester || !addressed ? null : this.replyCancel(ev, route.correlationQitemId);
       const replyTags = this.replyTags(route.correlationQitemId, decision, cancel);
       const { summary, body } = this.summaryOf(ev, transfer, route.correlationQitemId, replyTags.includes("conversation"), who.requester ? `Requester ${who.source} (untrusted)` : undefined);
       let qitemId: string;
@@ -331,9 +340,10 @@ export class InboundRouter {
           source: who.source, // the REGISTERED human's canonical ref (human-class), never a raw platform id
           destination: route.destination,
           priority: "routine",
-          tags: [...route.tags ?? ["founder-slack", "inbound"], ...replyTags, `${SLACK_MESSAGE_TAG}${ev.channel ?? "-"}:${ts}`, ...(who.requester ? [UNTRUSTED_REQUESTER_TAG] : [])],
+          tags: [...route.tags ?? ["founder-slack", "inbound"], ...replyTags, `${SLACK_MESSAGE_TAG}${ev.channel ?? "-"}:${ts}`, ...(who.requester ? [UNTRUSTED_REQUESTER_TAG] : []), ...(addressed ? [] : [NOT_ADDRESSED_TAG, ...(replyTags.includes("conversation") ? [] : ["conversation"])])],
           summary,
           body,
+          ...(addressed ? {} : { nudge: false }),
         });
       } catch (e) {
         this.deps.log?.(`qitem create failed ts=${ts}: ${(e as Error).message}`);
@@ -362,7 +372,7 @@ export class InboundRouter {
         }
       }
       this.deps.seen.mark(eventId, "landed"); // durable qitem exists → safe to mark
-      if (ev.channel && this.deps.markReceived) {
+      if (addressed && ev.channel && this.deps.markReceived) {
         try {
           await this.deps.markReceived({ channel: ev.channel, ts, qitemId });
         } catch (e) {
@@ -563,6 +573,10 @@ export class InboundRouter {
   /** Phase 1 — a ✅ from the asked human on their decision's root, their own reply in its
    *  thread, or a Confirm offer. Deduplicated per (message, person); a failed continuation is
    *  dead-lettered and retried like a typed reply. */
+  membershipChanged(channel: string | undefined): void {
+    if (channel) this.deps.onMembershipChanged?.(channel);
+  }
+
   async routeReaction(ev: SlackEvent): Promise<{ status: InboundDisposition; reason?: string }> {
     const r = await this.attemptReaction(ev, true);
     if (r.status === "handler-failed") this.deps.deadLetter.append(ev, 1);
@@ -733,6 +747,7 @@ export async function handleEnvelope(
   if (env.type !== "events_api") return { status: "ignored", reason: "envelope-type" };
   const ev = { ...env.payload?.event, recoveredAfterGap: undefined }; // only history admission supplies recovery provenance
   if (ev.type && REACTION_EVENT_TYPES.includes(ev.type)) return router.routeReaction(ev);
+  if (ev.type && MEMBER_EVENT_TYPES.includes(ev.type)) { router.membershipChanged(ev.channel); return { status: "ignored", reason: "membership" }; }
   const decision = ingestDecision(ev);
   if (!decision.ingest) {
     // P28: name the branch that FIRED and the conversation it came from. Privacy rail — a channel

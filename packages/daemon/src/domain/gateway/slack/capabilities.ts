@@ -16,6 +16,7 @@ export const FEATURE_SCOPES: ReadonlyArray<{ scope: string; usedBy: string }> = 
   { scope: "reactions:read", usedBy: "a ✅ resolving a decision: the reaction_added event (REACTION_EVENT_TYPES)" },
   { scope: "reactions:write", usedBy: "the 👀 the app adds to each human message it received (reactions.add)" },
   { scope: "groups:history", usedBy: "a private channel: message.groups events, history recovery and reconcile reads (conversations.history/replies)" },
+  { scope: "users:read", usedBy: "addressed-only rule: telling humans from bots among a channel's members (users.info)" },
   { scope: "groups:read", usedBy: "a private channel: rig slack verify's membership check (conversations.info)" },
 ];
 
@@ -24,6 +25,9 @@ export const ADMITTED_EVENT_TYPES: readonly string[] = ["message", "app_mention"
 
 /** Event payload types routed to the reaction handler instead of the message gate. */
 export const REACTION_EVENT_TYPES: readonly string[] = ["reaction_added"];
+
+/** Event payload types that only refresh a channel's member count (the addressed-only rule). */
+export const MEMBER_EVENT_TYPES: readonly string[] = ["member_joined_channel", "member_left_channel"];
 
 /** Admitted payload type → the Slack bot events to subscribe to, and the scope Slack requires for
  *  each. A subscription name is not always the payload type: `message.channels` (public) and
@@ -35,4 +39,6 @@ export const EVENT_SUBSCRIPTIONS: Readonly<Record<string, ReadonlyArray<{ subscr
   ],
   app_mention: [{ subscription: "app_mention", scope: "app_mentions:read" }],
   reaction_added: [{ subscription: "reaction_added", scope: "reactions:read" }],
+  member_joined_channel: [{ subscription: "member_joined_channel", scope: "channels:read" }],
+  member_left_channel: [{ subscription: "member_left_channel", scope: "channels:read" }],
 };

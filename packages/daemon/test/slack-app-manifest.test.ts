@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import { parse } from "yaml";
 import { buildSlackAppManifest, CANONICAL_MANIFEST_SOURCES } from "../src/domain/gateway/slack/manifest.js";
-import { BASELINE_REQUIRED_SCOPES, EVENT_SUBSCRIPTIONS, FEATURE_SCOPES, REACTION_EVENT_TYPES } from "../src/domain/gateway/slack/capabilities.js";
+import { BASELINE_REQUIRED_SCOPES, EVENT_SUBSCRIPTIONS, FEATURE_SCOPES, MEMBER_EVENT_TYPES, REACTION_EVENT_TYPES } from "../src/domain/gateway/slack/capabilities.js";
 import { DEFAULT_CONFIG } from "../src/domain/gateway/slack/config.js";
 import { ingestDecision } from "../src/domain/gateway/slack/inbound.js";
 import { gatewayRoutes } from "../src/routes/gateway.js";
@@ -11,9 +11,9 @@ const setOf = (xs: Iterable<string>) => new Set(xs);
 
 // Payload types to probe the REAL admission gate with: the admitted ones plus plausible others,
 // including a subscription name that is not itself a payload type.
-const PROBE_TYPES = ["message", "app_mention", "reaction_added", "member_joined_channel", "message.channels", "file_shared"];
+const PROBE_TYPES = ["message", "app_mention", "reaction_added", "member_joined_channel", "member_left_channel", "message.channels", "file_shared"];
 const admits = (type: string) => {
-  if (REACTION_EVENT_TYPES.includes(type)) return true;
+  if (REACTION_EVENT_TYPES.includes(type) || MEMBER_EVENT_TYPES.includes(type)) return true;
   const d = ingestDecision({ type, user: "U1", text: "hello" });
   return d.ingest || d.reason !== "type";
 };
@@ -82,8 +82,8 @@ describe("shipped Slack app manifest — canonical sources", () => {
 
 describe("shipped Slack app manifest — mutation controls", () => {
   it("refuses an admitted payload type that has no subscription mapping", () => {
-    expect(() => buildSlackAppManifest({ ...CANONICAL_MANIFEST_SOURCES, admittedEventTypes: ["message", "app_mention", "member_joined_channel"] }))
-      .toThrow(/"member_joined_channel" has no subscription mapping/);
+    expect(() => buildSlackAppManifest({ ...CANONICAL_MANIFEST_SOURCES, admittedEventTypes: ["message", "app_mention", "file_shared"] }))
+      .toThrow(/"file_shared" has no subscription mapping/);
   });
 
   it("refuses a subscribed event whose scope is not requested", () => {
@@ -98,8 +98,8 @@ describe("shipped Slack app manifest — mutation controls", () => {
 
   it("would detect the inbound gate admitting a type the manifest does not subscribe to", () => {
     // Behavior-level check: a probe type the gate rejects today must stay out of the manifest.
-    expect(admits("member_joined_channel")).toBe(false);
-    expect(buildSlackAppManifest().events).not.toContain("member_joined_channel");
+    expect(admits("file_shared")).toBe(false);
+    expect(buildSlackAppManifest().events).not.toContain("file_shared");
   });
 });
 

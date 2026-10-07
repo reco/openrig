@@ -65,7 +65,8 @@ groups:
 - **Feature scopes**: `files:read` (download attachments people send), `files:write` (upload
   attachments to Slack), `app_mentions:read` (receive @-mentions of the app), `reactions:read`
   (receive a ✅ that answers a decision), `reactions:write` (show each received message's progress
-  as reactions: received 👀, picked 🤔, working 🛠️, done ✅), and `groups:history` / `groups:read` (use a private
+  as reactions: received 👀, picked 🤔, coding ⌨️, typing ✍️, done ✅), `users:read` (tell people from bots
+  among a channel's members), and `groups:history` / `groups:read` (use a private
   channel: its messages, history and membership check). `rig slack verify` warns when one of these is missing (if
   Slack returns the granted scopes) but does not require them, so a READY from verify does not
   prove attachments, mentions, reactions or a private channel will work.
@@ -172,17 +173,21 @@ connected socket or valid configuration alone does not prove end-to-end delivery
 ## Progress on received messages
 
 Each human message the connector receives shows the seat's progress as a reaction: received, picked
-(its row is claimed), working (the seat's activity is running), done (the row is closed or the seat
-answered in the thread). The emoji are configurable in `slack-connector.json`:
+(its row is claimed; it stays while the seat works), coding (a Claude seat is editing files), typing
+(it is writing its reply to the human), done (the row is closed or the seat answered in the thread).
+Reactions are the only progress signal. The emoji are configurable in `slack-connector.json`:
 
 ```json
-"receipts": { "received": "eyes", "picked": "thinking_face", "working": "hammer_and_wrench", "done": "white_check_mark" }
+"receipts": { "received": "eyes", "picked": "thinking_face", "coding": "keyboard", "typing": "writing_hand", "done": "white_check_mark" }
 ```
 
 Use any standard or custom emoji name, without colons. Slack apps cannot upload custom emoji: a
 workspace member uploads them under **Customize workspace → Emoji**, then the names go here.
 
-While the seat works, Slack's status line ("<app name> is working…") shows in the message's thread
-(`assistant.threads.setStatus`, which needs only `chat:write` in channel threads). It is re-sent
-before Slack's two-minute timeout and cleared when the seat stops. Where Slack refuses it, one reply
-in the thread shows the step and elapsed time instead, edited in place and ended as done.
+## Channels with several people
+
+In a channel with more than one human member, only a message that @mentions the app is for the
+seat, in threads too. Every other message still reaches the seat as quiet context (tagged
+`not-addressed`, no nudge, no reactions). With one human, every message is for the seat. The
+connector counts members (bots excluded, via `users:read`) every 10 minutes, and at once when
+someone joins or leaves (`member_joined_channel` / `member_left_channel`, part of the manifest).

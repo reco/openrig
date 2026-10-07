@@ -253,6 +253,35 @@ export async function verifyChannelMembership(
   return { ok: true, isMember: ch.is_member === true, name: ch.name };
 }
 
+/** The channel's human members: conversations.members (paginated) minus bots and deactivated
+ *  users (users.info, cached per user by the caller's map). Null when Slack cannot say. */
+export async function countChannelHumans(
+  token: string,
+  channel: string,
+  userIsHuman: Map<string, boolean>,
+  fetchImpl: FetchImpl = defaultFetch,
+): Promise<number | null> {
+  const members: string[] = [];
+  let cursor = "";
+  do {
+    const r = await callWebApi("conversations.members", token, { channel, limit: 200, ...(cursor ? { cursor } : {}) }, fetchImpl, undefined, "get-query");
+    if (!r.ok) return null;
+    members.push(...((r.json.members as string[] | undefined) ?? []));
+    cursor = String((r.json.response_metadata as { next_cursor?: string } | undefined)?.next_cursor ?? "");
+  } while (cursor);
+  let humans = 0;
+  for (const user of members) {
+    if (!userIsHuman.has(user)) {
+      const r = await callWebApi("users.info", token, { user }, fetchImpl, undefined, "get-query");
+      if (!r.ok) return null;
+      const u = (r.json.user ?? {}) as { is_bot?: boolean; deleted?: boolean; id?: string };
+      userIsHuman.set(user, !u.is_bot && !u.deleted && user !== "USLACKBOT");
+    }
+    if (userIsHuman.get(user)) humans++;
+  }
+  return humans;
+}
+
 /** Inbound Socket Mode: open a WebSocket URL via apps.connections.open (app-level xapp token). */
 export async function openSocketConnection(
   appToken: string,
@@ -375,17 +404,6 @@ export async function addReaction(
 ): Promise<{ ok: boolean; error?: string }> {
   const r = await callWebApi("reactions.add", token, input, fetchImpl);
   return { ok: r.ok || r.error === "already_reacted", error: r.error };
-}
-
-/** Slack's AI-app status line on a thread (`assistant.threads.setStatus`; chat:write suffices in
- *  channel threads since 2026-03). An empty status clears it; Slack also clears it on our reply. */
-export async function setThreadStatus(
-  token: string,
-  input: { channel_id: string; thread_ts: string; status: string },
-  fetchImpl: FetchImpl = defaultFetch,
-): Promise<{ ok: boolean; error?: string }> {
-  const r = await callWebApi("assistant.threads.setStatus", token, input, fetchImpl);
-  return { ok: r.ok, error: r.error };
 }
 
 /** Remove the app's own reaction (`reactions.remove`); an absent reaction counts as removed. */

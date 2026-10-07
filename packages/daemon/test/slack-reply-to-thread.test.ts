@@ -206,7 +206,7 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
         fetchImpl: async (url, init) => {
           if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
           if (/reactions\.(add|remove)$/.test(url)) return reply({ ok: true });
-          posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
+          if (/auth\.test|conversations\.members|users\.info/.test(url)) return reply({ ok: true }); posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
         },
       });
       stops.push(() => wire.stop()); wire.startServices?.();
@@ -416,7 +416,7 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       const fetchImpl: FetchImpl = async (url, init) => {
         if (!url.endsWith("chat.postMessage")) { scans.push(url); return reply({ ok: true, messages: [] }); }
         if (failNext) { failNext = false; throw new Error("synthetic timeout"); }
-        posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
+        if (/auth\.test|conversations\.members|users\.info/.test(url)) return reply({ ok: true }); posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
       };
       const rebuild = () => {
         wire.stop();

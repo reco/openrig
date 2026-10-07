@@ -195,7 +195,7 @@ describe("structured human questions (#193)", () => {
         inboundRetryIntervalMs: 50, // dead-lettered clicks retry promptly
         fetchImpl: async (url, init) => {
           if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
-          posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
+          if (/auth\.test|conversations\.members|users\.info/.test(url)) return reply({ ok: true }); posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
         },
       });
       stops.push(() => wire.stop()); wire.startServices?.();

@@ -37,9 +37,6 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
   let seen: Array<Record<string, unknown>>;
   let unseen: Array<Record<string, unknown>>;
   let marks: Map<string, Set<string>>;
-  let statuses: Array<Record<string, unknown>>;
-  let statusSupported = true;
-  let statusError: string | undefined;
   const marksOn = (ts: string) => { if (!marks.has(ts)) marks.set(ts, new Set()); return marks.get(ts)!; };
   const holding = (name: string) => ({ has: (ts: string) => marks.get(ts)?.has(name) === true });
   const eyes = holding("eyes");
@@ -65,7 +62,6 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
     seen = [];
     unseen = [];
     marks = new Map();
-    statuses = [];
     const contract = new MissionControlWriteContract({ db, eventBus: bus, queueRepo: repo, actionLog: new MissionControlActionLog(db) });
     const realResolve = makeHumanReplyResolver(repo, contract);
     wire = buildSlackGatewayWire({
@@ -79,15 +75,13 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       inboundMaxConnects: 1,
       inboundRetryIntervalMs: 50,
       requestSweepIntervalMs: 50,
-      statusRefreshMs: 60,
       linkState: async () => "merged",
       fetchImpl: async (url, init) => {
         if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
         if (url.endsWith("chat.update")) { updates.push(JSON.parse(String(init?.body))); return reply({ ok: true }); }
-        if (url.endsWith("assistant.threads.setStatus")) { statuses.push(JSON.parse(String(init?.body))); return reply(statusError ? { ok: false, error: statusError } : statusSupported ? { ok: true } : { ok: false, error: "channel_not_found" }); }
         if (url.endsWith("reactions.add")) { const b = JSON.parse(String(init?.body)); seen.push(b); marksOn(b.timestamp).add(b.name); return reply({ ok: true }); }
         if (url.endsWith("reactions.remove")) { const b = JSON.parse(String(init?.body)); unseen.push(b); marksOn(b.timestamp).delete(b.name); return reply({ ok: true }); }
-        posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
+        if (/auth\.test|conversations\.members|users\.info/.test(url)) return reply({ ok: true }); posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
       },
     });
     stops.push(() => wire.stop()); wire.startServices?.();
@@ -552,64 +546,17 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
     const activity = (sessionName: string, state: "running" | "idle") => bus.emit({ type: "agent.activity", rigId: "r", nodeId: "n", sessionName, runtime: "claude-code",
       activity: { state, reason: "test", evidenceSource: "runtime_hook", sampledAt: new Date().toISOString(), evidence: null } } as never);
 
-    it("receipt follows the seat: 👀 received, 🤔 claimed, 🛠️ while working, ✅ when handled", async () => {
+    it("receipt follows the seat: 👀 received, 🤔 claimed and while working, ✅ when handled", async () => {
       await say("Please check the build", "2700.1");
       const row = toSeat().find((q) => q.body.includes("Please check the build"))!;
       expect([...marksOn("2700.1")]).toEqual(["eyes"]);
       repo.claim({ qitemId: row.qitemId, destinationSession: "author@rig" });
       await vi.waitFor(() => expect([...marksOn("2700.1")]).toEqual(["thinking_face"]));
       activity("author@rig", "running");
-      await vi.waitFor(() => expect([...marksOn("2700.1")]).toEqual(["hammer_and_wrench"]));
-      activity("author@rig", "idle");
-      await vi.waitFor(() => expect([...marksOn("2700.1")]).toEqual(["thinking_face"]));
+      await new Promise((r) => setTimeout(r, 100));
+      expect([...marksOn("2700.1")]).toEqual(["thinking_face"]);
       repo.update({ qitemId: row.qitemId, actorSession: "author@rig", state: "done", closureReason: "no-follow-on", transitionNote: "done" });
       await vi.waitFor(() => expect([...marksOn("2700.1")]).toEqual(["white_check_mark"]));
-    });
-
-    it("while the seat works, Slack's status line shows it in the message's thread, refreshed, and cleared after", async () => {
-      statusSupported = true;
-      await say("Run the tests please", "2900.1");
-      const row = toSeat().find((q) => q.body.includes("Run the tests please"))!;
-      repo.claim({ qitemId: row.qitemId, destinationSession: "author@rig" });
-      activity("author@rig", "running");
-      await vi.waitFor(() => expect(statuses.some((s) => s.thread_ts === "1.1" && String(s.status).length > 0)).toBe(true));
-      const first = statuses.length;
-      await vi.waitFor(() => expect(statuses.length).toBeGreaterThan(first));
-      expect(posts.some((p) => /Working/.test(String(p.text)))).toBe(false);
-      repo.update({ qitemId: row.qitemId, actorSession: "author@rig", state: "done", closureReason: "no-follow-on", transitionNote: "done" });
-      await vi.waitFor(() => expect(statuses.at(-1)).toMatchObject({ thread_ts: "1.1", status: "" }));
-    });
-
-    it("where the status line is unsupported, one live reply in the thread shows the step and ends as done", async () => {
-      statusSupported = false;
-      try {
-        await say("Deploy the preview", "2950.1");
-        const row = toSeat().find((q) => q.body.includes("Deploy the preview"))!;
-        repo.claim({ qitemId: row.qitemId, destinationSession: "author@rig" });
-        activity("author@rig", "running");
-        await vi.waitFor(() => expect(posts.filter((p) => p.thread_ts === "1.1" && /Working/.test(String(p.text)))).toHaveLength(1));
-        repo.update({ qitemId: row.qitemId, actorSession: "author@rig", state: "done", closureReason: "no-follow-on", transitionNote: "done" });
-        await vi.waitFor(() => expect(updates.some((u) => /done/i.test(String(u.text)))).toBe(true));
-        expect(posts.filter((p) => /Working/.test(String(p.text)))).toHaveLength(1);
-      } finally { statusSupported = true; }
-    });
-
-    it("a rate-limited status line stays a status line, and an unchanged step is not resent per event", async () => {
-      await say("Refactor the parser", "2960.1");
-      const row = toSeat().find((q) => q.body.includes("Refactor the parser"))!;
-      repo.claim({ qitemId: row.qitemId, destinationSession: "author@rig" });
-      statusError = "ratelimited";
-      try {
-        activity("author@rig", "running");
-        await vi.waitFor(() => expect(statuses.filter((s) => s.thread_ts === "1.1").length).toBeGreaterThan(1));
-      } finally { statusError = undefined; }
-      await vi.waitFor(() => expect(statuses.at(-1)).toMatchObject({ thread_ts: "1.1" }));
-      expect(posts.some((p) => /Working/.test(String(p.text)))).toBe(false);
-      await new Promise((r) => setTimeout(r, 80));
-      const before = statuses.length;
-      for (let i = 0; i < 20; i++) activity("author@rig", "running");
-      await new Promise((r) => setTimeout(r, 30));
-      expect(statuses.length - before).toBeLessThanOrEqual(1);
     });
 
     const toolUse = (sessionName: string, runtime: string, rawSubtype: string, target?: string) => bus.emit({ type: "agent.activity", rigId: "r", nodeId: "n", sessionName, runtime,
@@ -624,10 +571,10 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       toolUse("author@rig", "claude-code", "rig-queue-create", "human-founder@external");
       await vi.waitFor(() => expect([...marksOn("3000.1")]).toEqual(["writing_hand"]));
       toolUse("author@rig", "claude-code", "rig-queue-create", "worker@rig");
-      await vi.waitFor(() => expect([...marksOn("3000.1")]).toEqual(["hammer_and_wrench"]));
+      await vi.waitFor(() => expect([...marksOn("3000.1")]).toEqual(["thinking_face"]));
       toolUse("author@rig", "codex", "Edit");
       await new Promise((r) => setTimeout(r, 100));
-      expect([...marksOn("3000.1")]).toEqual(["hammer_and_wrench"]);
+      expect([...marksOn("3000.1")]).toEqual(["thinking_face"]);
     });
 
     it("tool use on a seat with no claimed message changes nothing", async () => {
@@ -830,7 +777,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
   });
 
   describe("configured receipt emoji", () => {
-    beforeEach(() => start(true, { received: "openrig-received", picked: "openrig-picked", working: "openrig-working", done: "openrig-done" }));
+    beforeEach(() => start(true, { received: "openrig-received", picked: "openrig-picked", done: "openrig-done" }));
 
     it("uses the configured names", async () => {
       await say("Hello", "2800.1");

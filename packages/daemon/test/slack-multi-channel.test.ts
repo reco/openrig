@@ -25,6 +25,8 @@ describe("several Slack channels", () => {
   let db: ReturnType<typeof createDb>;
   let repo: QueueRepository;
   let posts: Array<Record<string, unknown>>;
+  let reactions: Array<{ timestamp: string; name: string }>;
+  let counted: string[];
   let socket: WsLike;
   const stops: Array<() => void> = [];
 
@@ -37,6 +39,8 @@ describe("several Slack channels", () => {
     writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
     saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-MAIN", inboundDestination: "advisor@kernel", extraChannels: [{ id: "C-PSA", inboundDestination: "psa-dev@psa" }], secretsEnvFile: secrets }, home);
     posts = [];
+    reactions = [];
+    counted = [];
     const sockets: WsLike[] = [];
     const contract = new MissionControlWriteContract({ db, eventBus: bus, queueRepo: repo, actionLog: new MissionControlActionLog(db) });
     const wire = buildSlackGatewayWire({
@@ -46,6 +50,17 @@ describe("several Slack channels", () => {
       inboundMaxConnects: 1,
       fetchImpl: async (url, init) => {
         if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
+        if (url.endsWith("auth.test")) return reply({ ok: true, user_id: "UBOT" });
+        if (url.includes("conversations.members")) {
+          const channel = new URL(url).searchParams.get("channel")!;
+          counted.push(channel);
+          return reply({ ok: true, members: channel === "C-PSA" ? ["UFOUNDER", "ULEE", "UBOT"] : ["UFOUNDER", "UBOT", "UOTHERBOT"] });
+        }
+        if (url.includes("users.info")) {
+          const user = new URL(url).searchParams.get("user")!;
+          return reply({ ok: true, user: { id: user, is_bot: user === "UBOT" || user === "UOTHERBOT" } });
+        }
+        if (url.endsWith("reactions.add")) { reactions.push(JSON.parse(String(init?.body))); return reply({ ok: true }); }
         if (url.endsWith("chat.postMessage")) { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); }
         return reply({ ok: true, messages: [] });
       },
@@ -87,6 +102,27 @@ describe("several Slack channels", () => {
     await repo.create({ sourceSession: "psa-dev@psa", destinationSession: "human-founder@external", humanIntent: "update", summary: "Done", body: "Header changed.", replyTo: inbound.qitemId, nudge: false });
     await vi.waitFor(() => expect(posts.some((p) => String(p.text).includes("Header changed."))).toBe(true));
     expect(posts.find((p) => String(p.text).includes("Header changed."))).toMatchObject({ channel: "C-PSA", thread_ts: "103.1" });
+  });
+
+  it("with more than one human in a channel, only an @mention addresses the app, in its threads too", async () => {
+    await vi.waitFor(() => expect(counted).toEqual(expect.arrayContaining(["C-PSA", "C-MAIN"])));
+    await new Promise((r) => setTimeout(r, 50));
+    await say("UFOUNDER", "C-PSA", "Lunch at noon, everyone", "106.1");
+    await say("UFOUNDER", "C-PSA", "<@UBOT> please fix the footer", "107.1");
+    const quiet = rowWith("Lunch at noon");
+    expect(quiet?.destinationSession).toBe("psa-dev@psa");
+    expect(quiet?.tags).toEqual(expect.arrayContaining(["not-addressed", "conversation"]));
+    const asked = rowWith("please fix the footer");
+    expect(asked?.tags).not.toContain("not-addressed");
+    await vi.waitFor(() => expect(reactions.some((r) => r.timestamp === "107.1")).toBe(true));
+    expect(reactions.some((r) => r.timestamp === "106.1")).toBe(false);
+    await say("UFOUNDER", "C-PSA", "And the header too", "109.1", "107.1");
+    expect(rowWith("And the header too")?.tags).toContain("not-addressed");
+    await say("UFOUNDER", "C-MAIN", "One human here, other members are bots", "108.1");
+    expect(rowWith("One human here")?.tags).not.toContain("not-addressed");
+    const before = counted.filter((c) => c === "C-PSA").length;
+    socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-join", type: "events_api", payload: { event: { type: "member_joined_channel", user: "UNEW", channel: "C-PSA" } } }) });
+    await vi.waitFor(() => expect(counted.filter((c) => c === "C-PSA").length).toBe(before + 1));
   });
 
   it("a requester bound to one channel is heard only there, as untrusted conversation", async () => {
