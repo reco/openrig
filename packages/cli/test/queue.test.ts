@@ -154,10 +154,10 @@ describe("rig queue CLI", () => {
     expect(body.destinationSession).toBe("bob@rig");
   });
 
-  it("create --attach sends each file as an absolute attachment tag and refuses symlinks, other types and missing files", async () => {
+  it("create --attach sends each file by its real path and refuses symlinks, other types and missing files", async () => {
     vi.stubEnv("OPENRIG_SESSION_NAME", "");
     vi.stubEnv("RIGGED_SESSION_NAME", "");
-    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "attach-cli-")));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "attach-cli-"));
     fs.writeFileSync(path.join(dir, "shot.png"), "png");
     fs.symlinkSync(path.join(dir, "shot.png"), path.join(dir, "link.png"));
     fs.writeFileSync(path.join(dir, "notes.txt"), "txt");
@@ -165,7 +165,7 @@ describe("rig queue CLI", () => {
     await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--source", "psa-dev@psa",
       "--destination", "bob@rig", "--body", "see shot", "--attach", path.join(dir, "shot.png"), "--json"]);
     const body = calls.find(c => c.path === "/api/queue/create")?.body as Record<string, unknown>;
-    expect(body.tags).toEqual([`attachment:${path.join(dir, "shot.png")}`]);
+    expect(body.tags).toEqual([`attachment:${fs.realpathSync(path.join(dir, "shot.png"))}`]);
     for (const bad of ["link.png", "notes.txt", "gone.png"]) {
       process.exitCode = undefined;
       const before = calls.length;
