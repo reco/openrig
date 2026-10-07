@@ -715,3 +715,12 @@ describe("ordinary create wake durability", () => {
     }
   });
 });
+
+describe("a human's queued message", () => {
+  it("nudges the seat with a reply hint that answers in that row's thread", async () => {
+    const { repo, calls } = makeHarness();
+    const row = await repo.create({ sourceSession: "reco@external", destinationSession: "psa-dev@psa", body: "Make the logo bigger", nudge: true });
+    await vi.waitFor(() => expect(calls.length).toBeGreaterThan(0));
+    expect(calls.at(-1)!.text).toContain(`--human-intent update --reply-to ${row.qitemId}`);
+  });
+});

@@ -926,6 +926,7 @@ export class QueueRepository {
       toSession,
       identityProvenance,
       bareBody: `Queue handoff: ${successorQitemId} - check your queue.`,
+      replyTo: successorQitemId,
       tags: this.getById(successorQitemId)?.handedOffFrom
         ? [`queue:return:${this.getByIdOrThrow(successorQitemId).handedOffFrom}`] : undefined,
     });
@@ -939,6 +940,7 @@ export class QueueRepository {
     identityProvenance: string | null;
     bareBody: string;
     tags?: string[];
+    replyTo?: string;
   }): string | null {
     if (!this.outbox) return null;
     // MF4: freeze the emitting envelope at stage time. Delivery and crash
@@ -949,7 +951,7 @@ export class QueueRepository {
       input.fromSession,
       input.toSession,
       input.bareBody,
-      { stampISO, genUuid },
+      { stampISO, genUuid, replyTo: input.replyTo },
     );
     const record = {
       outboxId: input.outboxId, senderSession: input.fromSession, destinationSession: input.toSession,
@@ -1368,7 +1370,7 @@ export class QueueRepository {
       const genUuid = sourceSession
         ? (this.resolveOccupantGeneration?.(sourceSession) ?? undefined)
         : undefined;
-      text = wrapPaneEnvelope(sourceSession, destinationSession, bareBody, { stampISO, genUuid });
+      text = wrapPaneEnvelope(sourceSession, destinationSession, bareBody, { stampISO, genUuid, replyTo: qitemId });
     }
     const deliveryId = `guard-nudge-${qitemId}-${createHash("sha256").update(JSON.stringify([sourceSession, destinationSession, bodyOverride ?? null])).digest("hex")}`;
     const held = !committedOutboxIds ? this.outbox?.getById(deliveryId) : null;

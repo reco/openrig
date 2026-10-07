@@ -22,6 +22,12 @@ describe("wrapPaneEnvelope — slice 23 envelope renderer (daemon-side)", () => 
     expect(out).toContain('↩ Reply: rig send driver-3@my-rig "..."');
   });
 
+  it("a human's queued message hints a threaded reply to that row", () => {
+    const out = wrapPaneEnvelope("reco@external", "psa-dev@psa", "Queue handoff: qitem-slack-inbound-abc - check your queue.", { replyTo: "qitem-slack-inbound-abc" });
+    expect(out).toContain('↩ Reply in its thread: rig queue create --destination reco@external --human-intent update --reply-to qitem-slack-inbound-abc --summary "..." --body-file <file> --verify');
+    expect(out).not.toContain("Reply if needed");
+  });
+
   it("routes an external sender's reply through the durable human queue", () => {
     const out = wrapPaneEnvelope("decision-maker@external", "driver@rig", "Decision received.");
     expect(out).toContain("From: decision-maker@external");

@@ -16,6 +16,7 @@ describe("wrapSendBody — pre-release CLI/daemon Item 2 (email-style envelope)"
     expect(out).toContain('↩ Reply if needed: rig queue create --destination decision-maker@external --body "..." --verify');
     expect(out).not.toContain("rig send decision-maker@external");
     expect(wrapSendBody("driver@external-tools", "guard@rig", "Status.")).toContain('↩ Reply: rig send driver@external-tools "..."');
+    expect(wrapSendBody("reco@external", "psa-dev@psa", "Hi", { replyTo: "qitem-x" })).toContain("--human-intent update --reply-to qitem-x");
   });
 
   it("preserves the original body verbatim between the dash separators", () => {

@@ -43,6 +43,8 @@ export interface EnvelopeMeta {
    *  ABSENT ⇒ UNKNOWN (cross-host --from relay whose sender isn't local, or pre-tenure daemon) —
    *  the render omits it, never forges a generation. Render is a PROJECTION of this machine truth. */
   genUuid?: string;
+  /** The queue row a human's message arrived as: the reply hint answers in its thread. */
+  replyTo?: string;
 }
 
 /** The To-line projection + anti-storm scale (header-alone distinguishability, ruling pin 2). */
@@ -114,8 +116,10 @@ export function wrapPaneEnvelope(
     const genSuffix = meta.genUuid && meta.genUuid.length > 0 ? ` · gen ${meta.genUuid.slice(0, 8)}` : "";
     header.push(`Sent: ${renderShortStamp(meta.stampISO)}${genSuffix}`);
   }
-  const reply = senderLabel.endsWith("@external")
-    ? `↩ Reply if needed: rig queue create --destination ${senderLabel} --body "..." --verify`
-    : `↩ Reply: rig send ${senderLabel} "..."`;
+  const reply = !senderLabel.endsWith("@external")
+    ? `↩ Reply: rig send ${senderLabel} "..."`
+    : meta?.replyTo
+      ? `↩ Reply in its thread: rig queue create --destination ${senderLabel} --human-intent update --reply-to ${meta.replyTo} --summary "..." --body-file <file> --verify`
+      : `↩ Reply if needed: rig queue create --destination ${senderLabel} --body "..." --verify`;
   return [...header, "---", body, "---", reply].join("\n");
 }

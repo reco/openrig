@@ -48,6 +48,8 @@ export interface EnvelopeMeta {
   /** GHOST-STAGE (g): the SENDER's atom-B occupant generation-uuid, stamped ONCE at transport.
    *  ABSENT ⇒ UNKNOWN → the render OMITS the suffix (never forges). Twin of pane-envelope's field. */
   genUuid?: string;
+  /** The queue row a human's message arrived as: the reply hint answers in its thread. */
+  replyTo?: string;
 }
 
 /** The To-line projection + anti-storm scale (header-alone distinguishability). */
@@ -88,9 +90,11 @@ export function wrapSendBody(
     const genSuffix = meta.genUuid && meta.genUuid.length > 0 ? ` · gen ${meta.genUuid.slice(0, 8)}` : "";
     header.push(`Sent: ${renderShortStamp(meta.stampISO)}${genSuffix}`);
   }
-  const reply = senderLabel.endsWith("@external")
-    ? `↩ Reply if needed: rig queue create --destination ${senderLabel} --body "..." --verify`
-    : `↩ Reply: rig send ${senderLabel} "..."`;
+  const reply = !senderLabel.endsWith("@external")
+    ? `↩ Reply: rig send ${senderLabel} "..."`
+    : meta?.replyTo
+      ? `↩ Reply in its thread: rig queue create --destination ${senderLabel} --human-intent update --reply-to ${meta.replyTo} --summary "..." --body-file <file> --verify`
+      : `↩ Reply if needed: rig queue create --destination ${senderLabel} --body "..." --verify`;
   return [...header, "---", body, "---", reply].join("\n");
 }
 
