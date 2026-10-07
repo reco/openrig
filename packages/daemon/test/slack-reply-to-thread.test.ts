@@ -111,14 +111,18 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       stops.push(() => wire.stop()); wire.startServices?.();
     });
 
+    // The outbound driver posts on the queue event; wait for this row's post.
     async function deliver(qitemId: string): Promise<void> {
-      const before = posts.length;
-      const alert = (await makeQueuePorts(repo, { loadHumanRegistry: () => registry }).listHumanAlerts({})).find((q) => q.qitemId === qitemId);
-      expect(alert).toBeDefined();
-      expect(wire.dispatcher.dispatch("post_message", human, alert)).toMatchObject({ ok: true });
-      await vi.waitFor(() => expect(posts.length).toBeGreaterThan(before));
-      await vi.waitFor(() => expect(repo.getById(qitemId)?.deliveryOutcome).toBe("posted"));
+      await vi.waitFor(async () => {
+        expect(repo.getById(qitemId)?.deliveryOutcome).toBe("posted");
+        expect((await makeQueuePorts(repo, { loadHumanRegistry: () => registry }).listHumanAlerts({})).some((q) => q.qitemId === qitemId)).toBe(false);
+      });
     }
+
+    // The driver also posts other notices (e.g. a resolved decision), so find a post by its text.
+    const postWith = (text: string) => posts.findLast((p) => String(p.text).includes(text));
+    const tsOf = (text: string) => `${posts.lastIndexOf(postWith(text)!) + 1}.1`;
+    const rootOf = (text: string) => String(postWith(text)?.thread_ts ?? tsOf(text));
 
     // What the outbound driver would do next: post the item's pending notice, if it has one.
     async function postPendingNotice(qitemId: string): Promise<void> {
@@ -151,22 +155,22 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
 
       const update = await repo.create({ ...request, sourceSession: "worker@rig", humanIntent: "update", body: "Merged.", replyTo: work.qitemId });
       await deliver(update.qitemId);
-      expect(posts.at(-1)?.thread_ts).toBe("1.1");
+      expect(postWith("Merged.")?.thread_ts).toBe("1.1");
       expect(repo.getById(update.qitemId)).toMatchObject({ state: "done", replyToFallback: null });
     });
 
-    it("a re-park after an update shared the root posts the new decision as a fresh root", async () => {
+    it("a re-park after an update shared the root posts the new decision outside that shared root", async () => {
       const work = await park();
       await deliver(work.qitemId);
       await resolvePark(work.qitemId);
       const update = await repo.create({ ...request, sourceSession: "worker@rig", humanIntent: "update", body: "Merged.", replyTo: work.qitemId });
       await deliver(update.qitemId);
-      expect(posts.at(-1)?.thread_ts).toBe("1.1");
+      expect(postWith("Merged.")?.thread_ts).toBe("1.1");
 
       repo.update({ qitemId: work.qitemId, actorSession: "worker@rig", state: "blocked", blockedOn: "human-founder@kernel", summary: "Deploy it too?", evidenceRef: "/proof/deploy.md", transitionNote: "parked again" });
       await deliver(work.qitemId);
-      expect(posts.at(-1)?.thread_ts).toBeUndefined();
-      expect(new ThreadSeatMap(db).resolveByThread(`${posts.length}.1`)?.conversationId).toBe(work.qitemId);
+      expect(rootOf("Deploy it too?")).not.toBe("1.1");
+      expect(new ThreadSeatMap(db).resolveByThread(rootOf("Deploy it too?"))?.conversationId).toBe(work.qitemId);
     });
 
     // Rebuild the wire with inbound Socket Mode on a fake socket; returns a human-reply sender.
@@ -207,7 +211,7 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       await deliver(update.qitemId);
       repo.update({ qitemId: work.qitemId, actorSession: "worker@rig", state: "blocked", blockedOn: "human-founder@kernel", summary: "Deploy it too?", evidenceRef: "/proof/deploy.md", transitionNote: "parked again" });
       await deliver(work.qitemId);
-      const freshRoot = `${posts.length}.1`;
+      const freshRoot = rootOf("Deploy it too?");
 
       await humanReply("1.1", "900.1"); // meant for the FYI update in the shared thread
       expect(repo.getById(work.qitemId)?.state).toBe("blocked");
