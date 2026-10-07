@@ -157,7 +157,7 @@ describe("rig queue CLI", () => {
   it("create --attach sends each file as an absolute attachment tag and refuses symlinks, other types and missing files", async () => {
     vi.stubEnv("OPENRIG_SESSION_NAME", "");
     vi.stubEnv("RIGGED_SESSION_NAME", "");
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "attach-cli-"));
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "attach-cli-")));
     fs.writeFileSync(path.join(dir, "shot.png"), "png");
     fs.symlinkSync(path.join(dir, "shot.png"), path.join(dir, "link.png"));
     fs.writeFileSync(path.join(dir, "notes.txt"), "txt");
