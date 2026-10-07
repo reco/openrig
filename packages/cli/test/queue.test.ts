@@ -1506,6 +1506,18 @@ describe("rig queue CLI", () => {
       expect(logs.join("\n")).not.toMatch(/\btruncated\b/i);
     });
 
+    it("show default: a body written by a human is shown in full, never previewed", async () => {
+      const full = "B".repeat(3000);
+      const { deps } = showRoute({ qitemId: "qitem-1", state: "pending", sourceSession: "reco@external", body: full });
+      const program = createProgram({ queueDeps: deps });
+      program.exitOverride();
+      await program.parseAsync(["node", "rig", "queue", "show", "qitem-1", "--json"]);
+      const printed = JSON.parse(logs[0]);
+      expect(printed.body).toBe(full);
+      expect(printed.bodyTruncated).toBeUndefined();
+      expect(logs.join("\n")).not.toContain("bounded preview");
+    });
+
     it("show default: small body → full body, NO marker, bodyTruncated=false", async () => {
       const { deps } = showRoute({ qitemId: "qitem-1", body: "short body" });
       const program = createProgram({ queueDeps: deps });

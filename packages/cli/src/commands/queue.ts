@@ -1117,7 +1117,7 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
         // compatibility contract — body byte-identical to pre-0.4.3.03). Also
         // passthrough on error responses / non-object payloads, where there is
         // no string body to preview.
-        if (opts.full || res.status >= 400 || !isRecordWithStringBody(item)) {
+        if (opts.full || res.status >= 400 || !isRecordWithStringBody(item) || isHumanSeatSessionRef(String(item.sourceSession ?? ""))) {
           await printQueueItemResult(client, qitemId, json, item, res.status);
           return;
         }
