@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { Command } from "commander";
 import { DaemonClient, DaemonConnectionError, DaemonTimeoutError, DaemonResponseError } from "../client.js";
@@ -221,6 +222,22 @@ export interface BodyPreview {
 // based (codePointCount > N). `bodyBytes` is the honest TRUE total UTF-8 byte
 // length of the FULL body (never the truncated size).
 const collectLink = (value: string, previous: string[]): string[] => [...previous, value];
+
+const ATTACHMENT_TAG = "attachment:";
+const ATTACHMENT_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf"]);
+const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+
+/** Why a file cannot ride a Slack post as an attachment, or null when it can. */
+export function attachmentProblem(file: string): string | null {
+  if (!ATTACHMENT_EXT.has(path.extname(file).toLowerCase())) return `only ${[...ATTACHMENT_EXT].join(" ")} files`;
+  let st: fs.Stats;
+  try { st = fs.lstatSync(file); } catch { return "not found"; }
+  if (st.isSymbolicLink()) return "a symlink; pass the file itself";
+  if (!st.isFile()) return "not a regular file";
+  if (st.size > ATTACHMENT_MAX_BYTES) return `${st.size} bytes is over the 10 MB cap`;
+  try { fs.accessSync(file, fs.constants.R_OK); } catch { return "not readable"; }
+  return null;
+}
 
 export function previewBody(
   body: string,
@@ -465,6 +482,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--link <kind:ref>", "Link this request to its outcome, kind:ref with kind pr|issue|qitem (repeatable). The request's Slack thread closes once every linked outcome is finished (PR merged or closed, issue closed, qitem done or canceled)", collectLink, [] as string[])
     .option("--confirm <reading>", "A one-click answer that resolves with exactly this text. On a decision: the approve button's call to action, at most 75 characters (e.g. \"Build it\", \"Write the issue\"). On an update with --reply-to <decision>: your reading of their answer, shown with a Confirm button")
     .option("--human-questions-file <path>", "#193: JSON array of 1-4 questions for a decision, each {id, question, options: [{id, label, recommended?}]} with 2-4 options; Slack shows them as buttons")
+    .option("--attach <path>", "Attach an image or PDF (at most 10 MB, a regular file, no symlink) to the Slack post; repeatable. It is uploaded into the post's thread.", (v: string, acc: string[] = []) => { acc.push(v); return acc; })
     .option("--evidence-ref <path>", "OPR.0.4.4.19 FR-5: pointer to the durable artifact a human judges (e.g. a PROOF.md path). Required by the daemon when the item is human-routed; optional otherwise.")
     .option("--host <id>", QUEUE_HOST_OPTION_HELP)
     .option("--no-nudge", "Suppress the default destination nudge (cold-queue)")
@@ -493,6 +511,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       link?: string[];
       summary?: string;
       evidenceRef?: string;
+      attach?: string[];
       host?: string;
       nudge?: boolean;
       verify?: boolean;
@@ -540,6 +559,18 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
         else console.error(message);
         process.exitCode = 1;
         return;
+      }
+      const attachments: string[] = [];
+      for (const file of opts.attach ?? []) {
+        const problem = attachmentProblem(file);
+        if (problem) {
+          const message = `attachment_refused: ${file}: ${problem}`;
+          if (opts.json) console.error(JSON.stringify({ error: "attachment_refused", message }));
+          else console.error(message);
+          process.exitCode = 1;
+          return;
+        }
+        attachments.push(`${ATTACHMENT_TAG}${path.resolve(file)}`);
       }
       // #193 — read and parse the questions locally too; the daemon validates their shape.
       let humanQuestions: unknown;
@@ -592,7 +623,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       // Atom 6b snapshot provenance: record WHERE the body came from so the
       // handoff stays auditable even if the pack is edited later.
       if (opts.bodyContext) fromFlags.push(`body-context:${opts.bodyContext}`);
-      const merged = [...fromFlags, ...fromTagsArg];
+      const merged = [...fromFlags, ...fromTagsArg, ...attachments];
       const seen = new Set<string>();
       const dedupedTags = merged.filter((t) => { if (seen.has(t)) return false; seen.add(t); return true; });
       const tags = dedupedTags.length > 0 ? dedupedTags : undefined;

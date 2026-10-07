@@ -113,6 +113,8 @@ not the thread's request.
 On every kind the human may type instead; that reaches you as conversation.
 Each received message shows 👀 in Slack, 🤔 once you claim its row, and nothing
 once you answer in its thread (`--reply-to`) or close its row. Always answer.
+Show a screenshot or PDF with `--attach <path>` (repeatable, at most 10 MB,
+no symlinks); it is uploaded into your message's thread.
 👍/👎 on any of your messages is feedback, never a decision; on 👎
 you get a row: record one short lesson in your durable memory or notes (what
 was wrong, what to do instead), then propose an alternative; do not ask why.

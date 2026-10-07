@@ -154,6 +154,30 @@ describe("rig queue CLI", () => {
     expect(body.destinationSession).toBe("bob@rig");
   });
 
+  it("create --attach sends each file as an absolute attachment tag and refuses symlinks, other types and missing files", async () => {
+    vi.stubEnv("OPENRIG_SESSION_NAME", "");
+    vi.stubEnv("RIGGED_SESSION_NAME", "");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "attach-cli-"));
+    fs.writeFileSync(path.join(dir, "shot.png"), "png");
+    fs.symlinkSync(path.join(dir, "shot.png"), path.join(dir, "link.png"));
+    fs.writeFileSync(path.join(dir, "notes.txt"), "txt");
+    const { deps, calls } = makeDeps();
+    await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--source", "psa-dev@psa",
+      "--destination", "bob@rig", "--body", "see shot", "--attach", path.join(dir, "shot.png"), "--json"]);
+    const body = calls.find(c => c.path === "/api/queue/create")?.body as Record<string, unknown>;
+    expect(body.tags).toEqual([`attachment:${path.join(dir, "shot.png")}`]);
+    for (const bad of ["link.png", "notes.txt", "gone.png"]) {
+      process.exitCode = undefined;
+      const before = calls.length;
+      await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--source", "psa-dev@psa",
+        "--destination", "bob@rig", "--body", "x", "--attach", path.join(dir, bad), "--json"]);
+      expect(process.exitCode).toBe(1);
+      expect(calls.length).toBe(before);
+    }
+    process.exitCode = undefined;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("create still requires a source when neither the managed env nor explicit claim is supplied", async () => {
     vi.stubEnv("OPENRIG_SESSION_NAME", "");
     vi.stubEnv("RIGGED_SESSION_NAME", "");

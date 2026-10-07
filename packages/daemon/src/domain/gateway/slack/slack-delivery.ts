@@ -21,6 +21,7 @@ import type { SeenStore } from "./state-store.js";
 import type { OutboundDecision } from "../protocol.js";
 import type { SubsystemDeliverFn, SubsystemDeliveryOutcome } from "../gateway-subsystem.js";
 import type { OutboundPostPayload } from "./outbound-driver.js";
+import { isHumanSeatSessionRef } from "../../session-name.js";
 
 export interface SubsystemSlackDeliveryOpts {
   botToken: string;
@@ -62,7 +63,7 @@ export interface SubsystemSlackDeliveryOpts {
    *  for hermetic tests; default reads the filesystem (LOCAL_ATTACHMENT_EXT, at most
    *  LOCAL_ATTACHMENT_MAX_BYTES). Return null = not a local attachment; { skipped } = an
    *  attachment that can't be sent (logged, the text still delivers). */
-  readLocalImage?: (refPath: string) => LocalAttachment | null;
+  readLocalImage?: (refPath: string, limits?: { maxBytes?: number; noFollow?: boolean }) => LocalAttachment | null;
   log?: (msg: string) => void;
 }
 
@@ -72,6 +73,9 @@ const LOCAL_IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
 const LOCAL_ATTACHMENT_EXT = new Set([...LOCAL_IMAGE_EXT, ".mp4", ".webm", ".mov", ".pdf"]);
 /** Well under Slack's 1 GB per-file limit, and bounded for a daemon that holds the bytes in memory. */
 export const LOCAL_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024;
+/** `rig queue create --attach <path>` rides the row as this tag. */
+export const ATTACHMENT_TAG = "attachment:";
+const ATTACHED_MAX_BYTES = 10 * 1024 * 1024;
 export type LocalAttachment = { bytes: Uint8Array; filename: string } | { skipped: string };
 const TRANSPORT_FAILURE_RECEIPT_PREFIX = "::transport-failure-receipt::";
 const TRANSPORT_FAILURE_RECEIPT_REPAIRED = "::repaired";
@@ -106,7 +110,8 @@ function pendingTransportFailureReceipt(
  *  of at most LOCAL_ATTACHMENT_MAX_BYTES, readable — else null (not an attachment), or { skipped }
  *  when it is an attachment that can't be sent (too large, missing, unreadable), so the miss is
  *  logged rather than silent. */
-export function defaultReadLocalImage(refPath: string): LocalAttachment | null {
+export function defaultReadLocalImage(refPath: string, limits: { maxBytes?: number; noFollow?: boolean } = {}): LocalAttachment | null {
+  const maxBytes = limits.maxBytes ?? LOCAL_ATTACHMENT_MAX_BYTES;
   if (!path.isAbsolute(refPath)) return null;
   if (!LOCAL_ATTACHMENT_EXT.has(path.extname(refPath).toLowerCase())) return null;
   // The path is resolved ONCE: open it, then stat and read that same descriptor, so the file checked is the file
@@ -114,11 +119,11 @@ export function defaultReadLocalImage(refPath: string): LocalAttachment | null {
   // bounded by the size just checked.
   let fd: number | null = null;
   try {
-    fd = fs.openSync(refPath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    fd = fs.openSync(refPath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | (limits.noFollow ? fs.constants.O_NOFOLLOW : 0));
     const st = fs.fstatSync(fd);
     if (!st.isFile()) return { skipped: "not a regular file" };
-    if (st.size > LOCAL_ATTACHMENT_MAX_BYTES) {
-      return { skipped: `${st.size} bytes is over the ${LOCAL_ATTACHMENT_MAX_BYTES}-byte attachment cap` };
+    if (st.size > maxBytes) {
+      return { skipped: `${st.size} bytes is over the ${maxBytes}-byte attachment cap` };
     }
     const bytes = new Uint8Array(st.size);
     let read = 0;
@@ -369,30 +374,36 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
     // post and duplicate the human notification (the H red). https refs already rode as Block
     // Kit image blocks above; refs that are not attachments (e.g. a PROOF.md path) are a clean
     // skip, and an attachment that can't be sent is logged.
-    const local = q.evidenceRef && !/^https:\/\//.test(String(q.evidenceRef))
-      ? (opts.readLocalImage ?? defaultReadLocalImage)(String(q.evidenceRef))
-      : null;
-    if (local && "skipped" in local) {
-      log(`ATTACHMENT skipped for ${q.qitemId ?? decision.decisionId}: ${path.basename(String(q.evidenceRef))} ${local.skipped} (text delivered; attachment missing)`);
-    } else if (local) {
-      const intoThread = threadTs ?? res.ts;
-      const up = await getUploadURLExternal(opts.botToken, local.filename, local.bytes.length, opts.fetchImpl);
-      if (up.ok && up.uploadUrl && up.fileId) {
-        const put = await uploadBytesExternal(up.uploadUrl, local.bytes, opts.fetchImpl);
-        if (put.ok) {
-          const done = await completeUploadExternal(
-            opts.botToken,
-            // #300: the title is shown in Slack like the text, so it gets the same secret redaction.
-            { files: [{ id: up.fileId, title: redactSecrets(q.summary ?? local.filename) }], channelId: channel, threadTs: intoThread },
-            opts.fetchImpl,
-          );
-          if (done.ok) log(`uploaded ${local.filename} into thread ${intoThread ?? "(root)"} for ${q.qitemId ?? decision.decisionId}`);
-          else log(`ATTACHMENT upload complete FAILED for ${q.qitemId ?? decision.decisionId}: ${done.error} (text delivered; attachment missing)`);
+    // --attach files ride the same flow (a seat's own post only: a human's row never uploads files).
+    const read = opts.readLocalImage ?? defaultReadLocalImage;
+    const evidence = q.evidenceRef && !/^https:\/\//.test(String(q.evidenceRef)) ? [{ ref: String(q.evidenceRef), title: q.summary, local: read(String(q.evidenceRef)) }] : [];
+    const attached = isHumanSeatSessionRef(q.sourceSession ?? "") ? [] : (q.tags ?? [])
+      .filter((t) => t.startsWith(ATTACHMENT_TAG))
+      .map((t) => t.slice(ATTACHMENT_TAG.length))
+      .map((ref) => ({ ref, title: null, local: read(ref, { maxBytes: ATTACHED_MAX_BYTES, noFollow: true }) }));
+    for (const { ref, title, local } of [...evidence, ...attached]) {
+      if (local && "skipped" in local) {
+        log(`ATTACHMENT skipped for ${q.qitemId ?? decision.decisionId}: ${path.basename(ref)} ${local.skipped} (text delivered; attachment missing)`);
+      } else if (local) {
+        const intoThread = threadTs ?? res.ts;
+        const up = await getUploadURLExternal(opts.botToken, local.filename, local.bytes.length, opts.fetchImpl);
+        if (up.ok && up.uploadUrl && up.fileId) {
+          const put = await uploadBytesExternal(up.uploadUrl, local.bytes, opts.fetchImpl);
+          if (put.ok) {
+            const done = await completeUploadExternal(
+              opts.botToken,
+              // #300: the title is shown in Slack like the text, so it gets the same secret redaction.
+              { files: [{ id: up.fileId, title: redactSecrets(title ?? local.filename) }], channelId: channel, threadTs: intoThread },
+              opts.fetchImpl,
+            );
+            if (done.ok) log(`uploaded ${local.filename} into thread ${intoThread ?? "(root)"} for ${q.qitemId ?? decision.decisionId}`);
+            else log(`ATTACHMENT upload complete FAILED for ${q.qitemId ?? decision.decisionId}: ${done.error} (text delivered; attachment missing)`);
+          } else {
+            log(`ATTACHMENT byte upload FAILED for ${q.qitemId ?? decision.decisionId}: ${put.error} (text delivered; attachment missing)`);
+          }
         } else {
-          log(`ATTACHMENT byte upload FAILED for ${q.qitemId ?? decision.decisionId}: ${put.error} (text delivered; attachment missing)`);
+          log(`ATTACHMENT upload-url FAILED for ${q.qitemId ?? decision.decisionId}: ${up.error} (text delivered; attachment missing)`);
         }
-      } else {
-        log(`ATTACHMENT upload-url FAILED for ${q.qitemId ?? decision.decisionId}: ${up.error} (text delivered; attachment missing)`);
       }
     }
 
