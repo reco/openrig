@@ -19,7 +19,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { buildInProcessWire, type GatewayWire, type SubsystemDeliverFn } from "../gateway-subsystem.js";
 import { addReaction, downloadPrivateFile, postChatMessage, removeReaction, setThreadStatus, updateChatMessage } from "./slack-api.js";
-import { loadConfig } from "./config.js";
+import { channelsOf, loadConfig } from "./config.js";
 import { resolveSecret } from "./secrets.js";
 import { SeenStore, DeadLetterStore, InboundReceiptStore } from "./state-store.js";
 import { makeQueuePorts } from "./queue-access.js";
@@ -317,6 +317,12 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
 
   // S10 thread routing — the map shares the daemon DB (queue rows carry the rebuild stamps).
   const threadMap = new ThreadSeatMap(opts.queueRepo.db);
+  const channels = channelsOf(cfg);
+  const isConfiguredChannel = (channel: string) => channels.some((c) => c.id === channel);
+  // A new root goes to the channel whose seat is posting; replies stay in their thread's channel.
+  const channelForPost = (p: OutboundPostPayload, threadTs: string | undefined): string =>
+    (threadTs ? threadMap.resolveByThread(threadTs)?.channel : undefined)
+      ?? channels.find((c) => c.inboundDestination === p.sourceSession)?.id ?? cfg.channel!;
 
   // OPR.0.5.6.14 — a failed post writes the transport-failed ledger transition so the
   // undelivered surface (and --verify) can name the gateway's error instead of guessing
@@ -352,7 +358,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       const root = (inThread ? threadMap.resolveByThread(inThread) : null) ?? threadMap.resolveByConversation(item.qitemId);
       if (root) {
         if (root.state === "closed") return { kind: "fallback", reason: "root-closed", threadTs: root.threadTs };
-        if (root.channel !== cfg.channel) return { kind: "fallback", reason: "root-other-channel", threadTs: root.threadTs };
+        if (!isConfiguredChannel(root.channel)) return { kind: "fallback", reason: "root-other-channel", threadTs: root.threadTs };
         if (root.human !== (p.destinationSession ?? "")) return { kind: "fallback", reason: "root-other-human", threadTs: root.threadTs };
         if (root.seat !== (p.sourceSession ?? "")) return { kind: "fallback", reason: "root-other-seat", threadTs: root.threadTs };
         return { kind: "thread", threadTs: root.threadTs };
@@ -361,7 +367,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       // register it as the thread's root, so the human's later replies route back to this seat.
       const humanMessage = receivedMessage(item.tags);
       if (humanMessage && !item.tags?.some((t) => t.startsWith("reply-to:"))) {
-        if (humanMessage.channel !== cfg.channel) return { kind: "fallback", reason: "root-other-channel", threadTs: humanMessage.ts };
+        if (!isConfiguredChannel(humanMessage.channel)) return { kind: "fallback", reason: "root-other-channel", threadTs: humanMessage.ts };
         if (entityOf(item.sourceSession) !== entityOf(p.destinationSession)) return { kind: "fallback", reason: "root-other-human", threadTs: humanMessage.ts };
         const root = { threadTs: humanMessage.ts, channel: humanMessage.channel, human: item.sourceSession, seat: p.sourceSession ?? "", conversationId: item.qitemId };
         threadMap.open(root);
@@ -570,6 +576,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     ? subsystemSlackDeliver({
         botToken: bot!,
         channel: cfg.channel!,
+        resolveChannel: channelForPost,
         sourceLabel: cfg.sourceLabel,
         answerHint: cfg.explicitAnswersOnly,
         fetchImpl: opts.fetchImpl,
@@ -627,13 +634,14 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         onPostedRoot: (p, ts) => {
           const human = p.destinationSession ?? "";
           const seat = p.sourceSession ?? "";
-          threadMap.open({ threadTs: ts, channel: cfg.channel!, human, seat, conversationId: p.qitemId });
+          const channel = channelForPost(p, undefined);
+          threadMap.open({ threadTs: ts, channel, human, seat, conversationId: p.qitemId });
           // The REBUILD stamp: the queue row is the durable source the map re-derives from.
           try {
             opts.queueRepo.update({
               qitemId: p.qitemId,
               actorSession: "daemon@kernel",
-              transitionNote: formatPostedStamp({ threadTs: ts, messageTs: ts, channel: cfg.channel!, human, seat, conversationId: p.qitemId }),
+              transitionNote: formatPostedStamp({ threadTs: ts, messageTs: ts, channel, human, seat, conversationId: p.qitemId }),
             });
           } catch (e) {
             // Stamp failure degrades REBUILDABILITY, not routing — loud, never fatal to delivery.
@@ -789,6 +797,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const starts: Array<() => void> = [];
   let inboundHandle: SocketInboundHandle | undefined;
   let recovery: ChannelRecovery | undefined;
+  let extraRecoveries: ChannelRecovery[] = [];
 
   if (outboundReady) {
     const driver = new SlackOutboundDriver({
@@ -838,6 +847,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       // S10 — deterministic thread routing: mapped thread → exactly the mapped seat; unmapped
       // or human-initiated → the configured orchestrator slot as an unrouted-signal row.
       resolveRoute: makeThreadRouteResolver({ map: threadMap, unroutedDestination: cfg.inboundDestination, log,
+        destinationForChannel: (channel) => channels.find((c) => c.id === channel)?.inboundDestination,
         isHumanStarted: (conversationId) => {
           const item = opts.queueRepo.getById(conversationId);
           const root = threadMap.resolveByConversation(conversationId);
@@ -962,15 +972,17 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     stops.push(() => unsubscribe?.());
     stops.push(() => { for (const state of progress.values()) clearInterval(state.timer); });
     recovery = new ChannelRecovery({ channel: cfg.channel, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl });
+    extraRecoveries = cfg.extraChannels.map((c) => new ChannelRecovery({ channel: c.id, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl }));
+    const recoveries = [recovery, ...extraRecoveries];
     starts.push(() => {
-      recovery!.initialize(); // persist the once-only floor before any live events
+      for (const r of recoveries) r.initialize(); // persist the once-only floor before any live events
       inboundHandle = startSocketInbound(app!, router, {
         fetchImpl: opts.fetchImpl,
         wsFactory: opts.wsFactory,
         retryIntervalMs: opts.inboundRetryIntervalMs,
         inboundMaxConnects: opts.inboundMaxConnects,
         receipts,
-        recovery,
+        recovery: { run: async () => { await Promise.all(recoveries.map((r) => r.run())); }, stop: () => { for (const r of recoveries) r.stop(); } },
         log,
       });
       log("slack socket-mode inbound started (subsystem path)");
@@ -998,6 +1010,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       outboundReady,
       inboundReady,
       recovery: recovery?.status() ?? { state: "unavailable", reason: "inbound-not-configured" },
+      ...(extraRecoveries.length ? { extraRecoveries: extraRecoveries.map((r) => r.status()) } : {}),
       inbound: inboundHandle?.status() ?? { state: inboundReady ? "not-started" : "not-configured", generation: 0, reconnects: 0 },
     }),
   };

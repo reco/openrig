@@ -91,6 +91,7 @@ export function slackCommand(deps: SlackDeps = {}): Command {
     .description("Configure the connector (first-class config; secrets stay in the env file, never here)")
     .option("--channel <id>", "Slack channel id the connector app must be a member of")
     .option("--inbound-destination <session>", "where inbound human messages land (default operator-agent@kernel)")
+    .option("--extra-channel <id=session>", "another channel and the seat its new messages land on (repeatable; replaces the list)", (v: string, acc: string[] = []) => { acc.push(v); return acc; })
     .option("--minimum-level-that-posts <level>", "minimum OWNER level posted to Slack: RECORD|NOTICE|ALERT")
     .option("--minimum-level-that-interrupts <level>", "minimum OWNER level that mentions/interrupts: RECORD|NOTICE|ALERT")
     .option("--source-label <label>", "label shown in the posted message footer (where the queue lives)")
@@ -105,6 +106,9 @@ export function slackCommand(deps: SlackDeps = {}): Command {
         ...cur,
         channel: opts.channel ?? cur.channel,
         inboundDestination: opts.inboundDestination ?? cur.inboundDestination,
+        extraChannels: opts.extraChannel
+          ? (opts.extraChannel as string[]).map((spec) => { const [id = "", inboundDestination = ""] = spec.split("="); return { id, inboundDestination }; })
+          : cur.extraChannels,
         minimumLevelThatPosts: opts.minimumLevelThatPosts ?? cur.minimumLevelThatPosts,
         minimumLevelThatInterrupts: opts.minimumLevelThatInterrupts ?? cur.minimumLevelThatInterrupts,
         sourceLabel: opts.sourceLabel ?? cur.sourceLabel,
@@ -230,8 +234,10 @@ export function slackCommand(deps: SlackDeps = {}): Command {
         run: async () => {
           const scope = s.bot ? await surface.verifyScopes(s.bot, cfg.requiredScopes, deps.fetchImpl) : null;
           const member = s.bot && cfg.channel ? await surface.verifyChannelMembership(s.bot, cfg.channel, deps.fetchImpl) : null;
-          const ready = scope === null || scope.error || member?.error ? null : scope.ok && (member?.isMember ?? false);
-          return { value: { scope, member }, after: { ready }, effect: "observed" };
+          const extraMembers = s.bot ? await Promise.all((cfg.extraChannels ?? []).map(async (c) => ({ id: c.id, ...(await surface.verifyChannelMembership(s.bot!, c.id, deps.fetchImpl)) }))) : [];
+          const ready = scope === null || scope.error || member?.error || extraMembers.some((m) => m.error) ? null
+            : scope.ok && (member?.isMember ?? false) && extraMembers.every((m) => m.isMember);
+          return { value: { scope, member, extraMembers }, after: { ready }, effect: "observed" };
         },
       }, deps.home);
       if (!s.bot) {
@@ -241,19 +247,21 @@ export function slackCommand(deps: SlackDeps = {}): Command {
       }
       const scope = verification.value.scope!;
       const member = verification.value.member;
-      const ready = scope.ok && (member ? member.isMember : false);
+      const extraMembers = verification.value.extraMembers;
+      const ready = scope.ok && (member ? member.isMember : false) && extraMembers.every((m) => m.isMember);
       // Failed scope requests or an absent/empty grant header cannot prove
       // which optional features are available. Baseline readiness is unchanged.
       const missingFeatures = scope.error || scope.granted.length === 0 ? null
         : surface.FEATURE_SCOPES.filter((feature) => !scope.granted.includes(feature.scope));
       if (opts.json) {
-        log(JSON.stringify({ scope, member, ready, missingFeatures, receipt: verification.receipt }));
+        log(JSON.stringify({ scope, member, extraMembers, ready, missingFeatures, receipt: verification.receipt }));
       } else {
         log(`granted scopes: ${scope.granted.join(", ") || "(none)"}`);
         if (!scope.ok) log(`✗ MISSING scopes (configured != granted — reinstall the app): ${scope.missing.join(", ")}${scope.error ? ` [${scope.error}]` : ""}`);
         else log("✓ all required scopes granted");
         if (member) log(member.isMember ? `✓ channel member (${member.name ?? cfg.channel})` : `✗ NOT a member of channel ${cfg.channel} — invite the app`);
         else log("… channel not configured — set --channel to verify membership");
+        for (const m of extraMembers) log(m.isMember ? `✓ channel member (${m.name ?? m.id})` : `✗ NOT a member of channel ${m.id} — invite the app`);
         for (const feature of missingFeatures ?? []) {
           log(`⚠ ${feature.scope} missing: ${feature.usedBy}. Reinstall the app with this scope to use the feature.`);
         }

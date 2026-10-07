@@ -149,7 +149,7 @@ export interface InboundDeps {
   destination: string; // first-class config; default operator-agent@kernel
   /** A6 v3 registration gate. Resolves ev.user -> a registered human (or refuses). Injected so
    *  this core stays pure/testable; the subsystem wires it via the daemon human-registry resolver. */
-  resolveSender: (slackUserId: string) => InboundSenderResolution;
+  resolveSender: (slackUserId: string, channel?: string) => InboundSenderResolution;
   /** S10 thread routing (deterministic, zero inference): resolve the destination + tags for an
    *  admitted event. Absent → every event lands on the static `destination` (the pre-routing
    *  shape, and the fallback the tests pin). */
@@ -280,7 +280,7 @@ export class InboundRouter {
     // A6 v3 registration gate: admit-iff-registered. An unregistered sender is REFUSED here —
     // never landed as a fabricated human-<slackid>@kernel seat. This is a POLICY refusal, not a
     // transient failure, so it is NOT dead-lettered (retrying can't help until the human registers).
-    const who = this.deps.resolveSender(ev.user ?? "");
+    const who = this.deps.resolveSender(ev.user ?? "", ev.channel);
     if (!who.admitted) {
       this.deps.log?.(`inbound REFUSED — unregistered sender ${ev.user} (ts=${ts}): ${who.teaching}`);
       return { landed: false, reason: "unregistered" };
@@ -417,7 +417,7 @@ export class InboundRouter {
     if (offerQitemId) return this.attemptConfirm(payload, offerQitemId, live);
     const picked = parseQuestionAction(action?.block_id, action?.action_id);
     if (!picked) return { status: "ignored", reason: "not-a-question-button" };
-    const who = this.deps.resolveSender(payload.user?.id ?? "");
+    const who = this.deps.resolveSender(payload.user?.id ?? "", payload.channel?.id);
     if (!who.admitted) {
       this.deps.log?.(`click REFUSED — unregistered sender ${payload.user?.id}: ${who.teaching}`);
       return { status: "refused", reason: "unregistered" };
@@ -488,7 +488,7 @@ export class InboundRouter {
    *  offer's stored reading. The reply row id derives from the offer, so a replayed click finds
    *  the same row, and the resolve transition happens at most once. */
   private async attemptConfirm(payload: SlackBlockActions, offerQitemId: string, live: boolean): Promise<{ status: InboundDisposition; reason?: string }> {
-    const who = this.deps.resolveSender(payload.user?.id ?? "");
+    const who = this.deps.resolveSender(payload.user?.id ?? "", payload.channel?.id);
     if (!who.admitted) {
       this.deps.log?.(`confirm REFUSED — unregistered sender ${payload.user?.id}: ${who.teaching}`);
       return { status: "refused", reason: "unregistered" };
@@ -576,7 +576,7 @@ export class InboundRouter {
     if (ev.reaction !== CHECK_REACTION || !channel || !messageTs) return { status: "ignored", reason: "not-a-check-on-a-message" };
     const key = `reaction:${channel}:${messageTs}:${ev.user ?? "-"}`;
     if (this.deps.seen.load().has(key) || this.inflight.has(key)) return { status: "ignored", reason: "dup" };
-    const who = this.deps.resolveSender(ev.user ?? "");
+    const who = this.deps.resolveSender(ev.user ?? "", channel);
     if (!who.admitted) {
       this.deps.log?.(`reaction REFUSED — unregistered sender ${ev.user}: ${who.teaching}`);
       return { status: "refused", reason: "unregistered" };
@@ -599,7 +599,7 @@ export class InboundRouter {
   private async feedback(ev: SlackEvent, channel: string, messageTs: string, reaction: "+1" | "-1"): Promise<{ status: InboundDisposition; reason?: string }> {
     const key = `feedback:${channel}:${messageTs}:${ev.user ?? "-"}:${reaction}`;
     if (this.deps.seen.load().has(key) || this.inflight.has(key)) return { status: "ignored", reason: "dup" };
-    const who = this.deps.resolveSender(ev.user ?? "");
+    const who = this.deps.resolveSender(ev.user ?? "", channel);
     if (!who.admitted) return { status: "refused", reason: "unregistered" };
     this.inflight.add(key);
     try {

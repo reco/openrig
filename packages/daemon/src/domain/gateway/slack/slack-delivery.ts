@@ -25,6 +25,8 @@ import type { OutboundPostPayload } from "./outbound-driver.js";
 export interface SubsystemSlackDeliveryOpts {
   botToken: string;
   channel: string;
+  /** The channel this post belongs in (its thread's channel); `channel` when absent. */
+  resolveChannel?: (q: OutboundPostPayload, threadTs: string | undefined) => string;
   sourceLabel: string; // host/box/rig — from config, never hardcoded (item 7)
   bodyExcerpt?: number;
   /** Phase 1: decisions tell their human that only an `answer:` reply decides. */
@@ -211,6 +213,7 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
       },
     );
     const threadTs = opts.resolveThreadTs?.(q);
+    const channel = opts.resolveChannel?.(q, threadTs) ?? opts.channel;
 
     // A failed HTTP outcome whose row-receipt write failed is held in the
     // existing restart-surviving attempted store. Repair that authoritative
@@ -249,7 +252,7 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
     // identity, same bytes, both sides.
     const marker = reconcileToken(decision.decisionId);
     if (attempted.has(decision.decisionId)) {
-      const scan = await fetchRecentMessageTexts(opts.botToken, opts.channel, threadTs, opts.fetchImpl, undefined, undefined, marker);
+      const scan = await fetchRecentMessageTexts(opts.botToken, channel, threadTs, opts.fetchImpl, undefined, undefined, marker);
       if (!scan.ok) {
         log(`reconcile scan failed for ${decision.decisionId} (${scan.error}) — retained, no blind repost`);
         return { ok: false, class: "reconcile-unreadable", detail: scan.error };
@@ -298,7 +301,7 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
     opts.attempted.mark(decision.decisionId, "attempted");
     const res = await postChatMessage(
       opts.botToken,
-      { channel: opts.channel, text: payload.text, blocks: payload.blocks, thread_ts: threadTs },
+      { channel, text: payload.text, blocks: payload.blocks, thread_ts: threadTs },
       opts.fetchImpl,
     );
     if (!res.ok) {
@@ -380,7 +383,7 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
           const done = await completeUploadExternal(
             opts.botToken,
             // #300: the title is shown in Slack like the text, so it gets the same secret redaction.
-            { files: [{ id: up.fileId, title: redactSecrets(q.summary ?? local.filename) }], channelId: opts.channel, threadTs: intoThread },
+            { files: [{ id: up.fileId, title: redactSecrets(q.summary ?? local.filename) }], channelId: channel, threadTs: intoThread },
             opts.fetchImpl,
           );
           if (done.ok) log(`uploaded ${local.filename} into thread ${intoThread ?? "(root)"} for ${q.qitemId ?? decision.decisionId}`);

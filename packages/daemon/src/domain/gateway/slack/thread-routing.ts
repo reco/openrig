@@ -28,12 +28,15 @@ export function makeThreadRouteResolver(opts: {
   map: ThreadSeatMap;
   /** The orchestrator slot for unrouted signals (first-class config: inboundDestination). */
   unroutedDestination: string;
+  /** A channel with its own inbound seat lands its unrouted messages there. */
+  destinationForChannel?: (channel: string | undefined) => string | undefined;
   /** A thread the human started routes to the seat but correlates to no request. */
   isHumanStarted?: (conversationId: string) => boolean;
   log?: (msg: string) => void;
 }): (ev: SlackEvent & { thread_ts?: string }) => InboundRoute {
   const log = opts.log ?? (() => {});
   return (ev) => {
+    const unrouted = opts.destinationForChannel?.(ev.channel) ?? opts.unroutedDestination;
     const threadTs = (ev as { thread_ts?: string }).thread_ts;
     if (threadTs) {
       const mapping = opts.map.resolveByThread(threadTs);
@@ -58,10 +61,10 @@ export function makeThreadRouteResolver(opts: {
           routeClass,
         };
       }
-      log(`inbound UNMAPPED thread_ts=${threadTs} -> unrouted-signal to ${opts.unroutedDestination} (never dropped, never guessed)`);
-      return { destination: opts.unroutedDestination, tags: [...BASE_TAGS, "unrouted-signal"], routeClass: "unmapped-thread" };
+      log(`inbound UNMAPPED thread_ts=${threadTs} -> unrouted-signal to ${unrouted} (never dropped, never guessed)`);
+      return { destination: unrouted, tags: [...BASE_TAGS, "unrouted-signal"], routeClass: "unmapped-thread" };
     }
-    log(`inbound human-initiated (no thread_ts) -> unrouted-signal to ${opts.unroutedDestination}`);
-    return { destination: opts.unroutedDestination, tags: [...BASE_TAGS, "unrouted-signal"], routeClass: "human-initiated" };
+    log(`inbound human-initiated (no thread_ts) -> unrouted-signal to ${unrouted}`);
+    return { destination: unrouted, tags: [...BASE_TAGS, "unrouted-signal"], routeClass: "human-initiated" };
   };
 }
