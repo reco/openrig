@@ -45,8 +45,11 @@ export function readLaunchFingerprints(home: string): Map<string, LaunchFingerpr
   try { names = readdirSync(dirOf(home)); } catch { return out; }
   for (const name of names.filter((n) => n.endsWith(".json"))) {
     try {
-      const record = JSON.parse(readFileSync(path.join(dirOf(home), name), "utf8")) as LaunchFingerprint;
-      if (record.nodeId && Array.isArray(record.binaries)) out.set(record.nodeId, record);
+      const record = JSON.parse(readFileSync(path.join(dirOf(home), name), "utf8")) as LaunchFingerprint & Partial<BinaryFingerprint>;
+      if (!record.nodeId) continue;
+      if (Array.isArray(record.binaries)) out.set(record.nodeId, record);
+      else if (record.file && record.realpath) out.set(record.nodeId, { nodeId: record.nodeId, sessionName: record.sessionName, recordedAt: record.recordedAt,
+        binaries: [{ label: "Codex", file: record.file, realpath: record.realpath, mtimeMs: record.mtimeMs ?? 0, size: record.size ?? 0 }] });
     } catch { /* unreadable record */ }
   }
   return out;

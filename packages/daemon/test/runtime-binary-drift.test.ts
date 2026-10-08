@@ -1,6 +1,6 @@
 // A Codex update on disk under a running seat is a health finding with a same-conversation restart.
 import { afterEach, expect, it } from "vitest";
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDb } from "../src/db/connection.js";
@@ -68,4 +68,18 @@ it("finds a computer-use helper update for a seat whose Codex config enables the
   writeFileSync(helper, "helper v2, updated by the app");
   const source = new RuntimeBinaryHealthSource({ home, rigRepo: rigs, sessionRegistry: sessions });
   expect(source.read()[0]).toMatchObject({ runtime: "Codex computer-use helper", binary: helper });
+});
+
+it("reads a launch record written before the computer-use change as a Codex binary", () => {
+  const home = mkdtempSync(join(tmpdir(), "old-record-"));
+  cleanups.push(() => rmSync(home, { recursive: true, force: true }));
+  const db = createDb(); migrate(db, ALL_MIGRATIONS); cleanups.push(() => db.close());
+  const rigs = new RigRepository(db); const sessions = new SessionRegistry(db);
+  const rig = rigs.createRig("old");
+  const node = rigs.addNode(rig.id, "c", { role: "worker" });
+  sessions.updateStatus(sessions.registerSession(node.id, "c@old").id, "running");
+  const codex = join(home, "codex"); writeFileSync(codex, "v1");
+  mkdirSync(join(home, "run", "runtime-binaries"), { recursive: true });
+  writeFileSync(join(home, "run", "runtime-binaries", `${node.id}.json`), JSON.stringify({ file: codex, realpath: realpathSync(codex), mtimeMs: 1, size: 2, nodeId: node.id, sessionName: "c@old", recordedAt: new Date().toISOString() }));
+  expect(new RuntimeBinaryHealthSource({ home, rigRepo: rigs, sessionRegistry: sessions }).read()[0]).toMatchObject({ runtime: "Codex", binary: codex });
 });
