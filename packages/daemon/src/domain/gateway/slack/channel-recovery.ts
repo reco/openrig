@@ -83,17 +83,26 @@ export class ChannelRecovery {
     for (const root of (this.opts.threadRoots?.() ?? []).slice(0, 50)) {
       if (this.stopped) return false;
       if (this.now() >= deadline) { this.state = "incomplete"; this.reason = "pass-budget"; return false; }
-      const r = await callWebApi("conversations.replies", this.opts.token!, {
-        channel: this.opts.channel, ts: root, oldest: slackTimestamp(lower > 0n ? lower - 1n : 0n), latest: to, inclusive: false, limit: 100,
-      }, this.opts.fetchImpl, Math.min(5000, Math.max(1, deadline - this.now())), "get-query");
-      if (this.stopped) return false;
-      if (!r.ok) {
-        if (r.error === "thread_not_found") continue;
-        this.reason = r.status === 429 ? "rate-limited" : "replies-api-unavailable";
-        this.save({ ...this.coverage!, nextRetryAt: this.now() + (r.retryAfterSeconds ?? 5) * 1000 });
-        this.state = "backoff"; return false;
-      }
-      const replies = (Array.isArray(r.json.messages) ? r.json.messages as SlackEvent[] : [])
+      const messages: SlackEvent[] = [];
+      let cursor = "";
+      do {
+        if (this.now() >= deadline) { this.state = "incomplete"; this.reason = "pass-budget"; return false; }
+        const r = await callWebApi("conversations.replies", this.opts.token!, {
+          channel: this.opts.channel, ts: root, oldest: slackTimestamp(lower > 0n ? lower - 1n : 0n), latest: to, inclusive: false, limit: 100,
+          ...(cursor ? { cursor } : {}),
+        }, this.opts.fetchImpl, Math.min(5000, Math.max(1, deadline - this.now())), "get-query");
+        if (this.stopped) return false;
+        if (!r.ok) {
+          if (r.error === "thread_not_found") break;
+          this.reason = r.status === 429 ? "rate-limited" : "replies-api-unavailable";
+          this.save({ ...this.coverage!, nextRetryAt: this.now() + (r.retryAfterSeconds ?? 5) * 1000 });
+          this.state = "backoff"; return false;
+        }
+        if (Array.isArray(r.json.messages)) messages.push(...(r.json.messages as SlackEvent[]));
+        const next = (r.json.response_metadata as { next_cursor?: unknown } | undefined)?.next_cursor;
+        cursor = typeof next === "string" ? next : "";
+      } while (cursor);
+      const replies = messages
         .filter((m) => m && m.ts !== root && slackMicros(m.ts) !== null && slackMicros(m.ts)! >= lower && slackMicros(m.ts)! < upper)
         .sort((a, b) => slackMicros(a.ts)! < slackMicros(b.ts)! ? -1 : 1);
       for (const message of replies) {

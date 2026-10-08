@@ -245,3 +245,16 @@ it("recovers replies posted in followed threads while the socket was down, exact
   f.settledThrough(1_010_000); await r.run();
   expect(f.repo.list({ limit: 100 })).toHaveLength(2);
 });
+
+it("follows a thread's reply pages before advancing coverage", async () => {
+  const f = fixture(); const r = f.recovery("fixture-token", "C1", () => ["900.000001"]);
+  f.respond((u) => {
+    if (!u.pathname.endsWith("conversations.replies")) return Response.json({ ok: true, messages: [], has_more: false });
+    return u.searchParams.get("cursor") === "page-2"
+      ? Response.json({ ok: true, messages: [event("1003.000002", { thread_ts: "900.000001", text: "second page" })], has_more: false })
+      : Response.json({ ok: true, messages: [event("1003.000001", { thread_ts: "900.000001", text: "first page" })], has_more: true, response_metadata: { next_cursor: "page-2" } });
+  });
+  f.settledThrough(1_006_000); await r.run();
+  expect(f.repo.list({ limit: 100 }).map((x) => x.body).join("\n")).toContain("second page");
+  expect(f.repo.list({ limit: 100 })).toHaveLength(2);
+});
