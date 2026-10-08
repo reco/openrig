@@ -1074,7 +1074,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // generation) so a frozen pre-handover sample can't drive the threshold. null = UNKNOWN (inert).
     resolveOccupantBootAt: (nodeId) => sessionRegistry.currentOccupantTenure(nodeId)?.bootAt ?? null,
   });
-  const { HealthProjectionService, LiveContextHealthSource } = await import("./domain/health-detectors.js");
+  const { HealthProjectionService, LiveContextHealthSource, RuntimeBinaryHealthSource } = await import("./domain/health-detectors.js");
   const healthSettingsStore = new ContextPackSettingsStore();
   const contextHealthSource = new LiveContextHealthSource({
     db,
@@ -1090,7 +1090,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     () => healthSettingsStore.resolveOne("workspace.root").value as string,
     configuredCatalogPath(healthSettingsStore));
   const passiveCeremony = new PassiveCeremonySource(healthSettingsStore.resolveOne("workspace.root").value as string, queueRepoInstance, healthPolicy, undefined, healthCheckpoints, { reader: operatingPosture, instanceId: OPENRIG_HOME });
-  const healthProjection = new HealthProjectionService([contextHealthSource, healthCheckpoints, passiveCeremony], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
+  const runtimeBinaryHealthSource = new RuntimeBinaryHealthSource({ home: OPENRIG_HOME, rigRepo, sessionRegistry });
+  const healthProjection = new HealthProjectionService([contextHealthSource, runtimeBinaryHealthSource, healthCheckpoints, passiveCeremony], () => healthPolicy.read(), (record) => operatingPosture.forHealth(record));
   const healthDiagnosis = new HealthDiagnosisService({ queue: queueRepoInstance, projection: healthProjection, policy: healthPolicy,
     authority: (record) => healthAuthority(healthSettingsStore.resolveOne("workspace.root").value as string, healthCheckpoints, record),
     resolveEvidence: (path, finding) => readHealthArtifact(finding.operatingPosture?.context?.paths?.project ?? healthSettingsStore.resolveOne("workspace.root").value as string, path),

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { shellQuote } from "../adapters/shell-quote.js";
+import { recordLaunchFingerprint } from "./runtime-binary-fingerprint.js";
 
 // Explicit public launch metadata, not a prefix/denylist over credential names.
 // Provider keys and OPENRIG_ACTIVITY_HOOK_TOKEN keep their non-typed channel.
@@ -133,6 +134,11 @@ export class SeatLaunchEnvironment {
       if (target.codexCwd !== undefined) {
         if (!searchPath || !command.startsWith("codex ")) throw new Error("Expected a Codex launch command and PATH.");
         command = codexEntry(searchPath, target.codexCwd) + command.slice(5);
+        // Health compares this record later: a Codex update on disk under a running seat is a finding.
+        try {
+          recordLaunchFingerprint(path.resolve(this.daemonCwd, this.sessionEnv.OPENRIG_HOME ?? ""), identity.OPENRIG_NODE_ID, identity.OPENRIG_SESSION_NAME,
+            launchExecutable("codex", searchPath, target.codexCwd));
+        } catch { /* a missing record only means no drift finding for this seat */ }
       }
       const binDir = this.rigBin();
       const env = publicSeatEnvironment({ OPENRIG_TRANSCRIPTS_LINES: "", OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS: "", ...this.sessionEnv, ...identity });

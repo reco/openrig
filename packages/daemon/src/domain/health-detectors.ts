@@ -20,6 +20,7 @@ import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
 import { queryUsageSeries } from "./usage-series.js";
 import { parseSqliteUtcMs } from "./sqlite-time.js";
+import { fingerprintOf, readLaunchFingerprints, sameBinary } from "./runtime-binary-fingerprint.js";
 
 const CONTEXT_PRESSURE_PERCENT = 95;
 const CONTEXT_CRITICAL_PERCENT = 99;
@@ -75,6 +76,13 @@ export type HealthDetectorObservation =
       admissionAuthority: string | null;
       admissionState: "present" | "missing" | "contradictory" | "unavailable";
       authoritySourceAddress: string | null;
+    })
+  | (ObservationBase & {
+      kind: "runtime-binary-drift";
+      runtime: string;
+      binary: string;
+      sessionName: string;
+      restartCommand: string;
     })
   | (ObservationBase & {
       kind: "context-pressure";
@@ -225,6 +233,43 @@ export class HealthProjectionService {
 /** The live v1 adapter intentionally supplies only context observations. The other
  * detectors require structured product-change, directive, or admission facts that
  * current tables cannot express without inference. Replay sources can supply them. */
+/** A live Codex seat whose executable changed on disk after it launched (an app update). */
+export class RuntimeBinaryHealthSource implements HealthObservationSource {
+  readonly name = "runtime-binary";
+  readonly detectors = ["runtime.binary-drift"];
+  constructor(private readonly deps: {
+    home: string;
+    rigRepo: RigRepository;
+    sessionRegistry: SessionRegistry;
+    now?: () => Date;
+  }) {}
+
+  read(): HealthDetectorObservation[] {
+    const evaluatedAt = (this.deps.now ?? (() => new Date()))().toISOString();
+    const launched = readLaunchFingerprints(this.deps.home);
+    const observations: HealthDetectorObservation[] = [];
+    for (const rig of this.deps.rigRepo.listRigs()) {
+      for (const live of this.deps.sessionRegistry.getLatestLiveSessions(rig.id)) {
+        const fp = launched.get(live.nodeId);
+        if (!fp || fp.sessionName !== live.sessionName || sameBinary(fp, fingerprintOf(fp.file))) continue;
+        observations.push({
+          kind: "runtime-binary-drift",
+          scope: { type: "seat", rigId: rig.id, seatId: live.nodeId },
+          episodeStartedAt: fp.recordedAt,
+          lastObservedAt: evaluatedAt,
+          runtime: "Codex",
+          binary: fp.file,
+          sessionName: live.sessionName,
+          restartCommand: `rig seat stop ${live.sessionName} && rig up ${rig.name} --existing`,
+          source: boundHealthEvidence([], { source: "lifecycle-receipt", startedAt: fp.recordedAt, endedAt: evaluatedAt, limit: 1, retentionSeconds: LIVE_CONTEXT_RETENTION_SECONDS },
+            deriveHealthSourceFreshness({ evaluatedAt, newestSourceAt: evaluatedAt, maxAgeSeconds: LIVE_CONTEXT_FRESHNESS_SECONDS })),
+        });
+      }
+    }
+    return observations;
+  }
+}
+
 export class LiveContextHealthSource implements HealthObservationSource {
   readonly name = "live-context";
   readonly detectors = ["context.pressure"];
@@ -372,6 +417,15 @@ function evaluateObservation(observation: HealthDetectorObservation, policy: Hea
     case "directive": return evaluateDirective(observation);
     case "scope-admission": return evaluateAdmission(observation);
     case "context-pressure": return evaluateContext(observation);
+    case "runtime-binary-drift": return [record(observation, {
+      detector: "runtime.binary-drift",
+      category: "process",
+      severity: "warning",
+      summary: `${observation.runtime} changed on disk since ${observation.sessionName} started.`,
+      threshold: "the executable a seat launched with no longer matches it on disk (path, mtime or size)",
+      explanation: `${observation.binary} was updated under the running seat; its clients (MCP, computer use) still run the old build.`,
+      suggestedInspection: `Restart in the same conversation when the seat is idle: ${observation.restartCommand}`,
+    })];
   }
 }
 
