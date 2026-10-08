@@ -35,4 +35,34 @@ describe("stuck-prompt watch", () => {
     t = 8 * 60_000; await watch.tick();
     expect(sent).toHaveLength(0);
   });
+
+  it("names a Codex approval by its question and masks credentials the command carries", async () => {
+    let t = 0;
+    const codex = [
+      "  Would you like to run the following command?", "",
+      "  Reason: Do you want to allow running exactly `API_TOKEN=s3cr3tvalue123 deploy --password hunter22`?", "",
+      "  $ API_TOKEN=s3cr3tvalue123 deploy --password hunter22", "",
+      "› 1. Yes, proceed (y)", "  2. Yes, and don't ask again (p)", "  3. No, and tell Codex what to do differently (esc)", "",
+      "  Press enter to confirm or esc to cancel",
+    ].join("\n");
+    const sent: StuckPrompt[] = [];
+    const watch = makeStuckPromptWatch({ runningSessions: () => ["ops@rig"], capture: async () => codex, notify: async (p) => { sent.push(p); }, now: () => t });
+    await watch.tick();
+    t = 6 * 60_000; await watch.tick();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.promptLine).toContain("Do you want to allow running exactly");
+    expect(sent[0]!.promptLine).not.toContain("s3cr3tvalue123");
+    expect(sent[0]!.promptLine).not.toContain("hunter22");
+  });
+
+  it("keeps the episode through an unreadable capture", async () => {
+    let t = 0;
+    let pane: string | null = prompt("Run npm test?");
+    const sent: StuckPrompt[] = [];
+    const watch = makeStuckPromptWatch({ runningSessions: () => ["dev@rig"], capture: async () => pane, notify: async (p) => { sent.push(p); }, now: () => t });
+    await watch.tick();
+    t = 3 * 60_000; pane = null; await watch.tick();
+    t = 5 * 60_000; pane = prompt("Run npm test?"); await watch.tick();
+    expect(sent).toHaveLength(1);
+  });
 });

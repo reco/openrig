@@ -5,6 +5,8 @@
 
 import { createHash } from "node:crypto";
 import { classifyPaneActivity } from "./session-transport.js";
+import { redactSecrets } from "./gateway/slack/message.js";
+import { redactTranscriptContent } from "./transcript-redaction.js";
 
 export const STUCK_PROMPT_AFTER_MS = 5 * 60_000;
 const PROMPT_REASONS = new Set(["selection_prompt", "permission_prompt"]);
@@ -14,6 +16,7 @@ export interface StuckPrompt {
   reason: string;
   promptLine: string;
   attach: string;
+  /** Same seat and same prompt: the notifier skips one already sent recently (a restart). */
   episodeId: string;
 }
 
@@ -27,14 +30,19 @@ export interface StuckPromptWatchDeps {
 
 const OPTION_LINE = /^\s*[❯›]?\s*\d+\.\s/;
 
-/** The question above the prompt's options; the matched line itself when none is found. */
+/** The question above the prompt's options (the nearest line ending in '?', else the nearest
+ *  text line), with credentials masked: it may quote the command being approved. */
 function questionLine(pane: string, evidence: string): string {
   const lines = pane.split("\n").map((l) => l.trim());
   const at = lines.lastIndexOf(evidence.split("\n")[0]!.trim());
-  for (let i = at - 1; i >= 0 && at > 0; i--) {
-    if (lines[i] && !OPTION_LINE.test(lines[i]!) && !/^[─━-]+$/.test(lines[i]!)) return lines[i]!;
-  }
-  return evidence.split("\n")[0]!.trim();
+  const above = at > 0 ? lines.slice(Math.max(0, at - 8), at).reverse().filter((l) => l && !OPTION_LINE.test(l) && !/^[─━-]+$/.test(l)) : [];
+  return maskSecrets(above.find((l) => l.endsWith("?")) ?? above[0] ?? evidence.split("\n")[0]!.trim());
+}
+
+function maskSecrets(text: string): string {
+  return redactTranscriptContent(redactSecrets(text))
+    .replace(/\b([A-Za-z_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY)[A-Za-z_]*)=("[^"]*"|'[^']*'|\S+)/gi, "$1=[redacted]")
+    .replace(/(--(?:token|password|secret|api-key)[= ])\S+/gi, "$1[redacted]");
 }
 
 export interface StuckPromptWatch {
@@ -64,15 +72,16 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
       for (const gone of [...open.keys()].filter((s) => !sessions.includes(s))) open.delete(gone);
       for (const session of sessions) {
         const pane = await deps.capture(session).catch(() => null);
-        const seen = pane ? classifyPaneActivity(pane) : null;
-        if (!seen || seen.state !== "attention" || !PROMPT_REASONS.has(seen.reason ?? "")) { open.delete(session); continue; }
-        const promptLine = questionLine(pane!, String(seen.evidence ?? ""));
+        if (pane === null) continue; // an unreadable pane says nothing about the prompt; keep the episode
+        const seen = classifyPaneActivity(pane);
+        if (seen.state !== "attention" || !PROMPT_REASONS.has(seen.reason ?? "")) { open.delete(session); continue; }
+        const promptLine = questionLine(pane, String(seen.evidence ?? ""));
         const key = `${seen.reason}|${promptLine}`;
         const episode = open.get(session);
         if (!episode || episode.key !== key) { open.set(session, { key, since: now(), notified: false }); continue; }
         if (episode.notified || now() - episode.since < afterMs) continue;
         episode.notified = true;
-        const episodeId = createHash("sha256").update(`${session}|${key}|${episode.since}`).digest("hex").slice(0, 20);
+        const episodeId = createHash("sha256").update(`${session}|${key}`).digest("hex").slice(0, 20);
         await deps.notify({ session, reason: seen.reason!, promptLine, attach: `tmux attach -t ${session}`, episodeId });
       }
     },
