@@ -2119,6 +2119,32 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       ],
     });
     queueRepoInstance.startWaitReminders();
+    {
+      const { makeStuckPromptWatch } = await import("./domain/stuck-prompt-watch.js");
+      deps.stuckPromptWatch = makeStuckPromptWatch({
+        runningSessions: () => (db.prepare(`
+          SELECT s.session_name AS session_name FROM sessions s
+          JOIN bindings b ON b.node_id = s.node_id AND b.attachment_type = 'tmux'
+          WHERE s.status = 'running' AND s.session_name IS NOT NULL
+            AND s.id = (SELECT s2.id FROM sessions s2 WHERE s2.node_id = s.node_id ORDER BY s2.id DESC LIMIT 1)
+        `).all() as Array<{ session_name: string }>).map((r) => r.session_name),
+        capture: (session) => tmuxAdapter.capturePaneContent(session, 40),
+        notify: async (p) => {
+          const registry = loadHumanRegistryForDelivery(OPENRIG_HOME);
+          const human = registry.ok ? registry.entities.find((e) => e.role !== "requester") : undefined;
+          if (!human || queueRepoInstance.getById(`qitem-stuck-prompt-${p.episodeId}`)) return;
+          await queueRepoInstance.create({
+            qitemId: `qitem-stuck-prompt-${p.episodeId}`,
+            sourceSession: "daemon@kernel",
+            destinationSession: human.address,
+            humanIntent: "update",
+            summary: `${p.session} is waiting at a ${p.reason === "permission_prompt" ? "permission" : "selection"} prompt`,
+            body: `${p.promptLine}\n\nWaiting for over 5 minutes. Attach: \`${p.attach}\``,
+            nudge: false,
+          });
+        },
+      });
+    }
     const watchdogScheduler = new WatchdogScheduler({
       jobsRepo: watchdogJobsRepoInstance,
       policyEngine: watchdogPolicyEngine,
