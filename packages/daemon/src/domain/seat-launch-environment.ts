@@ -1,9 +1,10 @@
-import { accessSync, closeSync, constants, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, readSync, realpathSync, statSync, symlinkSync } from "node:fs";
+import { accessSync, closeSync, existsSync, constants, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, readSync, realpathSync, statSync, symlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { shellQuote } from "../adapters/shell-quote.js";
-import { recordLaunchFingerprint } from "./runtime-binary-fingerprint.js";
+import { computerUseHelperBinaries, recordLaunchFingerprint } from "./runtime-binary-fingerprint.js";
+import { homedir } from "node:os";
 
 // Explicit public launch metadata, not a prefix/denylist over credential names.
 // Provider keys and OPENRIG_ACTIVITY_HOOK_TOKEN keep their non-typed channel.
@@ -135,8 +136,12 @@ export class SeatLaunchEnvironment {
         if (!searchPath || !command.startsWith("codex ")) throw new Error("Expected a Codex launch command and PATH.");
         command = codexEntry(searchPath, target.codexCwd) + command.slice(5);
         try {
-          recordLaunchFingerprint(path.resolve(this.daemonCwd, this.sessionEnv.OPENRIG_HOME ?? ""), identity.OPENRIG_NODE_ID, identity.OPENRIG_SESSION_NAME,
-            launchExecutable("codex", searchPath, target.codexCwd));
+          const codexConfig = path.join(this.codexHome ?? path.join(homedir(), ".codex"), "config.toml");
+          const configText = existsSync(codexConfig) ? readFileSync(codexConfig, "utf8") : "";
+          recordLaunchFingerprint(path.resolve(this.daemonCwd, this.sessionEnv.OPENRIG_HOME ?? ""), identity.OPENRIG_NODE_ID, identity.OPENRIG_SESSION_NAME, [
+            { label: "Codex", file: launchExecutable("codex", searchPath, target.codexCwd) },
+            ...computerUseHelperBinaries(configText, homedir()),
+          ]);
         } catch { /* no record, no drift finding */ }
       }
       const binDir = this.rigBin();

@@ -249,14 +249,15 @@ export class RuntimeBinaryHealthSource implements HealthObservationSource {
         const fp = launched.get(live.nodeId);
         const bootAt = this.deps.sessionRegistry.currentOccupantTenure(live.nodeId)?.bootAt;
         const fromThisOccupant = fp && fp.sessionName === live.sessionName && (!bootAt || fp.recordedAt >= new Date(parseSqliteUtcMs(bootAt) - 60_000).toISOString());
-        if (!fp || !fromThisOccupant || sameBinary(fp, fingerprintOf(fp.file))) continue;
+        const drifted = fp && fromThisOccupant ? fp.binaries.filter((b) => !sameBinary(b, fingerprintOf(b.file))) : [];
+        if (!fp || drifted.length === 0) continue;
         observations.push({
           kind: "runtime-binary-drift",
           scope: { type: "seat", rigId: rig.id, seatId: live.nodeId },
           episodeStartedAt: fp.recordedAt,
           lastObservedAt: evaluatedAt,
-          runtime: "Codex",
-          binary: fp.file,
+          runtime: drifted.map((b) => b.label).join(" and "),
+          binary: drifted.map((b) => b.file).join(", "),
           sessionName: live.sessionName,
           restartCommand: `rig seat handover ${live.sessionName} --source fork:${live.resumeToken ?? "<conversation id>"} --reason codex-updated`,
           source: boundHealthEvidence([], { source: "lifecycle-receipt", startedAt: fp.recordedAt, endedAt: evaluatedAt, limit: 1, retentionSeconds: LIVE_CONTEXT_RETENTION_SECONDS },
