@@ -403,3 +403,7 @@ OpenRig is open source and self-hosted, with Claude Code and Codex in the same t
 ## License
 
 Apache 2.0
+
+## This fork
+
+reco/openrig carries its own commits on top of upstream `mvschwarz/openrig`. It currently sits on upstream `main` at `52b5c86a2b91076fa02a049c1433b597f064b450` (2026-10-06, "fix: connect the install handoff to the operator conversation (#878)"), which is past release `v0.6.5` and on no release tag. Future syncs rebase onto the first upstream release tag at or beyond that commit, never onto upstream `main`.
