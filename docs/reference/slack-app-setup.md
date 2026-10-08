@@ -194,6 +194,12 @@ expires with the hook's 10-minute timeout; on expiry, or with no answer, the pro
 terminal as before. A deny rule in the seat's own settings still wins over an Approve. Every answer
 is recorded on its queue row.
 
+Each request carries the seat's own token (issued at launch, bound to its node, name and occupant
+generation), so a seat cannot ask in another seat's name by mistake. It is not a defence against a
+hostile seat: every seat runs as the same OS user, so one seat can read the token secret or another
+seat's environment. The real control is the human judging the full command, the seat and its working
+directory on the card.
+
 This answers permission prompts only. It does not override a runtime's own safety decisions (for
 example Claude Code's auto-mode classifier denials). Known-safe actions belong in each seat's own
 settings allow rules, not here. Claude Code seats only for now; Codex seats come next.
