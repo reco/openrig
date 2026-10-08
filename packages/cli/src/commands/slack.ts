@@ -131,6 +131,9 @@ export function slackCommand(deps: SlackDeps = {}): Command {
           effect: channelStateDigest(cur) === channelStateDigest(next) ? "no-op" : "applied" }),
       }, deps.home);
       log(`wrote ${result.value}; receipt ${result.receipt.id} (${result.receipt.effect})`);
+      if (cur.enabled && JSON.stringify(cur) !== JSON.stringify(next)) {
+        log("The running connector keeps the config it loaded: run `rig slack disable && rig slack enable` to apply this change.");
+      }
       log(`Next: if you have no Slack app yet, start with ${MANIFEST_FIRST_STEP}. Then put SLACK_BOT_TOKEN / SLACK_APP_TOKEN in ${next.secretsEnvFile ?? "<--secrets-env-file> (0600)"}, then \`rig slack verify\`, then \`rig slack enable\`.`);
     });
 
