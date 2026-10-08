@@ -381,3 +381,13 @@ it("a malformed thread checkpoint replays replies instead of stopping recovery f
   expect(t.calls).toEqual(["900.000001", "900.000001"]);
   expect(t.f.repo.list({ limit: 100 })).toHaveLength(3);
 });
+
+it("a thread cut short by the pass budget keeps the replies it read and is not marked degraded", async () => {
+  const t = threadFixture(["900.000001"], (root, call) => ({ ok: true, next: call < 4 ? "more" : undefined,
+    messages: [reply(root, `1003.${String(call).padStart(6, "0")}`, `reply ${call};`)] }), 7_000);
+  const r = t.recovery(); t.at(1_010_000); await r.run();
+  expect(t.f.repo.list({ limit: 100 })).toHaveLength(2);
+  expect(r.status().threads?.degraded).toEqual({});
+  for (let pass = 1; pass <= 2; pass++) { t.at(1_040_000 + pass * 20_000); await r.run(); }
+  for (let call = 1; call <= 4; call++) expect(t.bodies().split(`reply ${call};`)).toHaveLength(2);
+});

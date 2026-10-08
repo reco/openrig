@@ -116,16 +116,18 @@ export class ChannelRecovery {
       if (this.stopped) return;
       if (read.kind === "deleted") { deleted.add(root); delete roots[root]; delete degraded[root]; persist(); continue; }
       if (read.kind === "capability") { degraded[root] = read.error; persist(); continue; }
+      if (read.kind === "out-of-budget") return;
       if (read.kind === "rate-limited") { persist({ nextRetryAt: this.now() + read.retryAfterSeconds * 1000 }); return; }
       if (read.kind === "failed") { degraded[root] = `transient: ${read.error}`; persist(); continue; }
       for (const message of read.replies) {
         const ev = { ...message, channel: this.opts.channel!, thread_ts: root, recoveredAfterGap: true } as SlackEvent;
         if (!ingestDecision(ev).ingest) continue;
         const landed = await this.opts.router.route(ev, 0, () => !this.stopped);
-        if (this.stopped || this.now() >= deadline) return;
+        if (this.stopped) return;
         if (landed.reason === "inflight" || landed.reason === "inactive") return;
         if (landed.disposition === "accepted") this.accepted++;
         if (landed.disposition === "dead-lettered") this.deadLettered++;
+        if (this.now() >= deadline) { roots[root] = slackTimestamp(slackMicros(message.ts)! + 1n); persist(); return; }
       }
       roots[root] = read.through;
       delete degraded[root];
@@ -135,13 +137,13 @@ export class ChannelRecovery {
 
   /** Every reply page of one thread in [from, upper); a typed outcome, never a thrown failure. */
   private async readReplies(root: string, from: bigint, upper: string, deadline: number): Promise<
-    | { kind: "ok"; replies: SlackEvent[]; through: string } | { kind: "deleted" } | { kind: "capability"; error: string }
+    | { kind: "ok"; replies: SlackEvent[]; through: string } | { kind: "deleted" } | { kind: "out-of-budget" } | { kind: "capability"; error: string }
     | { kind: "rate-limited"; retryAfterSeconds: number } | { kind: "failed"; error: string }> {
     const replies: SlackEvent[] = [];
     let cursor = "";
     let pages = 0;
     do {
-      if (this.now() >= deadline - 1000) return { kind: "failed", error: "pass-budget" };
+      if (this.now() >= deadline - 1000) { if (!replies.length) return { kind: "out-of-budget" }; break; }
       const r = await callWebApi("conversations.replies", this.opts.token!, {
         channel: this.opts.channel, ts: root, oldest: slackTimestamp(from > 0n ? from - 1n : 0n), latest: upper, inclusive: false, limit: 100,
         ...(cursor ? { cursor } : {}),
