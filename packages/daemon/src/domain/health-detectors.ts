@@ -230,10 +230,6 @@ export class HealthProjectionService {
   }
 }
 
-/** The live v1 adapter intentionally supplies only context observations. The other
- * detectors require structured product-change, directive, or admission facts that
- * current tables cannot express without inference. Replay sources can supply them. */
-/** A live Codex seat whose executable changed on disk after it launched (an app update). */
 export class RuntimeBinaryHealthSource implements HealthObservationSource {
   readonly name = "runtime-binary";
   readonly detectors = ["runtime.binary-drift"];
@@ -251,7 +247,9 @@ export class RuntimeBinaryHealthSource implements HealthObservationSource {
     for (const rig of this.deps.rigRepo.listRigs()) {
       for (const live of this.deps.sessionRegistry.getLatestLiveSessions(rig.id)) {
         const fp = launched.get(live.nodeId);
-        if (!fp || fp.sessionName !== live.sessionName || sameBinary(fp, fingerprintOf(fp.file))) continue;
+        const bootAt = this.deps.sessionRegistry.currentOccupantTenure(live.nodeId)?.bootAt;
+        const fromThisOccupant = fp && fp.sessionName === live.sessionName && (!bootAt || fp.recordedAt >= new Date(parseSqliteUtcMs(bootAt) - 60_000).toISOString());
+        if (!fp || !fromThisOccupant || sameBinary(fp, fingerprintOf(fp.file))) continue;
         observations.push({
           kind: "runtime-binary-drift",
           scope: { type: "seat", rigId: rig.id, seatId: live.nodeId },
@@ -260,7 +258,7 @@ export class RuntimeBinaryHealthSource implements HealthObservationSource {
           runtime: "Codex",
           binary: fp.file,
           sessionName: live.sessionName,
-          restartCommand: `rig seat stop ${live.sessionName} && rig up ${rig.name} --existing`,
+          restartCommand: `rig seat handover ${live.sessionName} --source fork:${live.resumeToken ?? "<conversation id>"} --reason codex-updated`,
           source: boundHealthEvidence([], { source: "lifecycle-receipt", startedAt: fp.recordedAt, endedAt: evaluatedAt, limit: 1, retentionSeconds: LIVE_CONTEXT_RETENTION_SECONDS },
             deriveHealthSourceFreshness({ evaluatedAt, newestSourceAt: evaluatedAt, maxAgeSeconds: LIVE_CONTEXT_FRESHNESS_SECONDS })),
         });
@@ -270,6 +268,9 @@ export class RuntimeBinaryHealthSource implements HealthObservationSource {
   }
 }
 
+/** The live v1 adapter intentionally supplies only context observations. The other
+ * detectors require structured product-change, directive, or admission facts that
+ * current tables cannot express without inference. Replay sources can supply them. */
 export class LiveContextHealthSource implements HealthObservationSource {
   readonly name = "live-context";
   readonly detectors = ["context.pressure"];

@@ -1,6 +1,3 @@
-// The Codex executable a seat launched with, recorded at launch so a later health pass can
-// tell when it changed on disk (an app update swaps the binary under a running seat).
-
 import { mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -49,7 +46,7 @@ export function readLaunchFingerprints(home: string): Map<string, LaunchFingerpr
     try {
       const record = JSON.parse(readFileSync(path.join(dirOf(home), name), "utf8")) as LaunchFingerprint;
       if (record.nodeId && record.file) out.set(record.nodeId, record);
-    } catch { /* an unreadable record is no evidence */ }
+    } catch { /* unreadable record */ }
   }
   return out;
 }

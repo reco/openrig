@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export const HEALTH_DETECTORS = ["process.ceremony-amplification", "process.review-carousel", "process.redundant-wake-storm", "governance.stale-directive", "governance.scope-admission-drift", "context.pressure"] as const;
+export const HEALTH_DETECTORS = ["process.ceremony-amplification", "process.review-carousel", "process.redundant-wake-storm", "governance.stale-directive", "governance.scope-admission-drift", "context.pressure", "runtime.binary-drift"] as const;
 export interface HealthPolicy {
   schema: "openrig.health-policy/v0alpha1";
   disabledDetectors: string[];
