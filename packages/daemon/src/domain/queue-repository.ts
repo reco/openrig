@@ -1681,6 +1681,9 @@ export class QueueRepository {
       if (input.replyTo == null) throw fail("humanConfirm on an update needs replyTo naming the decision it reads.");
       const target = this.getById(input.replyTo);
       if (!target || target.humanIntent === "update") throw fail(`humanConfirm needs replyTo to name a decision; ${input.replyTo} is not one.`);
+      // A human's own message (or any row not waiting on a human) has nothing a click could resolve.
+      const asksHuman = isHumanSeatSessionRef(target.destinationSession) || (target.blockedOn != null && isHumanSeatSessionRef(target.blockedOn));
+      if (!asksHuman) throw fail(`humanConfirm on an update reads a decision; ${input.replyTo} asks no human anything. To offer a one-click answer in its thread, send a decision: --human-intent decision --reply-to ${input.replyTo} --confirm "<label>".`);
     }
     if (!this.hasHumanConfirmColumn) throw fail("humanConfirm requires the current queue schema; it was not saved.");
   }

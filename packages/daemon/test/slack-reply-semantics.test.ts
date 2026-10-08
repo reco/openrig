@@ -357,6 +357,13 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       await expect(repo.create({ ...request, humanIntent: "update", replyTo: decisionId, humanConfirm: "  " })).rejects.toMatchObject({ code: "invalid_human_confirm" });
     });
 
+    it("refuses a confirm reading on an update that replies to a human's own message: no dead button", async () => {
+      await say("Shall I build items 1-3?", "2090.1");
+      const inbound = toSeat().find((q) => q.body.includes("Shall I build items 1-3?"))!;
+      await expect(repo.create({ ...request, humanIntent: "update", replyTo: inbound.qitemId, humanConfirm: "Yes, build 1-3" }))
+        .rejects.toMatchObject({ code: "invalid_human_confirm", message: expect.stringContaining("--human-intent decision") });
+    });
+
     async function react(messageTs: string, opts: { user?: string; reaction?: string; envelopeId?: string } = {}): Promise<{ status: string; reason?: string }> {
       const envelopeId = opts.envelopeId ?? `e-react-${messageTs}-${opts.user ?? "UFOUNDER"}-${Math.random()}`;
       socket.onmessage?.({ data: JSON.stringify({ envelope_id: envelopeId, type: "events_api", payload: { event: {
