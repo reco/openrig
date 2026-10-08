@@ -959,8 +959,9 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       });
     });
     stops.push(() => unsubscribe?.());
-    recovery = new ChannelRecovery({ channel: cfg.channel, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl });
-    extraRecoveries = cfg.extraChannels.map((c) => new ChannelRecovery({ channel: c.id, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl }));
+    const followedThreads = (channel: string) => () => threadMap.listOpenRootsInChannel(channel, new Date(Date.now() - 7 * 24 * 3600_000).toISOString());
+    recovery = new ChannelRecovery({ channel: cfg.channel, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl, threadRoots: cfg.channel ? followedThreads(cfg.channel) : undefined });
+    extraRecoveries = cfg.extraChannels.map((c) => new ChannelRecovery({ channel: c.id, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl, threadRoots: followedThreads(c.id) }));
     const recoveries = [recovery, ...extraRecoveries];
     starts.push(() => {
       for (const r of recoveries) r.initialize(); // persist the once-only floor before any live events

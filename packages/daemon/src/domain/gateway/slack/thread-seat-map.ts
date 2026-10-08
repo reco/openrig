@@ -109,6 +109,12 @@ export class ThreadSeatMap {
     return row ? project(row) : null;
   }
 
+  /** Open thread roots in one channel opened since an instant, newest first (reply recovery). */
+  listOpenRootsInChannel(channel: string, sinceIso: string, limit = 50): string[] {
+    return (this.db.prepare(`SELECT thread_ts FROM thread_seat_map WHERE channel = ? AND state = 'open' AND opened_at >= ? ORDER BY ${NEWEST_ROOT_FIRST} LIMIT ?`)
+      .all(channel, sinceIso, limit) as Array<{ thread_ts: string }>).map((r) => r.thread_ts);
+  }
+
   /** Phase 1 — the open requests: one row per conversation with an open root, its newest root. */
   listOpenConversations(): ThreadMapping[] {
     const rows = this.db

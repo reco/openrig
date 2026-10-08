@@ -32,6 +32,7 @@ function fixture() {
   const router = new InboundRouter(deps);
   let now = 1_000_000;
   const history: SlackEvent[] = [];
+  const replies = new Map<string, SlackEvent[]>();
   const queries: URL[] = [];
   let pageSize = 25;
   let response: ((url: URL) => Response | Promise<Response>) | undefined;
@@ -40,17 +41,23 @@ function fixture() {
     if (u.pathname.endsWith("apps.connections.open")) return Response.json({ ok: true, url: "wss://fixture" });
     queries.push(u);
     if (response) return response(u);
+    if (u.pathname.endsWith("conversations.replies")) {
+      const root = u.searchParams.get("ts")!;
+      const oldest = slackMicros(u.searchParams.get("oldest"))!, latest = slackMicros(u.searchParams.get("latest"))!;
+      const thread = (replies.get(root) ?? []).filter(e => slackMicros(e.ts)! > oldest && slackMicros(e.ts)! < latest);
+      return Response.json({ ok: true, messages: [{ ...event(root), thread_ts: root }, ...thread], has_more: false });
+    }
     const oldest = slackMicros(u.searchParams.get("oldest"))!, latest = slackMicros(u.searchParams.get("latest"))!;
     const matches = history.filter(e => slackMicros(e.ts)! > oldest && slackMicros(e.ts)! < latest)
       .sort((a, b) => slackMicros(a.ts)! > slackMicros(b.ts)! ? -1 : 1);
     const messages = matches.slice(0, pageSize);
     return Response.json({ ok: true, messages, has_more: matches.length > messages.length });
   };
-  const recovery = (token: string | null = "fixture-token", channel = "C1") => {
-    const r = new ChannelRecovery({ token, channel, stateDir: "/s", store, router, fetchImpl, now: () => now });
+  const recovery = (token: string | null = "fixture-token", channel = "C1", threadRoots?: () => string[]) => {
+    const r = new ChannelRecovery({ token, channel, stateDir: "/s", store, router, fetchImpl, now: () => now, threadRoots });
     r.initialize(); closes.push(() => r.stop()); return r;
   };
-  return { db, repo, files, fsops, seen, receipts, dead, store, router, deps, queries, fetchImpl, recovery, history,
+  return { db, repo, files, fsops, seen, receipts, dead, store, router, deps, queries, fetchImpl, recovery, history, replies,
     time: (t: number) => { now = t; },
     settledThrough: (t: number) => { now = t + 5000; }, page: (n: number) => { pageSize = n; },
     respond: (fn?: typeof response) => { response = fn; }, down: (v: boolean) => { queueDown = v; } };
@@ -223,4 +230,18 @@ it.each([0, 503])("retries transient history transport failure %i after five sec
   f.history.push(event("1001.1")); f.respond(); f.time(1_015_000); await next.run();
   expect(f.queries).toHaveLength(2); expect(f.repo.list({ limit: 100 })).toHaveLength(1);
   expect(next.status().coverage?.coveredThrough).toBe("1005.000000");
+});
+
+it("recovers replies posted in followed threads while the socket was down, exactly once", async () => {
+  const f = fixture(); const r = f.recovery("fixture-token", "C1", () => ["900.000001"]);
+  f.replies.set("900.000001", [event("1003.000001", { thread_ts: "900.000001", text: "Lee's reply while the host slept" }), event("1004.000001", { thread_ts: "900.000001", bot_id: "B" })]);
+  f.history.push(event("1005.000001", { text: "a top-level message in the gap" }));
+  f.settledThrough(1_006_000); await r.run();
+  const rows = f.repo.list({ limit: 100 });
+  expect(rows.map((x) => x.body).join("\n")).toContain("Lee's reply while the host slept");
+  expect(rows.map((x) => x.body).join("\n")).toContain("a top-level message in the gap");
+  expect(rows).toHaveLength(2);
+  expect(r.status().coverage?.coveredThrough).toBe("1006.000000");
+  f.settledThrough(1_010_000); await r.run();
+  expect(f.repo.list({ limit: 100 })).toHaveLength(2);
 });

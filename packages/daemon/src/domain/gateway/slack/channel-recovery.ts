@@ -1,4 +1,5 @@
-// Available top-level channel history only. A seen event is not scanned coverage.
+// Available channel history: top-level messages, and replies in the threads OpenRig follows in
+// this channel. A seen event is not scanned coverage.
 import path from "node:path";
 import { callWebApi, type FetchImpl } from "./slack-api.js";
 import { ingestDecision, type InboundRouter, type SlackEvent } from "./inbound.js";
@@ -12,6 +13,8 @@ interface RecoveryOptions {
   fetchImpl?: FetchImpl;
   store?: ChannelCoverageStore;
   now?: () => number;
+  /** Roots of the threads OpenRig follows in this channel (their replies are recovered too). */
+  threadRoots?: () => string[];
 }
 
 /** One owner across socket generations. Stop fences admission and checkpoint writes;
@@ -47,7 +50,7 @@ export class ChannelRecovery {
     return { state: this.state, reason: this.reason, channel: this.opts.channel, lastScanAt: this.lastScanAt,
       coverage: this.coverage ? structuredClone(this.coverage) : null,
       acceptedThisProcess: this.accepted, deadLetteredThisProcess: this.deadLettered,
-      limits: ["older history unknown", "counts reset on connector rewire/restart", "top-level configured-channel messages only; thread recovery deferred",
+      limits: ["older history unknown", "counts reset on connector rewire/restart", "top-level messages and replies in followed threads (up to 50 per pass)",
         ...(this.coverage?.historyLimited ? ["Slack plan limit excludes older history; only available messages were scanned"] : []),
         "coverage means scanned available history; dead letters are custody, not delivery",
         "five-second settle margin; larger clock skew or history visibility lag remains unverified",
@@ -71,6 +74,39 @@ export class ChannelRecovery {
     if (this.stopped) return;
     this.store.save(this.opts.channel!, next);
     this.coverage = next; // publish only after the atomic write succeeds
+  }
+
+  /** Replies posted in followed threads within [from, to); false leaves the window to retry. */
+  private async recoverThreadReplies(from: string, to: string, deadline: number): Promise<boolean> {
+    const lower = slackMicros(from)!;
+    const upper = slackMicros(to)!;
+    for (const root of (this.opts.threadRoots?.() ?? []).slice(0, 50)) {
+      if (this.stopped) return false;
+      if (this.now() >= deadline) { this.state = "incomplete"; this.reason = "pass-budget"; return false; }
+      const r = await callWebApi("conversations.replies", this.opts.token!, {
+        channel: this.opts.channel, ts: root, oldest: slackTimestamp(lower > 0n ? lower - 1n : 0n), latest: to, inclusive: false, limit: 100,
+      }, this.opts.fetchImpl, Math.min(5000, Math.max(1, deadline - this.now())), "get-query");
+      if (this.stopped) return false;
+      if (!r.ok) {
+        if (r.error === "thread_not_found") continue;
+        this.reason = r.status === 429 ? "rate-limited" : "replies-api-unavailable";
+        this.save({ ...this.coverage!, nextRetryAt: this.now() + (r.retryAfterSeconds ?? 5) * 1000 });
+        this.state = "backoff"; return false;
+      }
+      const replies = (Array.isArray(r.json.messages) ? r.json.messages as SlackEvent[] : [])
+        .filter((m) => m && m.ts !== root && slackMicros(m.ts) !== null && slackMicros(m.ts)! >= lower && slackMicros(m.ts)! < upper)
+        .sort((a, b) => slackMicros(a.ts)! < slackMicros(b.ts)! ? -1 : 1);
+      for (const message of replies) {
+        const ev = { ...message, channel: this.opts.channel!, thread_ts: root, recoveredAfterGap: true } as SlackEvent;
+        if (!ingestDecision(ev).ingest) continue;
+        const landed = await this.opts.router.route(ev, 0, () => !this.stopped);
+        if (this.stopped) return false;
+        if (landed.reason === "inflight" || landed.reason === "inactive") { this.state = "incomplete"; this.reason = "landing-in-progress"; return false; }
+        if (landed.disposition === "accepted") this.accepted++;
+        if (landed.disposition === "dead-lettered") this.deadLettered++;
+      }
+    }
+    return true;
   }
 
   private async scan(): Promise<void> {
@@ -135,6 +171,7 @@ export class ChannelRecovery {
         if (landed.disposition === "dead-lettered") this.deadLettered++;
       }
       if (!more) {
+        if (!(await this.recoverThreadReplies(c.coveredThrough, c.pending!.upper, deadline))) return;
         this.save({ ...c, coveredThrough: c.pending!.upper, pending: undefined, nextRetryAt: undefined });
         this.state = "scanned"; return;
       }
