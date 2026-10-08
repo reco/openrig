@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // PermissionRequest hook: ask the seat's human in Slack (when the seat opted in) and wait.
 // Prints the runtime's allow/deny decision; prints nothing (normal terminal prompt) when there
-// is no answer, the seat did not opt in, or OpenRig is unreachable.
+// is no answer, the seat did not opt in, or OpenRig is unreachable. Each call to the daemon waits
+// at most a minute (under fetch's header timeout); the hook repeats it until an answer.
 const { parseJson, resolveEndpoint } = require("./activity-relay.cjs");
 
 const WAIT_MS = 580_000;
@@ -19,6 +20,17 @@ function decisionOutput(decision) {
     : { behavior: "deny", message: "Denied by the human in Slack." } } });
 }
 
+async function askUntilAnswered(post, first, deadline) {
+  let body = first;
+  while (Date.now() < deadline) {
+    const reply = await post(body);
+    if (reply.decision === "allow" || reply.decision === "deny") return reply.decision;
+    if (!reply.pending || !reply.requestId) return null;
+    body = { requestId: reply.requestId };
+  }
+  return null;
+}
+
 async function main(env = process.env) {
   const payload = parseJson(await readStdin());
   const sessionName = env.OPENRIG_SESSION_NAME || env.RIGGED_SESSION_NAME;
@@ -26,24 +38,21 @@ async function main(env = process.env) {
   if (!payload || !sessionName || !baseUrl || !token || typeof fetch !== "function") return;
   const toolName = payload.tool_name || payload.toolName;
   if (!toolName) return;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), WAIT_MS);
+  const url = new URL("/api/activity/approvals", baseUrl).toString();
+  const post = async (body) => (await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(90_000),
+  })).json();
   try {
-    const res = await fetch(new URL("/api/activity/approvals", baseUrl).toString(), {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: JSON.stringify({ sessionName, toolName, toolInput: payload.tool_input ?? null }),
-      signal: controller.signal,
-    });
-    const out = decisionOutput((await res.json()).decision);
+    const out = decisionOutput(await askUntilAnswered(post, { sessionName, toolName, toolInput: payload.tool_input ?? null }, Date.now() + WAIT_MS));
     if (out) process.stdout.write(out);
   } catch {
     // no decision: the prompt shows in the terminal
-  } finally {
-    clearTimeout(timer);
   }
 }
 
 if (require.main === module) main().catch(() => {});
 
-module.exports = { decisionOutput };
+module.exports = { decisionOutput, askUntilAnswered };

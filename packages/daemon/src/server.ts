@@ -356,7 +356,7 @@ export interface AppDeps {
   agentActivityStore?: AgentActivityStore;
   seatAttentionReconciler?: import("./domain/seat-attention-reconciler.js").SeatAttentionReconciler;
   activityHookToken?: string;
-  approvalService?: { request: (input: { sessionName: string; toolName: string; toolInput: unknown }) => Promise<"allow" | "deny" | null> };
+  approvalService?: import("./domain/approvals.js").ApprovalService;
   serviceOrchestrator?: import("./domain/service-orchestrator.js").ServiceOrchestrator;
   composeAdapter?: import("./adapters/compose-services-adapter.js").ComposeServicesAdapter;
   uiDistDir?: string | null;
