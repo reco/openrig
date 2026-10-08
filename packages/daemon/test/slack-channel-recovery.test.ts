@@ -258,3 +258,32 @@ it("follows a thread's reply pages before advancing coverage", async () => {
   expect(f.repo.list({ limit: 100 }).map((x) => x.body).join("\n")).toContain("second page");
   expect(f.repo.list({ limit: 100 })).toHaveLength(2);
 });
+
+it("a window with more followed threads than one pass can read finishes over the next passes, and a root Slack refuses is skipped", async () => {
+  const f = fixture(); const roots = Array.from({ length: 6 }, (_, i) => `90${i}.000001`);
+  const r = f.recovery("fixture-token", "C1", () => roots);
+  let replyCalls = 0;
+  f.respond((u) => {
+    if (!u.pathname.endsWith("conversations.replies")) return Response.json({ ok: true, messages: [], has_more: false });
+    replyCalls++;
+    const root = u.searchParams.get("ts")!;
+    if (root === "902.000001") return Response.json({ ok: false, error: "thread_not_found" });
+    f.time(1_006_000 + replyCalls * 4000); // each read costs 4 s of the 15 s pass budget
+    return Response.json({ ok: true, messages: [event(root), event(`${root.slice(0, 3)}9.000001`.replace(/^9/, "1"), { thread_ts: root, text: `reply in ${root}` })], has_more: false });
+  });
+  f.time(1_006_000); await r.run();
+  expect(r.status().state).toBe("incomplete");
+  for (let pass = 0; pass < 4 && r.status().state !== "scanned"; pass++) { f.time(1_100_000 + pass * 100_000); await r.run(); }
+  expect(r.status().state).toBe("scanned");
+  expect(r.status().reason).toBeUndefined();
+  expect(replyCalls).toBeLessThanOrEqual(roots.length + 3);
+});
+
+it("names the Slack error when a followed thread cannot be read", async () => {
+  const f = fixture(); const r = f.recovery("fixture-token", "C1", () => ["900.000001"]);
+  f.respond((u) => u.pathname.endsWith("conversations.replies")
+    ? Response.json({ ok: false, error: "internal_error" })
+    : Response.json({ ok: true, messages: [], has_more: false }));
+  f.settledThrough(1_006_000); await r.run();
+  expect(r.status()).toMatchObject({ state: "backoff", reason: "replies-api-unavailable: internal_error" });
+});

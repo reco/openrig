@@ -17,6 +17,8 @@ interface RecoveryOptions {
   threadRoots?: () => string[];
 }
 
+const ROOT_PERMANENT_ERRORS = new Set(["thread_not_found", "message_not_found", "channel_not_found", "not_in_channel", "missing_scope", "invalid_ts_latest", "invalid_ts_oldest"]);
+
 /** One owner across socket generations. Stop fences admission and checkpoint writes;
  * already admitted I/O remains owned until it settles (no timeout/unlock race). */
 export class ChannelRecovery {
@@ -29,6 +31,7 @@ export class ChannelRecovery {
   private reason: string | undefined;
   private lastScanAt: string | undefined;
   private accepted = 0;
+  private threadSweep?: { upper: string; done: Set<string> };
   private deadLettered = 0;
 
   constructor(private readonly opts: RecoveryOptions) {
@@ -80,21 +83,28 @@ export class ChannelRecovery {
   private async recoverThreadReplies(from: string, to: string, deadline: number): Promise<boolean> {
     const lower = slackMicros(from)!;
     const upper = slackMicros(to)!;
+    // Roots already swept for this window are not read again, so a window larger than one pass's
+    // budget still finishes over the next passes instead of restarting at the first root.
+    if (this.threadSweep?.upper !== to) this.threadSweep = { upper: to, done: new Set() };
+    const sweep = this.threadSweep;
     for (const root of (this.opts.threadRoots?.() ?? []).slice(0, 50)) {
       if (this.stopped) return false;
-      if (this.now() >= deadline) { this.state = "incomplete"; this.reason = "pass-budget"; return false; }
+      if (sweep.done.has(root)) continue;
+      if (this.now() >= deadline - 1000) { this.state = "incomplete"; this.reason = "pass-budget"; return false; }
       const messages: SlackEvent[] = [];
       let cursor = "";
       do {
-        if (this.now() >= deadline) { this.state = "incomplete"; this.reason = "pass-budget"; return false; }
+        if (this.now() >= deadline - 1000) { this.state = "incomplete"; this.reason = "pass-budget"; return false; }
         const r = await callWebApi("conversations.replies", this.opts.token!, {
           channel: this.opts.channel, ts: root, oldest: slackTimestamp(lower > 0n ? lower - 1n : 0n), latest: to, inclusive: false, limit: 100,
           ...(cursor ? { cursor } : {}),
         }, this.opts.fetchImpl, Math.min(5000, Math.max(1, deadline - this.now())), "get-query");
         if (this.stopped) return false;
         if (!r.ok) {
-          if (r.error === "thread_not_found") break;
-          this.reason = r.status === 429 ? "rate-limited" : "replies-api-unavailable";
+          // A root Slack will not read (deleted, or a channel the app cannot see) is skipped, not retried.
+          if (ROOT_PERMANENT_ERRORS.has(r.error ?? "")) break;
+          if (r.status === 0 && this.now() >= deadline - 1000) { this.state = "incomplete"; this.reason = "pass-budget"; return false; }
+          this.reason = r.status === 429 ? "rate-limited" : `replies-api-unavailable: ${r.error ?? `http ${r.status}`}`;
           this.save({ ...this.coverage!, nextRetryAt: this.now() + (r.retryAfterSeconds ?? 5) * 1000 });
           this.state = "backoff"; return false;
         }
@@ -114,6 +124,7 @@ export class ChannelRecovery {
         if (landed.disposition === "accepted") this.accepted++;
         if (landed.disposition === "dead-lettered") this.deadLettered++;
       }
+      sweep.done.add(root);
     }
     return true;
   }
