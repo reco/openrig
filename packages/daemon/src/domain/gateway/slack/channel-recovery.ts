@@ -57,6 +57,7 @@ export class ChannelRecovery {
       threads: this.coverage?.threads ? { followed: Object.keys(this.coverage.threads.roots).length, degraded: this.coverage.threads.degraded ?? {}, nextRetryAt: this.coverage.threads.nextRetryAt ?? null } : null,
       acceptedThisProcess: this.accepted, deadLetteredThisProcess: this.deadLettered,
       limits: ["older history unknown", "counts reset on connector rewire/restart", "top-level messages, and replies per followed thread with its own watermark",
+        "threads opened more than seven days ago are not followed",
         ...(this.coverage?.historyLimited ? ["Slack plan limit excludes older history; only available messages were scanned"] : []),
         "coverage means scanned available history; dead letters are custody, not delivery",
         "five-second settle margin; larger clock skew or history visibility lag remains unverified",
@@ -103,8 +104,9 @@ export class ChannelRecovery {
     const roots: Record<string, string> = Object.fromEntries(Object.entries(base.roots).filter(([root]) => followed.includes(root)));
     const degraded: Record<string, string> = Object.fromEntries(Object.entries(base.degraded ?? {}).filter(([root]) => followed.includes(root)));
     const floor = (root: string) => roots[root] ?? (slackMicros(root)! > slackMicros(base.since)! ? root : base.since);
-    const todo = followed.filter((root) => !deleted.has(root) && slackMicros(root) !== null && slackMicros(floor(root))! < slackMicros(upper)!)
-      .sort((a, b) => (slackMicros(floor(a))! < slackMicros(floor(b))! ? -1 : 1));
+    const behind = (root: string) => slackMicros(floor(root))!;
+    const todo = followed.filter((root) => !deleted.has(root) && slackMicros(root) !== null && behind(root) < slackMicros(upper)!)
+      .sort((a, b) => Number(a in degraded) - Number(b in degraded) || (behind(a) < behind(b) ? -1 : 1));
     const persist = (extra: Partial<typeof base> = {}) =>
       this.save({ ...this.coverage!, threads: { since: base.since, roots, deleted: [...deleted].filter((r) => followed.includes(r)), degraded, ...extra } });
     for (const root of todo) {
@@ -120,12 +122,12 @@ export class ChannelRecovery {
         const ev = { ...message, channel: this.opts.channel!, thread_ts: root, recoveredAfterGap: true } as SlackEvent;
         if (!ingestDecision(ev).ingest) continue;
         const landed = await this.opts.router.route(ev, 0, () => !this.stopped);
-        if (this.stopped) return;
+        if (this.stopped || this.now() >= deadline) return;
         if (landed.reason === "inflight" || landed.reason === "inactive") return;
         if (landed.disposition === "accepted") this.accepted++;
         if (landed.disposition === "dead-lettered") this.deadLettered++;
       }
-      roots[root] = upper;
+      roots[root] = read.through;
       delete degraded[root];
       persist();
     }
@@ -133,10 +135,11 @@ export class ChannelRecovery {
 
   /** Every reply page of one thread in [from, upper); a typed outcome, never a thrown failure. */
   private async readReplies(root: string, from: bigint, upper: string, deadline: number): Promise<
-    | { kind: "ok"; replies: SlackEvent[] } | { kind: "deleted" } | { kind: "capability"; error: string }
+    | { kind: "ok"; replies: SlackEvent[]; through: string } | { kind: "deleted" } | { kind: "capability"; error: string }
     | { kind: "rate-limited"; retryAfterSeconds: number } | { kind: "failed"; error: string }> {
     const replies: SlackEvent[] = [];
     let cursor = "";
+    let pages = 0;
     do {
       if (this.now() >= deadline - 1000) return { kind: "failed", error: "pass-budget" };
       const r = await callWebApi("conversations.replies", this.opts.token!, {
@@ -156,11 +159,15 @@ export class ChannelRecovery {
       replies.push(...(page as SlackEvent[]));
       const next = (r.json.response_metadata as { next_cursor?: unknown } | undefined)?.next_cursor;
       cursor = typeof next === "string" ? next : "";
-    } while (cursor);
+    } while (cursor && ++pages < 10);
     const upperMicros = slackMicros(upper)!;
-    return { kind: "ok", replies: replies
+    const sorted = replies
       .filter((m) => m.ts !== root && slackMicros(m.ts)! >= from && slackMicros(m.ts)! < upperMicros)
-      .sort((a, b) => (slackMicros(a.ts)! < slackMicros(b.ts)! ? -1 : 1)) };
+      .sort((a, b) => (slackMicros(a.ts)! < slackMicros(b.ts)! ? -1 : 1));
+    // Pages run oldest first; a thread longer than the page cap resumes after its last reply read.
+    const lastRead = replies.reduce((max, m) => (slackMicros(m.ts)! > max ? slackMicros(m.ts)! : max), from - 1n) + 1n;
+    const through = cursor && lastRead < upperMicros ? slackTimestamp(lastRead) : upper;
+    return { kind: "ok", replies: sorted, through };
   }
 
   private async scanHistory(deadline: number): Promise<void> {

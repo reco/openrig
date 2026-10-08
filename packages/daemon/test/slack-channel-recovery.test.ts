@@ -259,7 +259,7 @@ it("follows a thread's reply pages before advancing coverage", async () => {
   expect(f.repo.list({ limit: 100 })).toHaveLength(2);
 });
 
-type Reply = { ok: boolean; error?: string; messages?: unknown; status?: number; retryAfter?: number };
+type Reply = { ok: boolean; error?: string; messages?: unknown; status?: number; retryAfter?: number; next?: string };
 function threadFixture(roots: string[], answer: (root: string, call: number) => Reply, costMs = 0) {
   const f = fixture();
   const calls: string[] = [];
@@ -273,7 +273,7 @@ function threadFixture(roots: string[], answer: (root: string, call: number) => 
     if (costMs) f.time(nowRef.t += costMs);
     const a = answer(root, calls.filter((c) => c === root).length);
     const headers = a.retryAfter ? { "retry-after": String(a.retryAfter) } : undefined;
-    return new Response(JSON.stringify(a.ok ? { ok: true, messages: a.messages ?? [], has_more: false } : { ok: false, error: a.error }), { status: a.status ?? 200, headers: { "content-type": "application/json", ...headers } });
+    return new Response(JSON.stringify(a.ok ? { ok: true, messages: a.messages ?? [], has_more: !!a.next, response_metadata: { next_cursor: a.next ?? "" } } : { ok: false, error: a.error }), { status: a.status ?? 200, headers: { "content-type": "application/json", ...headers } });
   });
   const nowRef = { t: 1_006_000 };
   const at = (t: number) => { nowRef.t = t; f.time(t); };
@@ -343,4 +343,41 @@ it("reads every followed thread, beyond fifty, across passes and a restart, each
   expect(t.f.repo.list({ limit: 500 })).toHaveLength(60);
   expect(new Set(t.calls).size).toBe(60);
   for (const root of roots) expect(t.bodies()).toContain(`reply in ${root}`);
+});
+
+it("a degraded thread waits behind healthy ones, so it cannot starve them of the pass budget", async () => {
+  const t = threadFixture(["900.000001", "901.000001"], (root) => root === "900.000001"
+    ? { ok: false, error: "missing_scope" } : { ok: true, messages: [reply(root, "1003.000002", "reply in B")] }, 14_000);
+  const r = t.recovery(); t.at(1_010_000); await r.run();
+  expect(t.calls).toEqual(["900.000001"]);
+  t.at(1_030_000); await r.run();
+  expect(t.calls).toEqual(["900.000001", "901.000001"]);
+  expect(t.bodies()).toContain("reply in B");
+});
+
+it("a thread longer than the page cap resumes after its last reply read, each reply exactly once", async () => {
+  const t = threadFixture(["900.000001"], (root, call) => ({ ok: true, next: call < 25 ? "more" : undefined,
+    messages: [reply(root, `1003.${String(call).padStart(6, "0")}`, `reply ${call};`)] }));
+  const r = t.recovery(); t.at(1_010_000); await r.run();
+  expect(t.calls).toHaveLength(10);
+  expect(t.f.repo.list({ limit: 100 })).toHaveLength(10);
+  for (let pass = 1; pass <= 3; pass++) { t.at(1_010_000 + pass * 20_000); await r.run(); }
+  expect(t.f.repo.list({ limit: 100 })).toHaveLength(25);
+  for (let call = 1; call <= 25; call++) expect(t.bodies()).toContain(`reply ${call};`);
+});
+
+it("a malformed thread checkpoint replays replies instead of stopping recovery for the channel", async () => {
+  const t = threadFixture(["900.000001"], (root) => ({ ok: true, messages: [reply(root, "1003.000001", "reply in A")] }));
+  t.f.history.push(event("1004.000001", { text: "top-level in the gap" }));
+  let r = t.recovery(); t.at(1_010_000); await r.run();
+  r.stop();
+  const data = JSON.parse(t.f.files.get("/s/coverage")!);
+  data.C1.threads.deleted = 5;
+  t.f.files.set("/s/coverage", JSON.stringify(data));
+  t.f.history.push(event("1011.000001", { text: "top-level after restart" }));
+  r = t.recovery(); t.at(1_020_000); await r.run();
+  expect(r.status().state).not.toBe("unavailable");
+  expect(t.bodies()).toContain("top-level after restart");
+  expect(t.calls).toEqual(["900.000001", "900.000001"]);
+  expect(t.f.repo.list({ limit: 100 })).toHaveLength(3);
 });

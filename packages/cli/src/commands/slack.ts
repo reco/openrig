@@ -175,6 +175,7 @@ export function slackCommand(deps: SlackDeps = {}): Command {
           inbound?: { state?: string; generation?: number; lastEventAt?: string };
           recovery?: { state?: string; reason?: string; lastScanAt?: string; acceptedThisProcess?: number; deadLetteredThisProcess?: number;
             coverage?: { coverageStart: string; coveredThrough: string; pending?: { upper: string; nextLatest: string }; nextRetryAt?: number } | null;
+            threads?: { followed: number; degraded: Record<string, string>; nextRetryAt: number | null } | null;
             limits?: string[] } } | undefined;
         if (connector) {
           log(`  Socket: ${connector.inbound?.state ?? "unknown"}; generation ${connector.inbound?.generation ?? "unknown"}; last event ${connector.inbound?.lastEventAt ?? "unknown"}`);
@@ -185,6 +186,11 @@ export function slackCommand(deps: SlackDeps = {}): Command {
             log(`  Available history scanned: [${slackTime(coverage.coverageStart)}, ${slackTime(coverage.coveredThrough)}); older history unknown`);
             if (coverage.pending) log(`  Pending interval to ${slackTime(coverage.pending.upper)}; next page before ${slackTime(coverage.pending.nextLatest)}`);
             if (coverage.nextRetryAt) log(`  Retry after: ${new Date(coverage.nextRetryAt).toISOString()}`);
+          }
+          const threads = recovery?.threads;
+          if (threads) {
+            log(`  Followed threads: ${threads.followed}${threads.nextRetryAt ? `; replies retry after ${new Date(threads.nextRetryAt).toISOString()}` : ""}`);
+            for (const [root, error] of Object.entries(threads.degraded)) log(`  Thread ${root} not recovered: ${error}`);
           }
           log(`  Recovery counts since connector start: accepted ${recovery?.acceptedThisProcess ?? "unknown"}; dead-lettered ${recovery?.deadLetteredThisProcess ?? "unknown"} (custody, not delivery)`);
           if (connector.configurationDigest) log(`  Observed configuration digest: ${connector.configurationDigest} (local configuration above)`);

@@ -257,6 +257,14 @@ export interface ThreadCoverage {
   nextRetryAt?: number;
 }
 
+function validThreads(t: ThreadCoverage | undefined): boolean {
+  const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+  return isRecord(t) && slackMicros(t.since) !== null && isRecord(t.roots) && Object.values(t.roots).every((ts) => slackMicros(ts as string) !== null) &&
+    (t.deleted === undefined || (Array.isArray(t.deleted) && t.deleted.every((r) => typeof r === "string"))) &&
+    (t.degraded === undefined || (isRecord(t.degraded) && Object.values(t.degraded).every((e) => typeof e === "string"))) &&
+    (t.nextRetryAt === undefined || (Number.isFinite(t.nextRetryAt) && t.nextRetryAt >= 0));
+}
+
 function readOptional(file: string, fsops: StateFsOps): string | undefined {
   try { return fsops.readFileSync(file); }
   catch (error) {
@@ -284,10 +292,8 @@ export class ChannelCoverageStore {
         const upper = slackMicros(c.pending.upper), next = slackMicros(c.pending.nextLatest);
         if (upper === null || next === null || next <= through || next > upper) throw new Error("invalid pending interval");
       }
-      if (c.threads !== undefined && (!c.threads || typeof c.threads !== "object" || slackMicros(c.threads.since) === null ||
-        !c.threads.roots || typeof c.threads.roots !== "object" || Object.values(c.threads.roots).some((ts) => slackMicros(ts) === null))) {
-        throw new Error("invalid thread coverage");
-      }
+      // Replies replay from the coverage start when thread progress is unreadable; the seen store dedupes.
+      if (c.threads !== undefined && !validThreads(c.threads)) c.threads = { since: c.coverageStart, roots: {} };
     }
     return data;
   }
