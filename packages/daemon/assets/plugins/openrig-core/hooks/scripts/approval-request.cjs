@@ -26,7 +26,7 @@ async function askUntilAnswered(post, first, deadline) {
     const reply = await post(body);
     if (reply.decision === "allow" || reply.decision === "deny") return reply.decision;
     if (!reply.pending || !reply.requestId) return null;
-    body = { requestId: reply.requestId };
+    body = { sessionName: first.sessionName, requestId: reply.requestId };
   }
   return null;
 }

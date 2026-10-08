@@ -1343,6 +1343,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         queueRepo: queueRepoInstance,
         optedIn: () => { try { return loadSlackConfig(OPENRIG_HOME).approvalSeats; } catch { return []; } },
         approver: () => { const r = loadHumanRegistry(OPENRIG_HOME); return r.ok ? r.entities.find((e) => e.role !== "requester")?.address ?? null : null; },
+        cwdOf: (sessionName) => (db.prepare("SELECT n.cwd AS cwd FROM nodes n JOIN sessions s ON s.node_id = n.id WHERE s.session_name = ? ORDER BY s.id DESC LIMIT 1").get(sessionName) as { cwd: string | null } | undefined)?.cwd ?? null,
         log: (m) => console.log(`[approvals] ${m}`),
       });
     })(),

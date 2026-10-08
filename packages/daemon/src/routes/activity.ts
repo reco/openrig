@@ -477,12 +477,13 @@ activityRoutes.post("/approvals", async (c) => {
   let body: Record<string, unknown>;
   try { body = await c.req.json() as Record<string, unknown>; } catch { return c.json({ ok: false, code: "invalid_json" }, 400); }
   // Each call waits at most one slice: the hook repeats the call with the request id until an answer.
+  const sessionName = stringOrNull(body.sessionName);
+  if (!sessionName) return c.json({ ok: false, code: "missing_fields" }, 400);
   const requestId = stringOrNull(body.requestId) ?? await (async () => {
-    const sessionName = stringOrNull(body.sessionName);
     const toolName = stringOrNull(body.toolName);
-    return sessionName && toolName ? approvals.start({ sessionName, toolName, toolInput: body.toolInput }) : null;
+    return toolName ? approvals.start({ sessionName, toolName, toolInput: body.toolInput }) : null;
   })();
   if (!requestId) return c.json({ ok: true, decision: null, pending: false });
-  const outcome = await approvals.wait(requestId, 60_000);
+  const outcome = await approvals.wait(requestId, sessionName, 60_000);
   return c.json({ ok: true, requestId, decision: outcome === "allow" || outcome === "deny" ? outcome : null, pending: outcome === "pending" });
 });

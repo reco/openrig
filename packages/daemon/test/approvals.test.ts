@@ -19,19 +19,21 @@ describe("Slack approvals", () => {
   let repo: QueueRepository;
   beforeEach(() => { db = createDb(); migrate(db, ALL_MIGRATIONS); repo = new QueueRepository(db, new EventBus(db), { loadHumanRegistry: () => registry }); });
   afterEach(() => db.close());
-  const service = (timeoutMs = 2000) => makeApprovalService({ queueRepo: repo, optedIn: () => ["psa-dev@psa"], approver: () => "reco@external", timeoutMs, pollMs: 10 });
+  const service = (timeoutMs = 2000) => makeApprovalService({ queueRepo: repo, optedIn: () => ["psa-dev@psa"], approver: () => "reco@external", cwdOf: () => "/work/psa", timeoutMs, pollMs: 10 });
   const click = (id: string, actor: string, option: string) => repo.recordHumanAnswer({ qitemId: id, actorSession: actor, questionId: "approval", optionId: option });
 
   it("asks the approver with the full command, literal credentials masked, and returns their Approve", async () => {
     const s = service();
     const id = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "API_TOKEN=s3cr3t-value-123 npm run deploy -- --target staging" } }))!;
-    expect(await s.wait(id, 20)).toBe("pending");
+    expect(await s.wait(id, "psa-dev@psa", 20)).toBe("pending");
     expect(click(id, "lee@external", "allow")).toMatchObject({ status: "not-applicable" });
     expect(click(id, "reco@external", "allow")).toMatchObject({ status: "recorded" });
-    expect(await s.wait(id, 20)).toBe("allow");
+    expect(await s.wait(id, "psa-dev@psa", 20)).toBe("allow");
     const row = repo.getById(id)!;
     expect(row.destinationSession).toBe("reco@external");
     expect(row.body).toContain("npm run deploy -- --target staging");
+    expect(row.body).toContain("In `/work/psa`");
+    expect(await s.wait(id, "other@rig", 20)).toBe("expired");
     expect(row.body).not.toContain("s3cr3t-value-123");
     expect(repo.transitionLog.listForQitem(id).filter((t) => t.transitionNote?.startsWith("approval allow by reco@external"))).toHaveLength(1);
   });
@@ -47,7 +49,7 @@ describe("Slack approvals", () => {
     const s = service();
     const id = (await s.start({ sessionName: "psa-dev@psa", toolName: "Write", toolInput: { file_path: "/a.ts", content: "x" } }))!;
     click(id, "reco@external", "deny");
-    expect(await s.wait(id, 20)).toBe("deny");
+    expect(await s.wait(id, "psa-dev@psa", 20)).toBe("deny");
     expect(await s.start({ sessionName: "other@rig", toolName: "Bash", toolInput: { command: "ls" } })).toBeNull();
     expect(await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "echo a && b > c ".repeat(200) } })).toBeNull();
   });
@@ -56,7 +58,7 @@ describe("Slack approvals", () => {
     const s = service(30);
     const id = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "rm -rf build" } }))!;
     await new Promise((r) => setTimeout(r, 40));
-    expect(await s.wait(id, 20)).toBe("expired");
+    expect(await s.wait(id, "psa-dev@psa", 20)).toBe("expired");
     expect(repo.getById(id)!.state).toBe("canceled");
     expect(click(id, "reco@external", "allow")).toMatchObject({ status: "not-applicable" });
   });
@@ -66,7 +68,7 @@ describe("Slack approvals", () => {
     const sent: unknown[] = [];
     const decision = await hook.askUntilAnswered(async (body: unknown) => { sent.push(body); return replies.shift()!; }, { sessionName: "s@r", toolName: "Bash" }, Date.now() + 5000);
     expect(decision).toBe("allow");
-    expect(sent).toEqual([{ sessionName: "s@r", toolName: "Bash" }, { requestId: "r1" }, { requestId: "r1" }]);
+    expect(sent).toEqual([{ sessionName: "s@r", toolName: "Bash" }, { sessionName: "s@r", requestId: "r1" }, { sessionName: "s@r", requestId: "r1" }]);
   });
 
   it("the hook prints the runtime's PermissionRequest decision, and nothing without one", () => {

@@ -24,6 +24,8 @@ export interface ApprovalServiceDeps {
   optedIn: () => readonly string[];
   /** The human who may answer: the registered approver's address, or null. */
   approver: () => string | null;
+  /** The seat's working directory, shown on the card. */
+  cwdOf?: (sessionName: string) => string | null;
   timeoutMs?: number;
   pollMs?: number;
   log?: (msg: string) => void;
@@ -31,7 +33,8 @@ export interface ApprovalServiceDeps {
 
 export interface ApprovalService {
   start: (input: ApprovalRequest) => Promise<string | null>;
-  wait: (requestId: string, sliceMs: number) => Promise<ApprovalWait>;
+  /** Only the seat that asked may wait on its request. */
+  wait: (requestId: string, sessionName: string, sliceMs: number) => Promise<ApprovalWait>;
 }
 
 export const APPROVAL_TIMEOUT_MS = 570_000;
@@ -53,7 +56,8 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
       if (!deps.optedIn().includes(input.sessionName)) return null;
       const human = deps.approver();
       if (!human) return null;
-      const body = `\`\`\`\n${approvalText(input.toolName, input.toolInput)}\n\`\`\``;
+      const cwd = deps.cwdOf?.(input.sessionName);
+      const body = `${cwd ? `In \`${cwd.replace(/`/g, "")}\`\n` : ""}\`\`\`\n${approvalText(input.toolName, input.toolInput)}\n\`\`\``;
       if (escapeSlackText(redactSecrets(body)).length > SLACK_SECTION_CAP) {
         log(`approval for ${input.sessionName} not sent: the ${input.toolName} input is too long to show in full`);
         return null;
@@ -77,11 +81,11 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
       });
       return qitemId;
     },
-    async wait(requestId, sliceMs) {
+    async wait(requestId, sessionName, sliceMs) {
       const sliceEnd = Date.now() + sliceMs;
       for (;;) {
         const item = deps.queueRepo.getById(requestId);
-        if (!item?.tags?.includes("approval-request")) return "expired";
+        if (!item?.tags?.includes("approval-request") || item.sourceSession !== sessionName) return "expired";
         const answer = item.humanAnswers?.[QUESTION_ID];
         if (answer === "allow" || answer === "deny") {
           if (!deps.queueRepo.transitionLog.listForQitem(requestId).some((t) => t.transitionNote?.startsWith("approval "))) {
