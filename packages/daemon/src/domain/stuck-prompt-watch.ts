@@ -5,8 +5,7 @@
 
 import { createHash } from "node:crypto";
 import { classifyPaneActivity } from "./session-transport.js";
-import { redactSecrets } from "./gateway/slack/message.js";
-import { redactTranscriptContent } from "./transcript-redaction.js";
+import { maskSecrets } from "./credential-mask.js";
 
 export const STUCK_PROMPT_AFTER_MS = 5 * 60_000;
 const PROMPT_REASONS = new Set(["selection_prompt", "permission_prompt"]);
@@ -39,11 +38,7 @@ function questionLine(pane: string, evidence: string): string {
   return maskSecrets(above.find((l) => l.endsWith("?")) ?? above[0] ?? evidence.split("\n")[0]!.trim());
 }
 
-function maskSecrets(text: string): string {
-  return redactTranscriptContent(redactSecrets(text))
-    .replace(/\b([A-Za-z_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY)[A-Za-z_]*)=("[^"]*"|'[^']*'|\S+)/gi, "$1=[redacted]")
-    .replace(/(--(?:token|password|secret|api-key)[= ])\S+/gi, "$1[redacted]");
-}
+
 
 export interface StuckPromptWatch {
   tick: () => Promise<void>;

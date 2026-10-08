@@ -91,6 +91,7 @@ export function slackCommand(deps: SlackDeps = {}): Command {
     .description("Configure the connector (first-class config; secrets stay in the env file, never here)")
     .option("--channel <id>", "Slack channel id the connector app must be a member of")
     .option("--inbound-destination <session>", "where inbound human messages land (default operator-agent@kernel)")
+    .option("--approval-seat <session>", "a seat whose permission prompts go to its human in Slack as Approve / Deny (repeatable; replaces the list)", (v: string, acc: string[] = []) => { acc.push(v); return acc; })
     .option("--feedback-up <csv>", "reaction names that count as 👍 feedback (replaces the list; e.g. +1,thumbsup,rr-plus1)")
     .option("--feedback-down <csv>", "reaction names that count as 👎 feedback (replaces the list)")
     .option("--extra-channel <id=session>", "another channel and the seat its new messages land on (repeatable; replaces the list)", (v: string, acc: string[] = []) => { acc.push(v); return acc; })
@@ -108,6 +109,7 @@ export function slackCommand(deps: SlackDeps = {}): Command {
         ...cur,
         channel: opts.channel ?? cur.channel,
         inboundDestination: opts.inboundDestination ?? cur.inboundDestination,
+        approvalSeats: opts.approvalSeat ?? cur.approvalSeats ?? [],
         feedbackReactions: {
           up: opts.feedbackUp ? String(opts.feedbackUp).split(",").map((s: string) => s.trim()).filter(Boolean) : cur.feedbackReactions.up,
           down: opts.feedbackDown ? String(opts.feedbackDown).split(",").map((s: string) => s.trim()).filter(Boolean) : cur.feedbackReactions.down,

@@ -44,6 +44,8 @@ export interface SlackConnectorConfig {
   receipts: { received: string; picked: string; coding: string; typing: string; done: string };
   /** More channels beside `channel`, each landing its new messages on its own seat. */
   extraChannels: Array<{ id: string; inboundDestination: string }>;
+  /** Seats (session names) whose permission prompts go to Slack as Approve / Deny buttons. */
+  approvalSeats: string[];
   /** Reaction names (the workspace's custom ones included) that count as 👍 or 👎 feedback. */
   feedbackReactions: { up: string[]; down: string[] };
 }
@@ -64,6 +66,7 @@ export const DEFAULT_CONFIG: SlackConnectorConfig = {
   receipts: { received: "eyes", picked: "thinking_face", coding: "keyboard", typing: "writing_hand", done: "white_check_mark" },
   extraChannels: [],
   feedbackReactions: { up: ["+1", "thumbsup"], down: ["-1", "thumbsdown"] },
+  approvalSeats: [],
 };
 
 /** Every configured channel with the seat its new messages land on; `channel` first. */
@@ -97,6 +100,9 @@ function validateConfig(cfg: SlackConnectorConfig): void {
     throw new Error("feedbackReactions must be { up: [emoji names], down: [emoji names] } without colons");
   }
   if (up.some((n) => down.includes(n))) throw new Error("feedbackReactions: an emoji cannot be both up and down");
+  if (!Array.isArray(cfg.approvalSeats) || cfg.approvalSeats.some((s) => typeof s !== "string" || !s.includes("@"))) {
+    throw new Error("approvalSeats must be a list of seat session names (member@rig)");
+  }
   if (typeof cfg.staleReminderDays !== "number" || !(cfg.staleReminderDays > 0)) {
     throw new Error(`staleReminderDays must be a positive number of days (got ${String(cfg.staleReminderDays)})`);
   }

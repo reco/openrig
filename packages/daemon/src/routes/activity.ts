@@ -465,3 +465,20 @@ activityRoutes.get("/parked", (c) => {
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
+
+// A seat's PermissionRequest hook asks its human in Slack (opt-in seats only) and waits for the answer.
+activityRoutes.post("/approvals", async (c) => {
+  const expectedToken = c.get("activityHookToken" as never) as string | undefined;
+  const approvals = c.get("approvalService" as never) as { request: (input: { sessionName: string; toolName: string; toolInput: unknown }) => Promise<"allow" | "deny" | null> } | undefined;
+  if (!expectedToken || !approvals) return c.json({ ok: true, decision: null });
+  const authHeader = c.req.header("authorization");
+  const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length).trim() : null;
+  if (bearerToken !== expectedToken) return c.json({ ok: false, code: "activity_hook_unauthorized" }, 401);
+  let body: Record<string, unknown>;
+  try { body = await c.req.json() as Record<string, unknown>; } catch { return c.json({ ok: false, code: "invalid_json" }, 400); }
+  const sessionName = stringOrNull(body.sessionName);
+  const toolName = stringOrNull(body.toolName);
+  if (!sessionName || !toolName) return c.json({ ok: false, code: "missing_fields" }, 400);
+  const decision = await approvals.request({ sessionName, toolName, toolInput: body.toolInput });
+  return c.json({ ok: true, decision });
+});

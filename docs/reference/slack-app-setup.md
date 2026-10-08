@@ -184,6 +184,20 @@ Reactions are the only progress signal. The emoji are configurable in `slack-con
 Use any standard or custom emoji name, without colons. Slack apps cannot upload custom emoji: a
 workspace member uploads them under **Customize workspace → Emoji**, then the names go here.
 
+## Approving permission prompts from Slack
+
+A seat listed with `rig slack setup --approval-seat <member@rig>` sends its permission prompts to
+its human as Approve / Deny buttons. The message shows the full Bash command or tool input, with
+credentials masked; an input too long to show in full is not sent (the prompt stays in the
+terminal). Only the human the request is addressed to can answer. Each request is one-shot and
+expires with the hook's 10-minute timeout; on expiry, or with no answer, the prompt appears in the
+terminal as before. A deny rule in the seat's own settings still wins over an Approve. Every answer
+is recorded on its queue row.
+
+This answers permission prompts only. It does not override a runtime's own safety decisions (for
+example Claude Code's auto-mode classifier denials). Known-safe actions belong in each seat's own
+settings allow rules, not here. Claude Code seats only for now; Codex seats come next.
+
 ## Channels with several people
 
 In a channel with more than one human member, only a message that @mentions the app is for the

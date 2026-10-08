@@ -356,6 +356,7 @@ export interface AppDeps {
   agentActivityStore?: AgentActivityStore;
   seatAttentionReconciler?: import("./domain/seat-attention-reconciler.js").SeatAttentionReconciler;
   activityHookToken?: string;
+  approvalService?: { request: (input: { sessionName: string; toolName: string; toolInput: unknown }) => Promise<"allow" | "deny" | null> };
   serviceOrchestrator?: import("./domain/service-orchestrator.js").ServiceOrchestrator;
   composeAdapter?: import("./adapters/compose-services-adapter.js").ComposeServicesAdapter;
   uiDistDir?: string | null;
@@ -619,6 +620,7 @@ export function createApp(deps: AppDeps): Hono {
     c.set("seatActivityService" as never, deps.seatActivityService);
     c.set("seatStructuralActivityService" as never, deps.seatStructuralActivityService);
     c.set("activityHookToken" as never, deps.activityHookToken);
+    c.set("approvalService" as never, deps.approvalService);
     c.set("serviceOrchestrator" as never, deps.serviceOrchestrator);
     c.set("composeAdapter" as never, deps.composeAdapter);
     c.set("kernelBootTracker" as never, deps.kernelBootTracker);

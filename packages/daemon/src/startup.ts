@@ -1335,6 +1335,17 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     agentActivityStore,
     seatAttentionReconciler,
     activityHookToken: resolvedActivityHookToken,
+    approvalService: await (async () => {
+      const { makeApprovalService } = await import("./domain/approvals.js");
+      const { loadConfig: loadSlackConfig } = await import("./domain/gateway/slack/config.js");
+      const { loadHumanRegistry } = await import("./domain/gateway/human-registry.js");
+      return makeApprovalService({
+        queueRepo: queueRepoInstance,
+        optedIn: () => { try { return loadSlackConfig(OPENRIG_HOME).approvalSeats; } catch { return []; } },
+        approver: () => { const r = loadHumanRegistry(OPENRIG_HOME); return r.ok ? r.entities.find((e) => e.role !== "requester")?.address ?? null : null; },
+        log: (m) => console.log(`[approvals] ${m}`),
+      });
+    })(),
     contextUsageStore,
     healthProjection,
     healthDiagnosis,

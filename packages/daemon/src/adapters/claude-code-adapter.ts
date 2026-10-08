@@ -950,6 +950,16 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         hooks[event] = groups;
         changed = true;
       }
+      // Slack approvals: the PermissionRequest hook that waits for the human's Approve / Deny.
+      const approvalSource = nodePath.join(nodePath.dirname(this.activityRelayPath!), "approval-request.cjs");
+      if (this.fs.exists(approvalSource)) {
+        const approvalDest = nodePath.join(nodePath.dirname(relayDest), "approval-request.cjs");
+        this.fs.copyFile(approvalSource, approvalDest);
+        this.preserveMode(approvalSource, approvalDest);
+        const groups = Array.isArray(hooks["PermissionRequest"]) ? (hooks["PermissionRequest"] as unknown[]) : [];
+        groups.push({ hooks: [{ type: "command", command: `node ${shellQuote(approvalDest)}`, timeout: 600 }] });
+        hooks["PermissionRequest"] = groups;
+      }
     }
 
     // 3. Persist only when something changed (never touch an unchanged / never-managed file).
@@ -981,6 +991,7 @@ interface ActivityHookOutcome {
 // argument ends with this path — a changed prefix still matches (replace, not duplicate); a
 // user command that merely contains the path (echo, or node with extra args) does NOT.
 const OWNED_RELAY_SUFFIX = "/.openrig/hooks/scripts/activity-relay.cjs";
+const OWNED_APPROVAL_SUFFIX = "/.openrig/hooks/scripts/approval-request.cjs";
 
 function hookCommand(hook: unknown): string | undefined {
   return isPlainObject(hook) && typeof hook["command"] === "string" ? (hook["command"] as string) : undefined;
@@ -1015,7 +1026,7 @@ function isOwnedRelayCommand(cmd: string | undefined): boolean {
   // args merely concatenate to text ending in the relay suffix (e.g. `node 'x' '<relay>'`), which
   // must never be recognised as owned and deleted.
   if (shellQuote(decoded) !== arg) return false;
-  return decoded.endsWith(OWNED_RELAY_SUFFIX);
+  return decoded.endsWith(OWNED_RELAY_SUFFIX) || decoded.endsWith(OWNED_APPROVAL_SUFFIX);
 }
 
 /** Decode ONE POSIX single-quoted shell token as produced by shellQuote (outer `'…'` with an
