@@ -259,31 +259,88 @@ it("follows a thread's reply pages before advancing coverage", async () => {
   expect(f.repo.list({ limit: 100 })).toHaveLength(2);
 });
 
-it("a window with more followed threads than one pass can read finishes over the next passes, and a root Slack refuses is skipped", async () => {
-  const f = fixture(); const roots = Array.from({ length: 6 }, (_, i) => `90${i}.000001`);
-  const r = f.recovery("fixture-token", "C1", () => roots);
-  let replyCalls = 0;
+type Reply = { ok: boolean; error?: string; messages?: unknown; status?: number; retryAfter?: number };
+function threadFixture(roots: string[], answer: (root: string, call: number) => Reply, costMs = 0) {
+  const f = fixture();
+  const calls: string[] = [];
   f.respond((u) => {
-    if (!u.pathname.endsWith("conversations.replies")) return Response.json({ ok: true, messages: [], has_more: false });
-    replyCalls++;
+    if (!u.pathname.endsWith("conversations.replies")) {
+      const oldest = slackMicros(u.searchParams.get("oldest"))!, latest = slackMicros(u.searchParams.get("latest"))!;
+      return Response.json({ ok: true, messages: f.history.filter(e => slackMicros(e.ts)! > oldest && slackMicros(e.ts)! < latest), has_more: false });
+    }
     const root = u.searchParams.get("ts")!;
-    if (root === "902.000001") return Response.json({ ok: false, error: "thread_not_found" });
-    f.time(1_006_000 + replyCalls * 4000); // each read costs 4 s of the 15 s pass budget
-    return Response.json({ ok: true, messages: [event(root), event(`${root.slice(0, 3)}9.000001`.replace(/^9/, "1"), { thread_ts: root, text: `reply in ${root}` })], has_more: false });
+    calls.push(root);
+    if (costMs) f.time(nowRef.t += costMs);
+    const a = answer(root, calls.filter((c) => c === root).length);
+    const headers = a.retryAfter ? { "retry-after": String(a.retryAfter) } : undefined;
+    return new Response(JSON.stringify(a.ok ? { ok: true, messages: a.messages ?? [], has_more: false } : { ok: false, error: a.error }), { status: a.status ?? 200, headers: { "content-type": "application/json", ...headers } });
   });
-  f.time(1_006_000); await r.run();
-  expect(r.status().state).toBe("incomplete");
-  for (let pass = 0; pass < 4 && r.status().state !== "scanned"; pass++) { f.time(1_100_000 + pass * 100_000); await r.run(); }
-  expect(r.status().state).toBe("scanned");
-  expect(r.status().reason).toBeUndefined();
-  expect(replyCalls).toBeLessThanOrEqual(roots.length + 3);
+  const nowRef = { t: 1_006_000 };
+  const at = (t: number) => { nowRef.t = t; f.time(t); };
+  const recovery = () => f.recovery("fixture-token", "C1", () => roots);
+  const bodies = () => f.repo.list({ limit: 500 }).map((x) => x.body).join("\n");
+  return { f, calls, at, recovery, bodies };
+}
+const reply = (root: string, ts: string, text: string) => ({ ...event(ts, { thread_ts: root, text }) });
+
+it("one failing thread keeps its own watermark while top-level history and the other threads advance", async () => {
+  let aFails = true;
+  const t = threadFixture(["900.000001", "901.000001"], (root) => root === "900.000001"
+    ? (aFails ? { ok: false, error: "internal_error" } : { ok: true, messages: [reply(root, "1003.000001", "reply in A")] })
+    : { ok: true, messages: [reply(root, "1003.000002", "reply in B")] });
+  t.f.history.push(event("1004.000001", { text: "top-level in the gap" }));
+  const r = t.recovery(); t.at(1_010_000); await r.run();
+  expect(t.bodies()).toContain("top-level in the gap");
+  expect(t.bodies()).toContain("reply in B");
+  expect(t.bodies()).not.toContain("reply in A");
+  expect(r.status().coverage?.coveredThrough).toBe("1005.000000");
+  expect(r.status().threads?.degraded).toEqual({ "900.000001": "transient: internal_error" });
+  expect(r.status().coverage?.threads?.roots["900.000001"]).toBeUndefined();
+  aFails = false; t.at(1_012_000); await r.run();
+  expect(t.bodies()).toContain("reply in A");
+  expect(r.status().threads?.degraded).toEqual({});
+  expect(t.f.repo.list({ limit: 100 })).toHaveLength(3);
 });
 
-it("names the Slack error when a followed thread cannot be read", async () => {
-  const f = fixture(); const r = f.recovery("fixture-token", "C1", () => ["900.000001"]);
-  f.respond((u) => u.pathname.endsWith("conversations.replies")
-    ? Response.json({ ok: false, error: "internal_error" })
-    : Response.json({ ok: true, messages: [], has_more: false }));
-  f.settledThrough(1_006_000); await r.run();
-  expect(r.status()).toMatchObject({ state: "backoff", reason: "replies-api-unavailable: internal_error" });
+it("a capability fault is reported and retried every pass, never covered; a deleted root is dropped", async () => {
+  const t = threadFixture(["900.000001", "901.000001"], (root) => root === "900.000001" ? { ok: false, error: "missing_scope" } : { ok: false, error: "thread_not_found" });
+  const r = t.recovery(); t.at(1_006_000); await r.run();
+  t.at(1_008_000); await r.run();
+  expect(r.status().threads?.degraded).toEqual({ "900.000001": "missing_scope" });
+  expect(r.status().coverage?.threads?.roots["900.000001"]).toBeUndefined();
+  expect(r.status().coverage?.threads?.deleted).toEqual(["901.000001"]);
+  expect(t.calls.filter((c) => c === "900.000001")).toHaveLength(2);
+  expect(t.calls.filter((c) => c === "901.000001")).toHaveLength(1);
+});
+
+it("malformed reply pages cover nothing for that thread", async () => {
+  const t = threadFixture(["900.000001"], () => ({ ok: true, messages: "not-a-list" }));
+  const r = t.recovery(); t.at(1_006_000); await r.run();
+  expect(r.status().threads?.degraded).toEqual({ "900.000001": "transient: invalid-replies-page" });
+  expect(r.status().coverage?.threads?.roots["900.000001"]).toBeUndefined();
+});
+
+it("honors Retry-After for replies without stalling top-level history", async () => {
+  const t = threadFixture(["900.000001"], () => ({ ok: false, error: "ratelimited", status: 429, retryAfter: 120 }));
+  t.f.history.push(event("1004.000001", { text: "top-level while rate limited" }));
+  const r = t.recovery(); t.at(1_010_000); await r.run();
+  expect(t.bodies()).toContain("top-level while rate limited");
+  t.at(1_060_000); await r.run();
+  expect(t.calls).toHaveLength(1);
+  t.at(1_131_000); await r.run();
+  expect(t.calls).toHaveLength(2);
+});
+
+it("reads every followed thread, beyond fifty, across passes and a restart, each reply exactly once", async () => {
+  const roots = Array.from({ length: 60 }, (_, i) => `${900 + i}.000001`);
+  const t = threadFixture(roots, (root) => ({ ok: true, messages: [reply(root, `1003.${root.slice(0, 3)}001`, `reply in ${root}`)] }), 1000);
+  let r = t.recovery(); t.at(1_006_000); await r.run();
+  const firstPass = t.calls.length;
+  expect(firstPass).toBeLessThan(60);
+  r.stop();
+  r = t.recovery();
+  for (let pass = 0; pass < 10 && t.f.repo.list({ limit: 500 }).length < 60; pass++) { t.at(1_006_000 + (pass + 1) * 20_000); await r.run(); }
+  expect(t.f.repo.list({ limit: 500 })).toHaveLength(60);
+  expect(new Set(t.calls).size).toBe(60);
+  for (const root of roots) expect(t.bodies()).toContain(`reply in ${root}`);
 });

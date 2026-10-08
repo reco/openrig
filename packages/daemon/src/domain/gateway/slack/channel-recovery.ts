@@ -17,7 +17,10 @@ interface RecoveryOptions {
   threadRoots?: () => string[];
 }
 
-const ROOT_PERMANENT_ERRORS = new Set(["thread_not_found", "message_not_found", "channel_not_found", "not_in_channel", "missing_scope", "invalid_ts_latest", "invalid_ts_oldest"]);
+/** Slack says the root is gone: nothing more to read there. */
+const DELETED_ROOT_ERRORS = new Set(["thread_not_found", "message_not_found"]);
+/** The app cannot read the thread: a capability fault, retried every pass and never covered. */
+const CAPABILITY_ERRORS = new Set(["missing_scope", "not_in_channel", "channel_not_found", "invalid_auth", "token_revoked", "account_inactive"]);
 
 /** One owner across socket generations. Stop fences admission and checkpoint writes;
  * already admitted I/O remains owned until it settles (no timeout/unlock race). */
@@ -31,7 +34,6 @@ export class ChannelRecovery {
   private reason: string | undefined;
   private lastScanAt: string | undefined;
   private accepted = 0;
-  private threadSweep?: { upper: string; done: Set<string> };
   private deadLettered = 0;
 
   constructor(private readonly opts: RecoveryOptions) {
@@ -52,8 +54,9 @@ export class ChannelRecovery {
   status() {
     return { state: this.state, reason: this.reason, channel: this.opts.channel, lastScanAt: this.lastScanAt,
       coverage: this.coverage ? structuredClone(this.coverage) : null,
+      threads: this.coverage?.threads ? { followed: Object.keys(this.coverage.threads.roots).length, degraded: this.coverage.threads.degraded ?? {}, nextRetryAt: this.coverage.threads.nextRetryAt ?? null } : null,
       acceptedThisProcess: this.accepted, deadLetteredThisProcess: this.deadLettered,
-      limits: ["older history unknown", "counts reset on connector rewire/restart", "top-level messages and replies in followed threads (up to 50 per pass)",
+      limits: ["older history unknown", "counts reset on connector rewire/restart", "top-level messages, and replies per followed thread with its own watermark",
         ...(this.coverage?.historyLimited ? ["Slack plan limit excludes older history; only available messages were scanned"] : []),
         "coverage means scanned available history; dead letters are custody, not delivery",
         "five-second settle margin; larger clock skew or history visibility lag remains unverified",
@@ -79,60 +82,89 @@ export class ChannelRecovery {
     this.coverage = next; // publish only after the atomic write succeeds
   }
 
-  /** Replies posted in followed threads within [from, to); false leaves the window to retry. */
-  private async recoverThreadReplies(from: string, to: string, deadline: number): Promise<boolean> {
-    const lower = slackMicros(from)!;
-    const upper = slackMicros(to)!;
-    // Roots already swept for this window are not read again, so a window larger than one pass's
-    // budget still finishes over the next passes instead of restarting at the first root.
-    if (this.threadSweep?.upper !== to) this.threadSweep = { upper: to, done: new Set() };
-    const sweep = this.threadSweep;
-    for (const root of (this.opts.threadRoots?.() ?? []).slice(0, 50)) {
-      if (this.stopped) return false;
-      if (sweep.done.has(root)) continue;
-      if (this.now() >= deadline - 1000) { this.state = "incomplete"; this.reason = "pass-budget"; return false; }
-      const messages: SlackEvent[] = [];
-      let cursor = "";
-      do {
-        if (this.now() >= deadline - 1000) { this.state = "incomplete"; this.reason = "pass-budget"; return false; }
-        const r = await callWebApi("conversations.replies", this.opts.token!, {
-          channel: this.opts.channel, ts: root, oldest: slackTimestamp(lower > 0n ? lower - 1n : 0n), latest: to, inclusive: false, limit: 100,
-          ...(cursor ? { cursor } : {}),
-        }, this.opts.fetchImpl, Math.min(5000, Math.max(1, deadline - this.now())), "get-query");
-        if (this.stopped) return false;
-        if (!r.ok) {
-          // A root Slack will not read (deleted, or a channel the app cannot see) is skipped, not retried.
-          if (ROOT_PERMANENT_ERRORS.has(r.error ?? "")) break;
-          if (r.status === 0 && this.now() >= deadline - 1000) { this.state = "incomplete"; this.reason = "pass-budget"; return false; }
-          this.reason = r.status === 429 ? "rate-limited" : `replies-api-unavailable: ${r.error ?? `http ${r.status}`}`;
-          this.save({ ...this.coverage!, nextRetryAt: this.now() + (r.retryAfterSeconds ?? 5) * 1000 });
-          this.state = "backoff"; return false;
-        }
-        if (Array.isArray(r.json.messages)) messages.push(...(r.json.messages as SlackEvent[]));
-        const next = (r.json.response_metadata as { next_cursor?: unknown } | undefined)?.next_cursor;
-        cursor = typeof next === "string" ? next : "";
-      } while (cursor);
-      const replies = messages
-        .filter((m) => m && m.ts !== root && slackMicros(m.ts) !== null && slackMicros(m.ts)! >= lower && slackMicros(m.ts)! < upper)
-        .sort((a, b) => slackMicros(a.ts)! < slackMicros(b.ts)! ? -1 : 1);
-      for (const message of replies) {
+  private async scan(): Promise<void> {
+    const deadline = this.now() + 15_000;
+    this.lastScanAt = new Date(this.now()).toISOString();
+    // Reply tracking starts where top-level coverage stands now, before this pass advances it.
+    if (this.opts.threadRoots && !this.coverage!.threads) this.save({ ...this.coverage!, threads: { since: this.coverage!.coveredThrough, roots: {} } });
+    await this.scanHistory(deadline);
+    if (!this.stopped && this.opts.threadRoots) await this.sweepThreads(deadline);
+  }
+
+  /** Replies in each followed thread, from that thread's own watermark to the settled upper bound.
+   *  A thread that fails keeps its watermark (retried next pass) while the others advance; top-level
+   *  coverage is independent. Progress is saved after every thread, so a restart resumes. */
+  private async sweepThreads(deadline: number): Promise<void> {
+    const upper = slackTimestamp(BigInt(Math.max(0, this.now() - 5000)) * 1000n);
+    const base = this.coverage!.threads!;
+    if (base.nextRetryAt && base.nextRetryAt > this.now()) return;
+    const followed = this.opts.threadRoots!();
+    const deleted = new Set(base.deleted ?? []);
+    const roots: Record<string, string> = Object.fromEntries(Object.entries(base.roots).filter(([root]) => followed.includes(root)));
+    const degraded: Record<string, string> = Object.fromEntries(Object.entries(base.degraded ?? {}).filter(([root]) => followed.includes(root)));
+    const floor = (root: string) => roots[root] ?? (slackMicros(root)! > slackMicros(base.since)! ? root : base.since);
+    const todo = followed.filter((root) => !deleted.has(root) && slackMicros(root) !== null && slackMicros(floor(root))! < slackMicros(upper)!)
+      .sort((a, b) => (slackMicros(floor(a))! < slackMicros(floor(b))! ? -1 : 1));
+    const persist = (extra: Partial<typeof base> = {}) =>
+      this.save({ ...this.coverage!, threads: { since: base.since, roots, deleted: [...deleted].filter((r) => followed.includes(r)), degraded, ...extra } });
+    for (const root of todo) {
+      if (this.stopped || this.now() >= deadline - 1000) return;
+      const from = slackMicros(floor(root))!;
+      const read = await this.readReplies(root, from, upper, deadline);
+      if (this.stopped) return;
+      if (read.kind === "deleted") { deleted.add(root); delete roots[root]; delete degraded[root]; persist(); continue; }
+      if (read.kind === "capability") { degraded[root] = read.error; persist(); continue; }
+      if (read.kind === "rate-limited") { persist({ nextRetryAt: this.now() + read.retryAfterSeconds * 1000 }); return; }
+      if (read.kind === "failed") { degraded[root] = `transient: ${read.error}`; persist(); continue; }
+      for (const message of read.replies) {
         const ev = { ...message, channel: this.opts.channel!, thread_ts: root, recoveredAfterGap: true } as SlackEvent;
         if (!ingestDecision(ev).ingest) continue;
         const landed = await this.opts.router.route(ev, 0, () => !this.stopped);
-        if (this.stopped) return false;
-        if (landed.reason === "inflight" || landed.reason === "inactive") { this.state = "incomplete"; this.reason = "landing-in-progress"; return false; }
+        if (this.stopped) return;
+        if (landed.reason === "inflight" || landed.reason === "inactive") return;
         if (landed.disposition === "accepted") this.accepted++;
         if (landed.disposition === "dead-lettered") this.deadLettered++;
       }
-      sweep.done.add(root);
+      roots[root] = upper;
+      delete degraded[root];
+      persist();
     }
-    return true;
   }
 
-  private async scan(): Promise<void> {
+  /** Every reply page of one thread in [from, upper); a typed outcome, never a thrown failure. */
+  private async readReplies(root: string, from: bigint, upper: string, deadline: number): Promise<
+    | { kind: "ok"; replies: SlackEvent[] } | { kind: "deleted" } | { kind: "capability"; error: string }
+    | { kind: "rate-limited"; retryAfterSeconds: number } | { kind: "failed"; error: string }> {
+    const replies: SlackEvent[] = [];
+    let cursor = "";
+    do {
+      if (this.now() >= deadline - 1000) return { kind: "failed", error: "pass-budget" };
+      const r = await callWebApi("conversations.replies", this.opts.token!, {
+        channel: this.opts.channel, ts: root, oldest: slackTimestamp(from > 0n ? from - 1n : 0n), latest: upper, inclusive: false, limit: 100,
+        ...(cursor ? { cursor } : {}),
+      }, this.opts.fetchImpl, Math.min(5000, Math.max(1, deadline - this.now())), "get-query");
+      if (!r.ok) {
+        if (r.status === 429 || r.error === "ratelimited") return { kind: "rate-limited", retryAfterSeconds: r.retryAfterSeconds ?? 30 };
+        if (DELETED_ROOT_ERRORS.has(r.error ?? "")) return { kind: "deleted" };
+        if (CAPABILITY_ERRORS.has(r.error ?? "")) return { kind: "capability", error: r.error! };
+        return { kind: "failed", error: r.error ?? `http ${r.status}` };
+      }
+      const page = r.json.messages;
+      if (!Array.isArray(page) || page.some((m) => !m || typeof m !== "object" || slackMicros((m as SlackEvent).ts) === null)) {
+        return { kind: "failed", error: "invalid-replies-page" };
+      }
+      replies.push(...(page as SlackEvent[]));
+      const next = (r.json.response_metadata as { next_cursor?: unknown } | undefined)?.next_cursor;
+      cursor = typeof next === "string" ? next : "";
+    } while (cursor);
+    const upperMicros = slackMicros(upper)!;
+    return { kind: "ok", replies: replies
+      .filter((m) => m.ts !== root && slackMicros(m.ts)! >= from && slackMicros(m.ts)! < upperMicros)
+      .sort((a, b) => (slackMicros(a.ts)! < slackMicros(b.ts)! ? -1 : 1)) };
+  }
+
+  private async scanHistory(deadline: number): Promise<void> {
     if (this.coverage!.nextRetryAt && this.coverage!.nextRetryAt > this.now()) { this.state = "backoff"; return; }
-    const deadline = this.now() + 15_000;
-    this.lastScanAt = new Date(this.now()).toISOString();
     this.state = "scanning"; this.reason = undefined;
     if (!this.coverage!.pending) {
       // Leave recent posts for the next interval so ordinary visibility lag/clock skew
@@ -191,7 +223,6 @@ export class ChannelRecovery {
         if (landed.disposition === "dead-lettered") this.deadLettered++;
       }
       if (!more) {
-        if (!(await this.recoverThreadReplies(c.coveredThrough, c.pending!.upper, deadline))) return;
         this.save({ ...c, coveredThrough: c.pending!.upper, pending: undefined, nextRetryAt: undefined });
         this.state = "scanned"; return;
       }

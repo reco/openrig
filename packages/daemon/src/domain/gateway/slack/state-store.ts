@@ -240,6 +240,21 @@ export interface ChannelCoverage {
   nextRetryAt?: number;
   /** Available history was scanned, but Slack reported older history beyond its plan limit. */
   historyLimited?: boolean;
+  /** Replies in followed threads, tracked apart from top-level history and per thread root. */
+  threads?: ThreadCoverage;
+}
+
+export interface ThreadCoverage {
+  /** Where reply tracking began for this channel: the floor for a root without its own watermark. */
+  since: string;
+  /** Per followed root: replies read through this timestamp. */
+  roots: Record<string, string>;
+  /** Roots Slack reports deleted: nothing left to read. */
+  deleted?: string[];
+  /** Roots the app cannot read (missing_scope, not_in_channel, ...): retried every pass, never covered. */
+  degraded?: Record<string, string>;
+  /** Slack asked us to wait (429 Retry-After) before the next replies read. */
+  nextRetryAt?: number;
 }
 
 function readOptional(file: string, fsops: StateFsOps): string | undefined {
@@ -268,6 +283,10 @@ export class ChannelCoverageStore {
       if (c.pending) {
         const upper = slackMicros(c.pending.upper), next = slackMicros(c.pending.nextLatest);
         if (upper === null || next === null || next <= through || next > upper) throw new Error("invalid pending interval");
+      }
+      if (c.threads !== undefined && (!c.threads || typeof c.threads !== "object" || slackMicros(c.threads.since) === null ||
+        !c.threads.roots || typeof c.threads.roots !== "object" || Object.values(c.threads.roots).some((ts) => slackMicros(ts) === null))) {
+        throw new Error("invalid thread coverage");
       }
     }
     return data;

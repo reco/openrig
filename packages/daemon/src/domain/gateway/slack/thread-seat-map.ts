@@ -110,7 +110,7 @@ export class ThreadSeatMap {
   }
 
   /** Open thread roots in one channel opened since an instant, newest first (reply recovery). */
-  listOpenRootsInChannel(channel: string, sinceIso: string, limit = 50): string[] {
+  listOpenRootsInChannel(channel: string, sinceIso: string, limit = 1000): string[] {
     return (this.db.prepare(`SELECT thread_ts FROM thread_seat_map WHERE channel = ? AND state = 'open' AND opened_at >= ? ORDER BY ${NEWEST_ROOT_FIRST} LIMIT ?`)
       .all(channel, sinceIso, limit) as Array<{ thread_ts: string }>).map((r) => r.thread_ts);
   }
