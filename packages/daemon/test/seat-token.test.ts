@@ -45,3 +45,14 @@ describe("per-seat approval tokens", () => {
     expect(await own.json()).toMatchObject({ decision: "allow", requestId: "q1" });
   });
 });
+
+describe("tmux launch errors", () => {
+  it("never echo a token from the launch env", async () => {
+    const { TmuxAdapter } = await import("../src/adapters/tmux.js");
+    const tmux = new TmuxAdapter(async () => { throw new Error("Command failed: tmux new-session -d -s dev@rig -e 'OPENRIG_SEAT_TOKEN=abc123secret' -e 'OPENRIG_ACTIVITY_HOOK_TOKEN=hooksecret'\nduplicate session: dev@rig"); });
+    const r = await tmux.createSession("dev@rig", undefined, { OPENRIG_SEAT_TOKEN: "abc123secret" });
+    expect(r).toMatchObject({ ok: false, code: "duplicate_session" });
+    expect(JSON.stringify(r)).not.toContain("abc123secret");
+    expect(JSON.stringify(r)).not.toContain("hooksecret");
+  });
+});

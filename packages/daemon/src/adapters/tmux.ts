@@ -190,18 +190,23 @@ function isTmuxTransportAbsentError(err: unknown): boolean {
   return false;
 }
 
+/** A failed tmux command echoes its argv, which can carry -e NAME_TOKEN=<value> launch env. */
+function withoutTokens(message: string): string {
+  return message.replace(/\b([A-Z_]*TOKEN[A-Z_]*)=[^\s'"]+/g, "$1=[redacted]");
+}
+
 function classifyWriteError(err: unknown): TmuxResult {
   if (err instanceof DeliveryGuardError) return { ok: false, code: err.code, message: err.message };
   if (!(err instanceof Error)) {
-    return { ok: false, code: "unknown", message: String(err) };
+    return { ok: false, code: "unknown", message: withoutTokens(String(err)) };
   }
   if (err.message.includes("duplicate session")) {
-    return { ok: false, code: "duplicate_session", message: err.message };
+    return { ok: false, code: "duplicate_session", message: withoutTokens(err.message) };
   }
   if (err.message.includes("can't find session") || err.message.includes("no server running")) {
-    return { ok: false, code: "session_not_found", message: err.message };
+    return { ok: false, code: "session_not_found", message: withoutTokens(err.message) };
   }
-  return { ok: false, code: "unknown", message: err.message };
+  return { ok: false, code: "unknown", message: withoutTokens(err.message) };
 }
 
 /** Shell-quote a string using single quotes (POSIX-safe). */
