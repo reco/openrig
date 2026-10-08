@@ -228,6 +228,8 @@ export interface AppDeps {
   watchdogHistoryLog?: WatchdogHistoryLog;
   watchdogPolicyEngine?: WatchdogPolicyEngine;
   watchdogScheduler?: WatchdogScheduler;
+  /** A seat waiting at a prompt for over 5 minutes: one notice to its human per episode. */
+  stuckPromptWatch?: import("./domain/stuck-prompt-watch.js").StuckPromptWatch;
   /** B8 / slice-07 A3 — the model-divergence monitor (effective-vs-pinned, four-channel proclaim). */
   modelDivergenceMonitor?: import("./domain/model-divergence/model-divergence-monitor.js").ModelDivergenceMonitor;
   /** S10 — the in-daemon gateway subsystem (amended M1 §3: in-process, no second deployable).

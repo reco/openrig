@@ -2119,6 +2119,35 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       ],
     });
     queueRepoInstance.startWaitReminders();
+    {
+      const { makeStuckPromptWatch } = await import("./domain/stuck-prompt-watch.js");
+      deps.stuckPromptWatch = makeStuckPromptWatch({
+        runningSessions: () => (db.prepare(`
+          SELECT DISTINCT s.session_name AS session_name FROM sessions s
+          LEFT JOIN bindings b ON b.node_id = s.node_id
+          WHERE s.status = 'running' AND s.session_name IS NOT NULL AND COALESCE(b.attachment_type, 'tmux') = 'tmux'
+            AND s.id = (SELECT s2.id FROM sessions s2 WHERE s2.node_id = s.node_id ORDER BY s2.id DESC LIMIT 1)
+        `).all() as Array<{ session_name: string }>).map((r) => r.session_name),
+        capture: (session) => tmuxAdapter.capturePaneContent(session, 40),
+        notify: async (p) => {
+          const registry = loadHumanRegistryForDelivery(OPENRIG_HOME);
+          const human = registry.ok ? registry.entities.find((e) => e.role !== "requester") : undefined;
+          // One notice per prompt episode; the same prompt again within an hour (a restart) is not a new one.
+          const recent = db.prepare(`SELECT 1 FROM queue_items WHERE tags LIKE ? AND ts_created > ? LIMIT 1`)
+            .get(`%"stuck-prompt:${p.episodeId}"%`, new Date(Date.now() - 60 * 60_000).toISOString());
+          if (!human || recent) return;
+          await queueRepoInstance.create({
+            tags: ["stuck-prompt", `stuck-prompt:${p.episodeId}`],
+            sourceSession: "daemon@kernel",
+            destinationSession: human.address,
+            humanIntent: "update",
+            summary: `${p.session} is waiting at a ${p.reason === "permission_prompt" ? "permission" : "selection"} prompt`,
+            body: `${p.promptLine}\n\nWaiting for over 5 minutes. Attach: \`${p.attach}\``,
+            nudge: false,
+          });
+        },
+      });
+    }
     const watchdogScheduler = new WatchdogScheduler({
       jobsRepo: watchdogJobsRepoInstance,
       policyEngine: watchdogPolicyEngine,
