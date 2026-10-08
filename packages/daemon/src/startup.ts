@@ -1337,12 +1337,18 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     activityHookToken: resolvedActivityHookToken,
     approvalService: await (async () => {
       const { makeApprovalService } = await import("./domain/approvals.js");
+      const { ensureSeatTokenSecret, seatToken, seatTokenMatches } = await import("./domain/seat-token.js");
       const { loadConfig: loadSlackConfig } = await import("./domain/gateway/slack/config.js");
       const { loadHumanRegistry } = await import("./domain/gateway/human-registry.js");
       return makeApprovalService({
         queueRepo: queueRepoInstance,
         optedIn: () => { try { return loadSlackConfig(OPENRIG_HOME).approvalSeats; } catch { return []; } },
         approver: () => { const r = loadHumanRegistry(OPENRIG_HOME); return r.ok ? r.entities.find((e) => e.role !== "requester")?.address ?? null : null; },
+        verifySeat: (sessionName, presented) => {
+          const row = db.prepare("SELECT node_id FROM sessions WHERE session_name = ? ORDER BY id DESC LIMIT 1").get(sessionName) as { node_id: string } | undefined;
+          const generation = sessionRegistry.currentOccupantGenerationForSession(sessionName);
+          return !!row && !!generation && seatTokenMatches(seatToken(ensureSeatTokenSecret(OPENRIG_HOME), row.node_id, sessionName, generation), presented);
+        },
         cwdOf: (sessionName) => (db.prepare("SELECT n.cwd AS cwd FROM nodes n JOIN sessions s ON s.node_id = n.id WHERE s.session_name = ? ORDER BY s.id DESC LIMIT 1").get(sessionName) as { cwd: string | null } | undefined)?.cwd ?? null,
         log: (m) => console.log(`[approvals] ${m}`),
       });

@@ -19,7 +19,7 @@ describe("Slack approvals", () => {
   let repo: QueueRepository;
   beforeEach(() => { db = createDb(); migrate(db, ALL_MIGRATIONS); repo = new QueueRepository(db, new EventBus(db), { loadHumanRegistry: () => registry }); });
   afterEach(() => db.close());
-  const service = (timeoutMs = 2000) => makeApprovalService({ queueRepo: repo, optedIn: () => ["psa-dev@psa"], approver: () => "reco@external", cwdOf: () => "/work/psa", timeoutMs, pollMs: 10 });
+  const service = (timeoutMs = 2000) => makeApprovalService({ queueRepo: repo, optedIn: () => ["psa-dev@psa"], approver: () => "reco@external", verifySeat: () => true, cwdOf: () => "/work/psa", timeoutMs, pollMs: 10 });
   const click = (id: string, actor: string, option: string) => repo.recordHumanAnswer({ qitemId: id, actorSession: actor, questionId: "approval", optionId: option });
 
   it("asks the approver with the full command, literal credentials masked, and returns their Approve", async () => {
