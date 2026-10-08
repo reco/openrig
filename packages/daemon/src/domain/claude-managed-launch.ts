@@ -7,6 +7,7 @@ import { shellQuote } from "../adapters/shell-quote.js";
 import { claudeClassicRendererEnvPrefix } from "../adapters/yolo-mode.js";
 import { parseClaudePermissionModes } from "./permission-drift.js";
 import { validateNativePermissionSelection } from "./native-permission-selection.js";
+import { seatTokenEnv } from "./seat-token.js";
 
 export interface ClaudeLaunchTarget {
   nodeId: string;
@@ -131,7 +132,8 @@ export class ClaudeManagedLaunch {
     const generation = target.generation ?? before.generation;
     const identity: Record<string, string> = { OPENRIG_NODE_ID: target.nodeId, OPENRIG_RUNTIME: "claude-code",
       ...(before.session ? { OPENRIG_SESSION_NAME: before.session } : {}),
-      ...(generation ? { OPENRIG_OCCUPANT_GENERATION: generation } : {}) };
+      ...(generation ? { OPENRIG_OCCUPANT_GENERATION: generation } : {}),
+      ...seatTokenEnv(this.sessionEnv.OPENRIG_HOME, target.nodeId, before.session ?? undefined, generation) };
     const publicEnv = publicSeatEnvironment(this.sessionEnv);
     const assignments = Object.entries({ ...context.env, ...publicEnv, ...identity }).map(([key, value]) => shellQuote(`${key}=${value}`));
     const forwarded = inherited.filter(key => !(key in identity) && !(key in publicEnv)).map(key => `"${key}=\${${key}-}"`);

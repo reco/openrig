@@ -26,7 +26,7 @@ async function askUntilAnswered(post, first, deadline) {
     const reply = await post(body);
     if (reply.decision === "allow" || reply.decision === "deny") return reply.decision;
     if (!reply.pending || !reply.requestId) return null;
-    body = { sessionName: first.sessionName, requestId: reply.requestId };
+    body = { sessionName: first.sessionName, seatToken: first.seatToken, requestId: reply.requestId };
   }
   return null;
 }
@@ -46,7 +46,8 @@ async function main(env = process.env) {
     signal: AbortSignal.timeout(90_000),
   })).json();
   try {
-    const out = decisionOutput(await askUntilAnswered(post, { sessionName, toolName, toolInput: payload.tool_input ?? null }, Date.now() + WAIT_MS));
+    const seatToken = env.OPENRIG_SEAT_TOKEN || null;
+    const out = decisionOutput(await askUntilAnswered(post, { sessionName, seatToken, toolName, toolInput: payload.tool_input ?? null }, Date.now() + WAIT_MS));
     if (out) process.stdout.write(out);
   } catch {
     // no decision: the prompt shows in the terminal

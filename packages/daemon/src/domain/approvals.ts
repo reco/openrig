@@ -24,6 +24,8 @@ export interface ApprovalServiceDeps {
   optedIn: () => readonly string[];
   /** The human who may answer: the registered approver's address, or null. */
   approver: () => string | null;
+  /** True only when the token is the named seat's own (bound to its node, name and generation). */
+  verifySeat: (sessionName: string, seatToken: string | null) => boolean;
   /** The seat's working directory, shown on the card. */
   cwdOf?: (sessionName: string) => string | null;
   timeoutMs?: number;
@@ -32,6 +34,7 @@ export interface ApprovalServiceDeps {
 }
 
 export interface ApprovalService {
+  verify: (sessionName: string, seatToken: string | null) => boolean;
   start: (input: ApprovalRequest) => Promise<string | null>;
   /** Only the seat that asked may wait on its request. */
   wait: (requestId: string, sessionName: string, sliceMs: number) => Promise<ApprovalWait>;
@@ -52,6 +55,7 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
   const log = deps.log ?? (() => {});
   const timeoutMs = deps.timeoutMs ?? APPROVAL_TIMEOUT_MS;
   const service: ApprovalService = {
+    verify: (sessionName, seatToken) => deps.verifySeat(sessionName, seatToken),
     async start(input) {
       if (!deps.optedIn().includes(input.sessionName)) return null;
       const human = deps.approver();

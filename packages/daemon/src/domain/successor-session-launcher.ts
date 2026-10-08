@@ -9,6 +9,7 @@ import type { TmuxOptionDefaultsApplier } from "./tmux-option-defaults.js";
 import { isShellForeground } from "./shell-classifier.js";
 import { resolveReadinessTimeoutMs } from "./readiness-timeout.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
+import { seatTokenEnv } from "./seat-token.js";
 
 /**
  * OPR.0.4.3.04 — the explicit successor-creation seam for the seat-handover
@@ -180,6 +181,7 @@ export class SuccessorSessionLauncher {
       ...this.sessionEnv,
       ...(input.node.runtime ? this.runtimeSessionEnv[input.node.runtime] : undefined),
       OPENRIG_OCCUPANT_GENERATION: input.occupantGeneration ?? undefined,
+      ...seatTokenEnv(this.sessionEnv.OPENRIG_HOME, input.node.id, departingSession, input.occupantGeneration),
     });
     const cwd = input.node.cwd ?? undefined;
 
