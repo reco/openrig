@@ -71,6 +71,7 @@ describe("an expired or canceled approval card loses its buttons", () => {
     const card = updates.find((u) => u.ts === ts)!;
     expect(actionable(card)).toBe(false);
     expect(String(card.text)).toContain("Closed: expired, the seat stopped waiting for it.");
+    expect(String(card.text)).toContain("tmux attach -t dev@rig");
     expect(String(card.text)).toContain("rm -rf build");
     await vi.waitFor(() => expect(posts.some((p) => p.thread_ts === ts && String(p.text).includes("Closed: expired") && String(p.text).includes("tmux attach -t dev@rig"))).toBe(true));
     // The explanation lives in the card's own thread: nothing about it is posted as a new top-level message.
