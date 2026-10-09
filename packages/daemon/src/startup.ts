@@ -1359,7 +1359,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         cwdOf: (sessionName) => (db.prepare("SELECT n.cwd AS cwd FROM nodes n JOIN sessions s ON s.node_id = n.id WHERE s.session_name = ? ORDER BY s.id DESC LIMIT 1").get(sessionName) as { cwd: string | null } | undefined)?.cwd ?? null,
         log: (m) => console.log(`[approvals] ${m}`),
       });
-      setInterval(() => { void service.sweep().catch((e) => console.log(`[approvals] sweep failed: ${(e as Error).message}`)); }, 30_000).unref();
+      setInterval(() => { if (!db.open) return; void service.sweep().catch((e) => console.log(`[approvals] sweep failed: ${(e as Error).message}`)); }, 30_000).unref();
       return service;
     })(),
     contextUsageStore,
@@ -2149,6 +2149,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     queueRepoInstance.startWaitReminders();
     {
       const { makeStuckPromptWatch } = await import("./domain/stuck-prompt-watch.js");
+      // Enough for a long command's whole dialog, so two prompts differing only near the top differ.
+      const STUCK_PROMPT_CAPTURE_LINES = 120;
       deps.stuckPromptWatch = makeStuckPromptWatch({
         runningSessions: () => (db.prepare(`
           SELECT DISTINCT s.session_name AS session_name FROM sessions s
@@ -2156,7 +2158,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           WHERE s.status = 'running' AND s.session_name IS NOT NULL AND COALESCE(b.attachment_type, 'tmux') = 'tmux'
             AND s.id = (SELECT s2.id FROM sessions s2 WHERE s2.node_id = s.node_id ORDER BY s2.id DESC LIMIT 1)
         `).all() as Array<{ session_name: string }>).map((r) => r.session_name),
-        capture: (session) => tmuxAdapter.capturePaneContent(session, 40),
+        capture: (session) => tmuxAdapter.capturePaneContent(session, STUCK_PROMPT_CAPTURE_LINES),
         notify: async (p) => {
           const registry = loadHumanRegistryForDelivery(OPENRIG_HOME);
           const human = registry.ok ? registry.entities.find((e) => e.role !== "requester") : undefined;
@@ -2190,10 +2192,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       const { actOnPromptAnswers } = await import("./domain/stuck-prompt-watch.js");
       let answering = false;
       setInterval(() => {
-        if (answering) return;
+        if (answering || !db.open) return;
         answering = true;
         void actOnPromptAnswers(queueRepoInstance, {
-          capture: (session) => tmuxAdapter.capturePaneContent(session, 40),
+          capture: (session) => tmuxAdapter.capturePaneContent(session, STUCK_PROMPT_CAPTURE_LINES),
+          inMode: (session) => tmuxAdapter.isPaneInMode(session),
           sendKey: async (session, key) => { const r = await tmuxAdapter.sendKeys(session, [key]); if (!r.ok) throw new Error(r.message ?? "send failed"); },
         }).catch((e) => console.log(`[stuck-prompt] answer pass failed: ${(e as Error).message}`)).finally(() => { answering = false; });
       }, 3_000).unref();

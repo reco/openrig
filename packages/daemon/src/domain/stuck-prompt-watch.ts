@@ -37,13 +37,17 @@ const CHOICE_LINE = /^\s*[❯›]?\s*(\d)\.\s+(.+?)\s*$/;
  *  allowed later ("always", "don't ask again", "switch to auto mode"); Deny is the "No" option. */
 export function promptChoices(pane: string): PromptChoices | undefined {
   const options = new Map<string, string>();
+  let selected: string | undefined;
   for (const line of pane.split("\n").slice(-20)) {
     const m = CHOICE_LINE.exec(line);
-    if (m) options.set(m[1]!, m[2]!.replace(/\s*\([a-z]+\)$/i, ""));
+    if (!m) continue;
+    options.set(m[1]!, m[2]!.replace(/\s*\([a-z]+\)$/i, ""));
+    if (/^\s*[❯›]/.test(line)) selected = m[1];
   }
   const allow = [...options].filter(([, label]) => /^yes(, proceed)?$/i.test(label));
   const deny = [...options].filter(([, label]) => /^no\b/i.test(label));
-  if (allow.length !== 1 || deny.length !== 1) return undefined;
+  // The cursor still on the plain Yes: a digit then picks an option rather than typing into a text row.
+  if (allow.length !== 1 || deny.length !== 1 || selected !== allow[0]![0]) return undefined;
   return { allow: { key: allow[0]![0], label: allow[0]![1] }, deny: { key: deny[0]![0], label: deny[0]![1] } };
 }
 
@@ -88,11 +92,12 @@ function questionLine(pane: string, evidence: string): string {
 /** The prompt as the seat shows it, from its dialog's top rule (else 20 lines above the options)
  *  to the end, with whitespace and frame characters dropped so a resize or reflow is the same prompt. */
 function promptBody(pane: string, evidence: string): string {
-  const lines = pane.split("\n").map((l) => l.trim());
-  const at = Math.max(0, anchorLine(lines, evidence));
+  const raw = pane.split("\n");
+  const at = Math.max(0, anchorLine(raw.map((l) => l.trim()), evidence));
+  // The dialog's own top border starts at the left edge; a rule inside the shown command is indented.
   let from = at;
-  while (from > Math.max(0, at - 20) && !/^[╭─━]{3,}/.test(lines[from]!)) from--;
-  return flat(lines.slice(from).join(""));
+  while (from > Math.max(0, at - 60) && !/^[╭─━]{20,}/.test(raw[from]!)) from--;
+  return flat(raw.slice(from).join(""));
 }
 
 export interface StuckPromptWatch {
@@ -139,41 +144,60 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
   return watch;
 }
 
-/** Type the chosen key only while the pane still shows the prompt the human was asked about. */
-export async function answerPrompt(deps: { capture: (session: string) => Promise<string | null>; sendKey: (session: string, key: string) => Promise<void> },
-  session: string, expectedKey: string, key: string): Promise<"sent" | "moved-on"> {
+export interface AnswerDeps {
+  capture: (session: string) => Promise<string | null>;
+  sendKey: (session: string, key: string) => Promise<void>;
+  /** The pane is in copy-mode or a chooser: a key would not reach the program. */
+  inMode: (session: string) => Promise<boolean>;
+}
+
+/** Type the chosen option's key, read off the screen now, only while the pane still shows the
+ *  prompt the human was asked about. */
+export async function answerPrompt(deps: AnswerDeps, session: string, expectedKey: string, choice: "allow" | "deny"): Promise<{ outcome: "sent" | "moved-on" | "pane-busy"; key?: string }> {
   const pane = await deps.capture(session).catch(() => null);
-  if (pane === null || readPrompt(pane)?.key !== expectedKey) return "moved-on";
-  await deps.sendKey(session, key);
-  return "sent";
+  const prompt = pane === null ? null : readPrompt(pane);
+  const option = prompt?.choices?.[choice];
+  if (!prompt || prompt.key !== expectedKey || !option || !/^[1-9]$/.test(option.key)) return { outcome: "moved-on" };
+  if (await deps.inMode(session)) return { outcome: "pane-busy" };
+  await deps.sendKey(session, option.key);
+  return { outcome: "sent", key: option.key };
 }
 
 const tagValue = (tags: readonly string[] | null | undefined, name: string) => tags?.find((t) => t.startsWith(`${name}:`))?.slice(name.length + 1);
 
 /** A human's Approve / Deny on a stuck-prompt notice is typed into the seat's terminal once, and
- *  only while the same prompt is up; the notice's thread says what happened either way. */
-export async function actOnPromptAnswers(repo: QueueRepository, deps: Parameters<typeof answerPrompt>[0], now = Date.now()): Promise<void> {
+ *  only while the same prompt is up; the notice's thread says what happened either way. Only a
+ *  notice the daemon itself created counts (a row made over the API carries an identity provenance),
+ *  its seat is the row's own source, and the key comes from the screen, never from the row. */
+export async function actOnPromptAnswers(repo: QueueRepository, deps: AnswerDeps, now = Date.now()): Promise<void> {
   const rows = repo.db.prepare(`SELECT qitem_id FROM queue_items WHERE ts_created > ? AND tags LIKE '%"stuck-prompt-key:%'`)
     .all(new Date(now - 2 * 3600_000).toISOString()) as Array<{ qitem_id: string }>;
+  const answeredKeys = new Set((repo.db.prepare(`SELECT q.tags AS tags FROM queue_items q JOIN queue_transitions t ON t.qitem_id = q.qitem_id
+      WHERE q.ts_created > ? AND t.transition_note LIKE 'stuck-prompt answer: % sent%'`).all(new Date(now - 2 * 3600_000).toISOString()) as Array<{ tags: string }>)
+    .map((r) => tagValue(JSON.parse(r.tags) as string[], "stuck-prompt-key")));
   for (const { qitem_id } of rows) {
     const row = repo.getById(qitem_id);
     const choice = row?.humanAnswers?.answer;
     if (!row || (choice !== "allow" && choice !== "deny")) continue;
-    if (repo.transitionLog.listForQitem(qitem_id).some((t) => t.transitionNote?.startsWith("stuck-prompt answer:"))) continue;
+    const transitions = repo.transitionLog.listForQitem(qitem_id);
+    if (transitions.some((t) => t.transitionNote?.startsWith("stuck-prompt answer:"))) continue;
+    const created = transitions.find((t) => t.transitionNote === "created");
     const session = tagValue(row.tags, "stuck-prompt-session");
-    const key = tagValue(row.tags, `stuck-prompt-${choice}`);
     const expected = tagValue(row.tags, "stuck-prompt-key");
-    if (!session || !key || !expected) continue;
+    if (!created || created.identityProvenance !== null || !session || session !== row.sourceSession || !expected) continue;
     // Recorded before typing: a crash between the two never types the answer twice.
-    repo.update({ qitemId: qitem_id, actorSession: "daemon@kernel", transitionNote: `stuck-prompt answer: ${choice} key=${key} pending` });
-    const outcome = await answerPrompt(deps, session, expected, key).catch((e: Error) => `failed: ${e.message}`);
-    repo.update({ qitemId: qitem_id, actorSession: "daemon@kernel", transitionNote: `stuck-prompt answer: ${choice} key=${key} ${outcome}` });
+    repo.update({ qitemId: qitem_id, actorSession: "daemon@kernel", transitionNote: `stuck-prompt answer: ${choice} pending` });
+    const result = answeredKeys.has(expected) ? { outcome: "moved-on" as const }
+      : await answerPrompt(deps, session, expected, choice).catch((e: Error) => ({ outcome: `failed: ${e.message}` as const, key: undefined }));
+    if (result.outcome === "sent") answeredKeys.add(expected);
+    repo.update({ qitemId: qitem_id, actorSession: "daemon@kernel", transitionNote: `stuck-prompt answer: ${choice}${result.key ? ` key=${result.key}` : ""} ${result.outcome}` });
     await repo.create({
       sourceSession: row.sourceSession, destinationSession: row.destinationSession, humanIntent: "update", replyTo: qitem_id, nudge: false,
-      summary: outcome === "sent" ? (choice === "allow" ? "Approved in the terminal" : "Denied in the terminal") : "Nothing typed",
-      body: outcome === "sent" ? `Selected option ${key} in ${session}'s prompt.`
-        : outcome === "moved-on" ? `Nothing was typed: ${session}'s prompt had already moved on.` : `Nothing was typed into ${session}: ${outcome}.`,
+      summary: result.outcome === "sent" ? (choice === "allow" ? "Approved in the terminal" : "Denied in the terminal") : "Nothing typed",
+      body: result.outcome === "sent" ? `Selected option ${result.key} in ${session}'s prompt.`
+        : result.outcome === "moved-on" ? `Nothing was typed: ${session}'s prompt had already moved on or was answered.`
+        : result.outcome === "pane-busy" ? `Nothing was typed: ${session}'s pane is in copy-mode; answer it there: tmux attach -t ${session}`
+        : `Nothing was typed into ${session}: ${result.outcome}.`,
     }).catch(() => {});
   }
 }
-

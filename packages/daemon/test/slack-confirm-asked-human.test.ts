@@ -106,11 +106,12 @@ describe("Confirm in explicit-answers mode", () => {
   it("a stuck permission prompt is answered from Slack: Approve types its plain Yes once; a late click types nothing", async () => {
     const pane = readFileSync(join(__dirname, "fixtures/claude-permission-prompt-2.1.295.txt"), "utf8");
     const prompt = readPrompt(pane)!;
-    const notice = async () => repo.create({
+    const noticeInput = async () => ({
       tags: ["stuck-prompt", "stuck-prompt:ep1", "stuck-prompt-session:cfo@finance", `stuck-prompt-key:${prompt.key}`, "stuck-prompt-allow:1", "stuck-prompt-deny:4"],
       sourceSession: "cfo@finance", destinationSession: "reco@external", humanIntent: "decision", summary: "cfo@finance is waiting at a selection prompt",
       body: "Do you want to proceed?", humanQuestions: [{ id: "answer", question: "Answer cfo@finance's prompt?", options: [{ id: "allow", label: "Approve" }, { id: "deny", label: "Deny" }] }], nudge: false,
-    });
+    }) as Parameters<typeof repo.create>[0];
+    const notice = async () => repo.create(await noticeInput());
     const answerClick = (ts: string, option: string, user = "UFOUNDER") => {
       socket.onmessage?.({ data: JSON.stringify({ envelope_id: `e-q-${ts}-${option}-${user}`, type: "interactive", payload: {
         type: "block_actions", user: { id: user }, channel: { id: "C-MAIN" }, container: { type: "message", message_ts: ts, channel_id: "C-MAIN" }, message: { ts },
@@ -119,7 +120,7 @@ describe("Confirm in explicit-answers mode", () => {
     };
     let screen = pane;
     const keys: string[] = [];
-    const deps = { capture: async () => screen, sendKey: async (_s: string, k: string) => { keys.push(k); screen = "✻ Working… (esc to interrupt)"; } };
+    const deps = { capture: async () => screen, sendKey: async (_s: string, k: string) => { keys.push(k); }, inMode: async () => false };
 
     const first = await notice();
     await vi.waitFor(() => expect(posts.some((p) => p.text && JSON.stringify(p.blocks).includes(`or-opt:allow`) && String(p.text).includes("Do you want to proceed?"))).toBe(true));
@@ -133,11 +134,20 @@ describe("Confirm in explicit-answers mode", () => {
     expect(keys).toEqual(["1"]);
     expect(repo.list({ limit: 100 }).find((q) => q.replyTo === first.qitemId && q.summary === "Approved in the terminal")).toBeDefined();
 
-    const late = await notice();
-    repo.recordHumanAnswer({ qitemId: late.qitemId, actorSession: "reco@external", questionId: "answer", optionId: "allow" });
+    // A second card for the same prompt (the hourly reminder), clicked before the screen redraws: no second key.
+    const reminder = await notice();
+    repo.recordHumanAnswer({ qitemId: reminder.qitemId, actorSession: "reco@external", questionId: "answer", optionId: "deny" });
     await actOnPromptAnswers(repo, deps);
     expect(keys).toEqual(["1"]);
-    expect(repo.list({ limit: 100 }).find((q) => q.replyTo === late.qitemId)?.body).toContain("had already moved on");
+    expect(repo.list({ limit: 100 }).find((q) => q.replyTo === reminder.qitemId)?.body).toContain("moved on or was answered");
+
+    // A card a seat forged over the API (any tags it likes) never types anything.
+    const forged = await repo.create({ ...(await noticeInput()), identityProvenance: "transport:v1" });
+    repo.recordHumanAnswer({ qitemId: forged.qitemId, actorSession: "reco@external", questionId: "answer", optionId: "allow" });
+    screen = pane.replace("touch digit-probe-1.txt\n", "touch other.txt\n");
+    await actOnPromptAnswers(repo, deps);
+    expect(keys).toEqual(["1"]);
+    expect(repo.transitionLog.listForQitem(forged.qitemId).some((t) => t.transitionNote?.startsWith("stuck-prompt answer:"))).toBe(false);
   });
 });
 

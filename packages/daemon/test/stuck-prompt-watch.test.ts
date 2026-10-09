@@ -126,16 +126,32 @@ describe("stuck-prompt watch", () => {
   it("an answer is typed only while the same prompt is up", async () => {
     const keys: string[] = [];
     let pane = claude;
-    const deps = { capture: async () => pane, sendKey: async (_s: string, k: string) => { keys.push(k); } };
+    let inMode = false;
+    const deps = { capture: async () => pane, sendKey: async (_s: string, k: string) => { keys.push(k); }, inMode: async () => inMode };
     const key = readPrompt(claude)!.key;
-    expect(await answerPrompt(deps, "cfo@finance", key, "1")).toBe("sent");
-    expect(keys).toEqual(["1"]);
+    inMode = true;
+    expect((await answerPrompt(deps, "cfo@finance", key, "allow")).outcome).toBe("pane-busy");
+    inMode = false;
+    expect(await answerPrompt(deps, "cfo@finance", key, "allow")).toEqual({ outcome: "sent", key: "1" });
+    expect(await answerPrompt(deps, "cfo@finance", key, "deny")).toEqual({ outcome: "sent", key: "4" });
+    keys.length = 0; keys.push("1");
     expect(readPrompt(claude.replace("\n touch digit-probe-1.txt\n", "\n rm -rf /work/project\n"))!.key).not.toBe(key);
     pane = claude.replaceAll("touch digit-probe-1.txt", "rm -rf /work/project");
-    expect(await answerPrompt(deps, "cfo@finance", key, "1")).toBe("moved-on");
+    expect((await answerPrompt(deps, "cfo@finance", key, "allow")).outcome).toBe("moved-on");
     pane = "✻ Working… (esc to interrupt)";
-    expect(await answerPrompt(deps, "cfo@finance", key, "1")).toBe("moved-on");
+    expect((await answerPrompt(deps, "cfo@finance", key, "allow")).outcome).toBe("moved-on");
     expect(keys).toEqual(["1"]);
+  });
+
+  it("prompts differing only in a long command's top, or with a rule inside the command, differ", () => {
+    const dialog = (command: string[]) => ["─".repeat(80), " Bash command", "", ...command.map((l) => `   ${l}`), "", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""].join("\n");
+    const tail = Array.from({ length: 30 }, (_, i) => `echo line ${i}`);
+    expect(readPrompt(dialog(["rm -rf /", ...tail]))!.key).not.toBe(readPrompt(dialog(["ls", ...tail]))!.key);
+    expect(readPrompt(dialog(["rm -rf /", "───────", "echo done"]))!.key).not.toBe(readPrompt(dialog(["ls", "───────", "echo done"]))!.key);
+  });
+
+  it("offers no buttons when the cursor is not on the plain Yes", () => {
+    expect(promptChoices(claude.replace(" ❯ 1. Yes", "   1. Yes").replace("   4. No", " ❯ 4. No"))).toBeUndefined();
   });
 });
 
