@@ -78,7 +78,8 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
   const expire = async (requestId: string, why: string) => {
     lastAsked.delete(requestId);
     const item = deps.queueRepo.getById(requestId);
-    if (!item || item.state !== "pending") return;
+    // An answer already given stands: the hook returns it, whatever closes the row afterwards.
+    if (!item || item.state !== "pending" || item.humanAnswers?.[QUESTION_ID]) return;
     deps.queueRepo.update({ qitemId: requestId, actorSession: "daemon@kernel", state: "canceled", transitionNote: `approval expired: ${why}` });
     await deps.queueRepo.create({
       sourceSession: item.sourceSession, destinationSession: item.destinationSession, humanIntent: "update", replyTo: requestId,
@@ -98,7 +99,7 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
         log(`approval for ${input.sessionName} not sent: the ${input.toolName} input is too long to show in full`);
         return null;
       }
-      const open = deps.queueRepo.list({ limit: 200 }).filter((q) => q.state === "pending" && q.sourceSession === input.sessionName && q.tags?.includes("approval-request"));
+      const open = deps.queueRepo.list({ tag: "approval-request", state: "pending", limit: 200 }).filter((q) => q.state === "pending" && q.sourceSession === input.sessionName && q.tags?.includes("approval-request"));
       if (open.length >= MAX_PENDING_PER_SEAT) {
         log(`approval for ${input.sessionName} not sent: ${open.length} requests already open`);
         return null;
@@ -118,7 +119,7 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
       return qitemId;
     },
     async sweep() {
-      const open = deps.queueRepo.list({ limit: 200 }).filter((q) => q.state === "pending" && q.tags?.includes("approval-request"));
+      const open = deps.queueRepo.list({ tag: "approval-request", state: "pending", limit: 200 }).filter((q) => q.state === "pending" && q.tags?.includes("approval-request"));
       for (const item of open) {
         if (now() - Date.parse(item.tsCreated) >= timeoutMs()) await expire(item.qitemId, "no answer in time");
         else if (now() - (lastAsked.get(item.qitemId) ?? Math.max(startedAt, Date.parse(item.tsCreated))) >= APPROVAL_ABANDONED_MS) await expire(item.qitemId, "the seat stopped waiting for it");

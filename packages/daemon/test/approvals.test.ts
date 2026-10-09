@@ -104,6 +104,12 @@ describe("Slack approvals", () => {
     expect(repo.list({ limit: 50 }).find((q) => q.replyTo === gone)?.body).toContain("the seat stopped waiting for it");
     expect(click(gone, "reco@external", "allow")).not.toMatchObject({ status: "recorded" });
 
+    const answered = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "make test" } }))!;
+    click(answered, "reco@external", "allow");
+    t += 200_000; expect(await s.wait(asking, "psa-dev@psa", 1)).toBe("pending"); await s.sweep();
+    expect(repo.getById(answered)?.state).toBe("pending");
+    expect(repo.list({ limit: 50 }).some((q) => q.replyTo === answered)).toBe(false);
+
     deadlineMs = 60_000;
     expect(await s.wait(asking, "psa-dev@psa", 1)).toBe("expired");
     expect(repo.list({ limit: 50 }).find((q) => q.replyTo === asking)?.body).toContain("no answer in time");
