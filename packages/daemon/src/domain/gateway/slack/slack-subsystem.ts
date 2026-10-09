@@ -395,9 +395,13 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   // open no root of their own) to the item that owns the root.
   const MAX_REPLY_TO_CHAIN = 32;
   // The human wrote there, so the bot can answer there even when the channel is not configured.
+  // A tag alone is not proof (a seat can set tags); the gateway's own inbound record is.
+  const inboundReceived = new SeenStore(path.join(stateDir(opts.home), "slack-inbound-seen.jsonl"));
+  const isReceivedHere = (message: { channel: string; ts: string } | null): boolean =>
+    !!message && inboundReceived.load().has(`${message.channel}:${message.ts}`);
   const isHumanStartedRoot = (root: { threadTs: string; channel: string; conversationId: string }) => {
     const message = receivedMessage(opts.queueRepo.getById(root.conversationId)?.tags);
-    return message?.channel === root.channel && message.ts === root.threadTs;
+    return message?.channel === root.channel && message.ts === root.threadTs && isReceivedHere(message);
   };
   const deriveReplyToChoice = (p: OutboundPostPayload): ReplyToChoice => {
     let item = p.replyTo ? opts.queueRepo.getById(p.replyTo) : null;
@@ -417,6 +421,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       // replies route back to this seat.
       const humanMessage = receivedMessage(item.tags);
       if (humanMessage && !item.tags?.some((t) => t.startsWith("reply-to:"))) {
+        if (!isConfiguredChannel(humanMessage.channel) && !isReceivedHere(humanMessage)) return { kind: "fallback", reason: "root-other-channel", threadTs: humanMessage.ts };
         const root = { threadTs: humanMessage.ts, channel: humanMessage.channel, human: item.sourceSession, seat: p.sourceSession ?? "", conversationId: item.qitemId };
         threadMap.open(root);
         opts.queueRepo.update({ qitemId: item.qitemId, actorSession: "daemon@kernel", transitionNote: formatPostedStamp({ ...root, messageTs: humanMessage.ts }) });
