@@ -874,6 +874,18 @@ export class TmuxAdapter {
     }
   }
 
+  /** Is the target's pane in a mode (copy-mode, a chooser) where typed keys would not reach its
+   *  program? An unanswerable probe counts as yes, so a caller about to type holds back. */
+  async isPaneInMode(target: string): Promise<boolean> {
+    try {
+      const output = await this.run(["tmux", "display-message", "-p", "-t", target, "#{pane_in_mode}"],
+        `tmux display-message -p -t ${shellQuote(target)} "#{pane_in_mode}"`);
+      return output.trim() !== "0";
+    } catch {
+      return true;
+    }
+  }
+
   /** Seat-handover cutover: signal the pane's foreground process (the retiree) — `TERM` for the graceful
    *  exit-in-place, `KILL` for the bounded-timeout force fallback. Resolves the pane pid then `kill`s it;
    *  an unresolvable pid is a structured, non-throwing failure.
