@@ -32,7 +32,7 @@ export class ChannelRecovery {
   private coverage?: ChannelCoverage;
   private pass?: Promise<void>;
   private stopped = false;
-  /** Per root, the settled bound of its last read attempt this process: a failed root waits its turn too. */
+  /** Per root, the settled bound of its last failed read this process: a failed root waits its turn too. */
   private readonly attempted = new Map<string, bigint>();
   private state = "not-started";
   private reason: string | undefined;
@@ -109,7 +109,7 @@ export class ChannelRecovery {
     const degraded: Record<string, string> = Object.fromEntries(Object.entries(base.degraded ?? {}).filter(([root]) => followed.includes(root)));
     const floor = (root: string) => roots[root] ?? (slackMicros(root)! > slackMicros(base.since)! ? root : base.since);
     const behind = (root: string) => slackMicros(floor(root))!;
-    // Least recently visited first, whether the last visit succeeded or failed: every root gets its
+    // Least recently visited first, a failed read counting as a visit: every root gets its
     // turn, so neither healthy nor failing threads can be starved when a pass cannot reach them all.
     const turn = (root: string) => { const tried = this.attempted.get(root) ?? 0n; return tried > behind(root) ? tried : behind(root); };
     const todo = followed.filter((root) => !deleted.has(root) && slackMicros(root) !== null && behind(root) < slackMicros(upper)!)
@@ -118,15 +118,14 @@ export class ChannelRecovery {
       this.save({ ...this.coverage!, threads: { since: base.since, roots, deleted: [...deleted].filter((r) => followed.includes(r)), degraded, ...extra } });
     for (const root of todo) {
       if (this.stopped || this.now() > deadline - REPLIES_CALL_MS) return;
-      this.attempted.set(root, slackMicros(upper)!);
       const from = slackMicros(floor(root))!;
       const read = await this.readReplies(root, from, upper, deadline);
       if (this.stopped) return;
       if (read.kind === "deleted") { deleted.add(root); delete roots[root]; delete degraded[root]; persist(); continue; }
-      if (read.kind === "capability") { degraded[root] = read.error; persist(); continue; }
+      if (read.kind === "capability") { this.attempted.set(root, slackMicros(upper)!); degraded[root] = read.error; persist(); continue; }
       if (read.kind === "out-of-budget") return;
       if (read.kind === "rate-limited") { persist({ nextRetryAt: this.now() + read.retryAfterSeconds * 1000 }); return; }
-      if (read.kind === "failed") { degraded[root] = `transient: ${read.error}`; persist(); continue; }
+      if (read.kind === "failed") { this.attempted.set(root, slackMicros(upper)!); degraded[root] = `transient: ${read.error}`; persist(); continue; }
       for (const message of read.replies) {
         const ev = { ...message, channel: this.opts.channel!, thread_ts: root, recoveredAfterGap: true } as SlackEvent;
         if (!ingestDecision(ev).ingest) continue;
