@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { answerPrompt, makeStuckPromptWatch, promptChoices, readPrompt, type StuckPrompt } from "../src/domain/stuck-prompt-watch.js";
+import { answerPrompt, makeStuckPromptWatch, promptBlock, promptChoices, readPrompt, type StuckPrompt } from "../src/domain/stuck-prompt-watch.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -157,6 +157,21 @@ describe("stuck-prompt watch", () => {
 
   it("offers no buttons when the cursor is not on the plain Yes", () => {
     expect(promptChoices(claude.replace(" ❯ 1. Yes", "   1. Yes").replace("   4. No", " ❯ 4. No"))).toBeUndefined();
+  });
+
+  it("the notice shows what the prompt runs, credentials masked; a dialog too long to show in full gets no buttons", () => {
+    const dialog = (command: string[]) => ["─".repeat(80), " Bash command", "", ...command.map((l) => `   ${l}`), "", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""].join("\n");
+    const shown = readPrompt(dialog(["API_TOKEN=s3cr3tvalue123 ./deploy --env prod"]))!;
+    expect(shown.choices).toBeDefined();
+    const block = promptBlock(shown);
+    expect(block).toContain("./deploy --env prod");
+    expect(block).toContain("Do you want to proceed?");
+    expect(block).not.toContain("s3cr3tvalue123");
+    expect(block.startsWith("```\n")).toBe(true);
+    const long = readPrompt(dialog(Array.from({ length: 40 }, (_, i) => `echo this is line number ${i} of a long generated deployment script`)))!;
+    expect(long.dialogCut).toBe(true);
+    expect(long.choices).toBeUndefined();
+    expect(long.dialog).toContain("(truncated)");
   });
 });
 

@@ -27,6 +27,17 @@ export interface StuckPrompt {
   key: string;
   /** The keys of its plain "Yes" and "No" options, when both are unambiguous. */
   choices?: PromptChoices;
+  /** What the prompt asks about (its dialog text: the command, its description), credentials masked. */
+  dialog?: string;
+}
+
+/** The most dialog text a notice shows; a longer one is cut, and a cut prompt gets no buttons. */
+export const PROMPT_DIALOG_CAP = 1500;
+
+/** The prompt as the notice shows it: its dialog text in a code block, else its question line. */
+export function promptBlock(p: { dialog?: string; promptLine: string }): string {
+  const fence = "`".repeat(3);
+  return p.dialog ? `${fence}\n${p.dialog.split(fence).join("` ` `")}\n${fence}` : p.promptLine;
 }
 
 export interface PromptChoices { allow: { key: string; label: string }; deny: { key: string; label: string } }
@@ -53,14 +64,17 @@ export function promptChoices(pane: string): PromptChoices | undefined {
 
 /** What the pane shows now: the prompt's reason, fingerprint, question and choices, or null when
  *  it is not at a prompt. The same reading names an episode and checks it before an answer. */
-export function readPrompt(pane: string): { reason: string; key: string; promptLine: string; choices?: PromptChoices } | null {
+export function readPrompt(pane: string): { reason: string; key: string; promptLine: string; choices?: PromptChoices; dialog: string; dialogCut: boolean } | null {
   const seen = classifyPaneActivity(pane);
   if (seen.state !== "attention" || !PROMPT_REASONS.has(seen.reason ?? "")) return null;
   const evidence = String(seen.evidence ?? "");
-  const { body, bordered } = promptBody(pane, evidence);
+  const { body, bordered, dialog: text } = promptBody(pane, evidence);
   const key = createHash("sha256").update(`${seen.reason}|${body}`).digest("hex");
-  // Answerable only when the whole dialog is in view: a cut-off top could hide what is being approved.
-  return { reason: seen.reason!, key, promptLine: questionLine(pane, evidence), choices: bordered ? promptChoices(pane) : undefined };
+  const masked = maskSecrets(text);
+  const dialogCut = !bordered || masked.length > PROMPT_DIALOG_CAP;
+  const dialog = masked.length > PROMPT_DIALOG_CAP ? `${masked.slice(0, PROMPT_DIALOG_CAP)}\n… (truncated)` : masked;
+  // Answerable only when the human sees all of what they approve: the whole dialog, shown in full.
+  return { reason: seen.reason!, key, promptLine: questionLine(pane, evidence), choices: dialogCut ? undefined : promptChoices(pane), dialog, dialogCut };
 }
 
 export interface StuckPromptWatchDeps {
@@ -97,12 +111,18 @@ const DIALOG_BORDER = /^[╭─━]{20,}/;
 
 /** The prompt's text from its dialog's top border (else 60 lines above the options) to the end. The
  *  border starts at the left edge; a rule inside the shown command is indented. */
-function promptBody(pane: string, evidence: string): { body: string; bordered: boolean } {
+function promptBody(pane: string, evidence: string): { body: string; bordered: boolean; dialog: string } {
   const raw = pane.split("\n");
   const at = Math.max(0, anchorLine(raw.map((l) => l.trim()), evidence));
   let from = at;
   while (from > Math.max(0, at - 60) && !DIALOG_BORDER.test(raw[from]!)) from--;
-  return { body: flat(raw.slice(from).join("")), bordered: DIALOG_BORDER.test(raw[from]!) };
+  const bordered = DIALOG_BORDER.test(raw[from]!);
+  // The dialog's text above its options: the command and what it says about it.
+  const above = raw.slice(bordered ? from + 1 : from);
+  const firstOption = above.findIndex((l) => OPTION_LINE.test(l));
+  const dialog = (firstOption >= 0 ? above.slice(0, firstOption) : above).map((l) => l.trim())
+    .filter((l) => l && !/^[╌─━-]+$/.test(l)).join("\n");
+  return { body: flat(raw.slice(from).join("")), bordered, dialog };
 }
 
 export interface StuckPromptWatch {
@@ -141,7 +161,7 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
         if (episode.notifiedAt === undefined ? now() - episode.since < afterMs : now() - episode.notifiedAt < REMIND_AFTER_MS) continue;
         episode.notifiedAt = now();
         const episodeId = createHash("sha256").update(`${session}|${key}`).digest("hex").slice(0, 20);
-        await deps.notify({ session, reason: prompt.reason, promptLine, attach: `tmux attach -t ${session}`, episodeId, key,
+        await deps.notify({ session, reason: prompt.reason, promptLine, attach: `tmux attach -t ${session}`, episodeId, key, dialog: prompt.dialog,
           ...(prompt.choices ? { choices: prompt.choices } : {}), waitingMinutes: Math.floor((now() - episode.since) / 60_000) });
       }
     },

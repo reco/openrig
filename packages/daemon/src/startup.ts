@@ -2148,7 +2148,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     });
     queueRepoInstance.startWaitReminders();
     {
-      const { makeStuckPromptWatch } = await import("./domain/stuck-prompt-watch.js");
+      const { makeStuckPromptWatch, promptBlock } = await import("./domain/stuck-prompt-watch.js");
       // Enough for a long command's whole dialog, so two prompts differing only near the top differ.
       const STUCK_PROMPT_CAPTURE_LINES = 120;
       deps.stuckPromptWatch = makeStuckPromptWatch({
@@ -2170,7 +2170,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           const waiting = `Waiting for ${p.waitingMinutes} minutes. Attach: \`${p.attach}\``;
           if (!p.choices) {
             await queueRepoInstance.create({ tags: ["stuck-prompt", `stuck-prompt:${p.episodeId}`], sourceSession: "daemon@kernel",
-              destinationSession: human.address, humanIntent: "update", summary, body: `${p.promptLine}\n\n${waiting}`, nudge: false });
+              destinationSession: human.address, humanIntent: "update", summary, body: `${promptBlock(p)}\n\n${waiting}`, nudge: false });
             return;
           }
           // Answerable from Slack: the seat is the source, so the answer's reply row reaches it.
@@ -2181,7 +2181,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
             destinationSession: human.address,
             humanIntent: "decision",
             summary,
-            body: `${p.promptLine}\n\nApprove selects "${p.choices.allow.label}" in the terminal, Deny selects "${p.choices.deny.label}", only while this prompt is still up. ${waiting}`,
+            body: `${promptBlock(p)}\n\nApprove selects "${p.choices.allow.label}" in the terminal, Deny selects "${p.choices.deny.label}", only while this prompt is still up. ${waiting}`,
             humanQuestions: [{ id: "answer", question: `Answer ${p.session}'s prompt?`, options: [{ id: "allow", label: "Approve" }, { id: "deny", label: "Deny" }] }],
             nudge: false,
           });
