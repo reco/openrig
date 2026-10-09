@@ -81,6 +81,9 @@ function project(q: RepoQueueItem, transition: QueueTransition, entities: readon
   } else {
     destinationSession = resolveRegisteredHumanAddress(q.destinationSession, entities);
     sourceSession = q.sourceSession;
+    // A row a human addressed to themselves is never an ask to them: posting it back would offer
+    // them a button on their own message (a Confirm click there created the next such row).
+    if (destinationSession && resolveRegisteredHumanAddress(q.sourceSession, entities) === destinationSession) return null;
   }
   if (!destinationSession) return null;
   return {

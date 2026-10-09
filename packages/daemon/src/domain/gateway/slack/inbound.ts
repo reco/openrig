@@ -531,6 +531,12 @@ export class InboundRouter {
   /** Runs only after any earlier Confirm on the same decision finished, so `decided` and `won`
    *  are read after that click's resolve and mark. */
   private async confirmInTurn(actorSession: string, offerQitemId: string, route: { destination: string; tags?: string[] }, channel: string | undefined, offerTs: string | undefined): Promise<{ status: InboundDisposition; reason?: string }> {
+    // A thread whose seat is the clicking human has no agent to tell: the answer would be a row to
+    // themselves (posted back with a new Confirm). Nothing is created.
+    if (route.destination.split("@")[0] === actorSession.split("@")[0]) {
+      this.deps.log?.(`confirm DROPPED offer=${offerQitemId}: its thread routes back to ${actorSession}`);
+      return { status: "ignored", reason: "confirm-to-self" };
+    }
     const offer = this.deps.confirmOffer?.({ offerQitemId, actorSession });
     if (!offer?.ok) return { status: "refused", reason: offer?.reason ?? "confirm-unavailable" };
     const retire = async (outcome: ConfirmOutcome) => {

@@ -265,6 +265,15 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     expect(findings[0]!.evidenceRef).toBe(`rig queue show ${row.qitemId}`);
   });
 
+  it("a human's own message to an unknown seat never sends its finding back to that human", async () => {
+    const row = await repo.create({ sourceSession: "reco@external", destinationSession: "daemon@kernel", body: "hello", summary: "hello", nudge: false });
+    failNudge(row.qitemId);
+    expect((await runSweep()).result.outcome).toBe("findings");
+    const findings = await findingsFor(row.qitemId);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.destinationSession).toBe("daemon@kernel");
+  });
+
   it("a row to a seat no known node holds (a typo) sends its finding to the row's creator", async () => {
     const row = await repo.create({ sourceSession: "sender@r", destinationSession: "cfo@r", body: "Kickoff", summary: "Kickoff", nudge: false });
     failNudge(row.qitemId);

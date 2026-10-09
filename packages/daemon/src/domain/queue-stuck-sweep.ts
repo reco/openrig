@@ -368,9 +368,10 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
     const candidates: Candidate[] = [];
     // An obligation addressed to a seat no known node holds (a typo) has nobody there to act;
     // its creator hears about it instead.
+    // Only an agent seat hears about it: a human's own message (a Slack inbound) never routes back to them.
+    const isAgentSeat = (session: string) => parseSessionName(session).kind === "canonical" && !isHumanSeatSessionRef(session);
     const ownerOrSender = (row: QueueItem) => resolveOrch(row.destinationSession)
-      ?? (parseSessionName(row.destinationSession).kind === "canonical" && !isHumanSeatSessionRef(row.destinationSession)
-        && !resolveSessionNodeId(deps.db, row.destinationSession)
+      ?? (isAgentSeat(row.destinationSession) && isAgentSeat(row.sourceSession) && !resolveSessionNodeId(deps.db, row.destinationSession)
         ? row.sourceSession : row.destinationSession);
 
     // Half 1 — claimed-never-closed. The claimant holds the obligation; the finding

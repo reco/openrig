@@ -15,6 +15,7 @@ import { DEFAULT_CONFIG, saveConfig } from "../src/domain/gateway/slack/config.j
 import { resolveSlackHandle } from "../src/domain/gateway/human-registry.js";
 import { MissionControlActionLog } from "../src/domain/mission-control/mission-control-action-log.js";
 import { MissionControlWriteContract } from "../src/domain/mission-control/mission-control-write-contract.js";
+import { ThreadSeatMap } from "../src/domain/gateway/slack/thread-seat-map.js";
 
 const founder = { entityId: "reco", class: "human" as const, displayName: "reco", address: "reco@external", connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:SLACK_BOT_TOKEN", role: "primary" as const, handle: "UFOUNDER" }], prefs: { deliveryClass: "A" as const } };
 const registry = { ok: true as const, entities: [founder] };
@@ -101,4 +102,21 @@ describe("Confirm in explicit-answers mode", () => {
     await vi.waitFor(() => expect(postWith("Escalated to the operator.")).toBeDefined());
     expect(JSON.stringify(postWith("Escalated to the operator.")!.blocks)).not.toContain("or-confirm");
   });
+
+  it("a row the human addressed to themselves is never posted", async () => {
+    await repo.create({ sourceSession: "reco@external", destinationSession: "reco@external", summary: "Stuck sweep: undelivered-wake", body: "self-addressed finding", nudge: false });
+    await repo.create({ sourceSession: "lead@rig", destinationSession: "reco@external", summary: "Real ask", body: "a real ask", nudge: false });
+    await vi.waitFor(() => expect(postWith("a real ask")).toBeDefined());
+    await new Promise((r) => setTimeout(r, 200));
+    expect(postWith("self-addressed finding")).toBeUndefined();
+  });
+
+  it("a Confirm in a thread whose seat is the clicking human creates no row back to them", async () => {
+    const offer = await repo.create({ sourceSession: "lead@rig", destinationSession: "reco@external", summary: "Loop?", body: "offer in a self-seated thread", nudge: false });
+    await vi.waitFor(() => expect(postWith("offer in a self-seated thread")).toBeDefined());
+    new ThreadSeatMap(db).open({ threadTs: "77.1", channel: "C-MAIN", human: "reco@external", seat: "reco@external", conversationId: offer.qitemId });
+    await click(`or-confirm:${offer.qitemId}`, "77.1");
+    expect(repo.list({ limit: 100 }).filter((q) => q.sourceSession === "reco@external" && q.destinationSession === "reco@external")).toEqual([]);
+  });
 });
+
