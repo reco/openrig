@@ -151,6 +151,13 @@ async function withClient<T>(
 }
 
 function printResult(json: boolean, body: unknown, status: number): void {
+  // A destination that matches no seat of a known rig is accepted as typed (aliases, adopted
+  // seats); say so where a human or agent sees it, not only inside the JSON.
+  const advisories = (body as { advisories?: unknown } | null)?.advisories;
+  for (const advisory of Array.isArray(advisories) ? advisories : []) {
+    const message = (advisory as { message?: unknown } | null)?.message;
+    if (typeof message === "string") console.error(`Warning: ${message}`);
+  }
   if (status >= 400 && body && typeof body === "object"
     && (body as { error?: unknown }).error === "remote_queue_write_failed"
     && (body as { outcome?: unknown }).outcome === "indeterminate") {

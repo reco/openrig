@@ -11,11 +11,13 @@ describe("queue destination advisory through CLI and route", () => {
       throw Object.assign(new Error("no fixture socket"), { code: "ENOENT" });
     }, tmuxExec: async () => "" });
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const source = daemon.deps.rigRepo.createRig("advisory-source");
       daemon.deps.rigRepo.addNode(source.id, "sender.ba", { runtime: null });
       const target = daemon.deps.rigRepo.createRig("advisory-target");
       daemon.deps.rigRepo.addNode(target.id, "product.ba", { runtime: null });
+      daemon.deps.rigRepo.addNode(target.id, "finance.cfo", { runtime: null });
       const client = { post: async (url: string, body: unknown) => {
         const response = await daemon.app.request(url, { method: "POST", headers: {
           "Content-Type": "application/json", "X-OpenRig-Session": "sender-ba@advisory-source",
@@ -34,19 +36,24 @@ describe("queue destination advisory through CLI and route", () => {
           const args = verb === "create"
             ? [verb, "--destination", "prodcut-ba@advisory-target", "--body", "fixture", "--summary", "fixture"]
             : [verb, original.qitemId, "--to", "prodcut-ba@advisory-target"];
-          log.mockClear();
+          log.mockClear(); warn.mockClear();
           await queueCommand(deps).parseAsync([...args, "--no-nudge", ...(json ? ["--json"] : [])], { from: "user" });
+          expect(warn.mock.calls.map((call) => call.join(" ")).join("\n")).toMatch(/^Warning: Suspected seat typo: 'prodcut-ba@advisory-target'/m);
           const result = JSON.parse(log.mock.calls.map(call => call.join(" ")).join("\n"));
           expect(result.advisories[0].code).toBe("unmatched_destination_seat");
-          expect(result.advisories[0].availableDestinations).toEqual(["product-ba@advisory-target"]);
+          expect(result.advisories[0].availableDestinations).toEqual(["finance-cfo@advisory-target", "product-ba@advisory-target"]);
           expect(result.advisories[0].message).toContain("does not guarantee pickup or delivery");
           const row = result.created ?? result;
           expect(row.destinationSession).toBe("prodcut-ba@advisory-target");
           expect(daemon.deps.queueRepo.getById(row.qitemId)?.destinationSession).toBe(row.destinationSession);
         }
       }
+      warn.mockClear();
+      await queueCommand(deps).parseAsync(["create", "--destination", "cfo@advisory-target", "--body", "fixture", "--summary", "fixture", "--no-nudge"], { from: "user" });
+      expect(warn.mock.calls.map((call) => call.join(" ")).join("\n")).toContain("Did you mean finance-cfo@advisory-target?");
     } finally {
       log.mockRestore();
+      warn.mockRestore();
       daemon.eventLoopMonitor.stop(); daemon.contextMonitor.stop(); daemon.deps.seatActivityService?.stop();
       daemon.db.close();
       if (saved.noKernel === undefined) delete process.env.OPENRIG_NO_KERNEL;

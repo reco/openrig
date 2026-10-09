@@ -409,11 +409,17 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     const availableDestinations = [...new Set(names.flatMap((entry) => [
       entry.session_name, canonicalName(entry.logical_id),
     ]).filter((destination): destination is string => !!destination && parseSessionName(destination).kind === "canonical"))].sort();
+    const typed = parsed.member.toLowerCase();
+    const likely = availableDestinations.filter((destination) => {
+      const member = destination.slice(0, destination.lastIndexOf("@")).toLowerCase();
+      return member.includes(typed) || typed.includes(member);
+    });
     return {
       code: "unmatched_destination_seat" as const,
       destinationSession: sessionRef,
       availableDestinations,
       message: `Suspected seat typo: '${sessionRef}' matches no session address of locally known rig '${parsed.rig}'. `
+        + (likely.length ? `Did you mean ${likely.join(" or ")}? ` : "")
         + `Available destinations: ${availableDestinations.join(", ") || "(none)"}. `
         + "The row keeps the exact destination as typed; this warning does not guarantee pickup or delivery.",
     };
