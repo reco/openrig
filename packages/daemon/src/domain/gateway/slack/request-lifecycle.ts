@@ -15,6 +15,8 @@ export type LinkState = "open" | "merged" | "closed" | "done" | "canceled" | "un
 
 export const REQUEST_CLOSED_PREFIX = "request-closed";
 export const REQUEST_REMINDER_PREFIX = "request-reminder";
+export const CARD_CLOSED_PREFIX = "slack-card-closed";
+export const CARD_CLOSE_FAILED_PREFIX = "slack-card-close-failed";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const FINISHED: readonly LinkState[] = ["merged", "closed", "done", "canceled"];
 
@@ -27,6 +29,9 @@ export interface RequestLifecycleDeps {
   /** State of a PR or issue link (queue links are read from the queue itself). */
   linkState: (link: RequestLink) => Promise<LinkState>;
   postInThread: (channel: string, threadTs: string, text: string) => Promise<boolean>;
+  /** Rewrite the request's own card without buttons and with this closing line; the message ts it
+   *  rewrote, null when it has no card, or an error. */
+  closeCard?: (qitemId: string, channel: string, line: string) => Promise<{ ok: true; messageTs: string | null } | { ok: false; messageTs: string; error: string }>;
   log?: (msg: string) => void;
 }
 
@@ -64,6 +69,8 @@ async function stateOf(deps: RequestLifecycleDeps, link: RequestLink): Promise<L
 
 function describeClose(reason: string): string {
   if (reason === "linked-outcome-finished") return "the linked work is finished.";
+  const expired = /^approval-expired: (.*)$/s.exec(reason);
+  if (expired) return `expired, ${expired[1]}.`;
   if (reason === "canceled-by-seat") return "canceled by the asking seat.";
   const human = /^canceled-by-human(?:: (.*))?$/s.exec(reason);
   if (human) return human[1] ? `canceled (${human[1]})` : "canceled.";
@@ -74,6 +81,11 @@ function describeClose(reason: string): string {
  *  and a closing line in the thread. `canceled` marks the row canceled instead of done. */
 export async function closeRequest(deps: RequestLifecycleDeps, root: ThreadMapping, reason: string, actorSession: string, canceled = false): Promise<void> {
   const item = deps.queueRepo.getById(root.conversationId);
+  // An approval the daemon expired was not canceled by its seat: say what happened.
+  const expiry = reason === "canceled-by-seat"
+    ? [...deps.queueRepo.transitionLog.listForQitem(root.conversationId)].reverse().find((t) => t.transitionNote?.startsWith("approval expired: "))?.transitionNote
+    : undefined;
+  if (expiry) reason = `approval-expired: ${expiry.slice("approval expired: ".length)}`;
   const active = item && ["pending", "in-progress"].includes(item.state) && item.destinationSession === root.human;
   deps.queueRepo.update({
     qitemId: root.conversationId,
@@ -92,8 +104,37 @@ export async function closeRequest(deps: RequestLifecycleDeps, root: ThreadMappi
       nudge: true,
     });
   }
+  await closeCard(deps, root.conversationId, root.channel, `Closed: ${describeClose(reason)}`);
   const posted = await deps.postInThread(root.channel, root.threadTs, escapeSlackText(redactSecrets(`Closed: ${describeClose(reason)}`)));
   if (!posted) deps.log?.(`request ${root.conversationId} closed; the closing line was not posted`);
+}
+
+/** Its buttons can no longer do anything, so they go; the outcome is recorded on the row, and a
+ *  failed rewrite is retried by the sweep until it lands. */
+async function closeCard(deps: RequestLifecycleDeps, qitemId: string, channel: string, line: string): Promise<void> {
+  if (!deps.closeCard) return;
+  const r = await deps.closeCard(qitemId, channel, line).catch((e: Error) => ({ ok: false as const, messageTs: "?", error: e.message }));
+  if (r.ok && r.messageTs === null) return;
+  const note = r.ok
+    ? `${CARD_CLOSED_PREFIX} channel=${channel} message_ts=${r.messageTs} line=${JSON.stringify(line)}`
+    : `${CARD_CLOSE_FAILED_PREFIX} channel=${channel} message_ts=${r.messageTs} line=${JSON.stringify(line)} error=${r.error}`;
+  deps.queueRepo.update({ qitemId, actorSession: "daemon@kernel", transitionNote: note });
+  if (!r.ok) deps.log?.(`request ${qitemId}: its card still shows buttons (${r.error}); retried on the next sweep`);
+}
+
+/** Cards whose last rewrite failed, with the line it was to show. */
+function cardsToRetry(deps: RequestLifecycleDeps): Array<{ qitemId: string; channel: string; line: string }> {
+  const rows = deps.queueRepo.db.prepare(
+    `SELECT t.qitem_id AS qitemId, t.transition_note AS note FROM queue_transitions t
+      WHERE t.actor_session = 'daemon@kernel' AND (t.transition_note LIKE ? OR t.transition_note LIKE ?)
+        AND t.transition_id = (SELECT MAX(u.transition_id) FROM queue_transitions u WHERE u.qitem_id = t.qitem_id AND u.actor_session = 'daemon@kernel'
+          AND (u.transition_note LIKE ? OR u.transition_note LIKE ?))`,
+  ).all(`${CARD_CLOSED_PREFIX} %`, `${CARD_CLOSE_FAILED_PREFIX} %`, `${CARD_CLOSED_PREFIX} %`, `${CARD_CLOSE_FAILED_PREFIX} %`) as Array<{ qitemId: string; note: string }>;
+  return rows.filter((r) => r.note.startsWith(`${CARD_CLOSE_FAILED_PREFIX} `)).flatMap((r) => {
+    const channel = /\bchannel=(\S+)/.exec(r.note)?.[1];
+    const line = /\bline=("(?:[^"\\]|\\.)*")/.exec(r.note)?.[1];
+    return channel && line ? [{ qitemId: r.qitemId, channel, line: JSON.parse(line) as string }] : [];
+  });
 }
 
 async function remind(deps: RequestLifecycleDeps, root: ThreadMapping, days: number): Promise<void> {
@@ -118,6 +159,7 @@ async function remind(deps: RequestLifecycleDeps, root: ThreadMapping, days: num
 export async function sweepRequests(deps: RequestLifecycleDeps, now = new Date()): Promise<{ closed: string[]; reminded: string[] }> {
   const closed: string[] = [];
   const reminded: string[] = [];
+  for (const card of cardsToRetry(deps)) await closeCard(deps, card.qitemId, card.channel, card.line);
   for (const root of deps.threadMap.listOpenConversations()) {
     if (Number(root.threadTs) * 1000 < (deps.floorMs ?? 0)) continue;
     try {

@@ -63,6 +63,8 @@ export interface OutboundMessageOpts {
   confirmOutcome?: ConfirmOutcome;
   /** Phase 1: every question is answered; the button rows are replaced by the answers. */
   answered?: boolean;
+  /** The request is closed (expired, canceled, finished): no buttons; any answers stay, and this line says why. */
+  closedNote?: string;
 }
 
 /** A1.2 — the four attribution fields. */
@@ -309,19 +311,23 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
   const attachmentText = imageBlocks.map((b) => `Image: ${(b as { alt_text: string }).alt_text}`).join("\n");
   const evidence = buildEvidenceLink(opts.evidenceLink);
   const explicit = opts.answerHint === true;
+  const closed = opts.closedNote ? bounded(inert(opts.closedNote), SLACK_SECTION_CAP, "closed note") : null;
+  const answeredAny = Object.keys(q.humanAnswers ?? {}).length > 0;
   const questionParts = !q.humanQuestions?.length ? null
+    : closed ? (answeredAny ? buildAnsweredBlocks(q.humanQuestions, q.humanAnswers ?? {}) : null)
     : opts.answered ? buildAnsweredBlocks(q.humanQuestions, q.humanAnswers ?? {})
     : buildQuestionBlocks(q.humanQuestions, explicit ? null : TYPED_REPLY_HINT);
   const confirmText = q.humanConfirm ?? (explicit && q.humanIntent !== "update" && !q.humanQuestions?.length ? DEFAULT_CONFIRM_LABEL : null);
-  const confirmParts = confirmText ? buildConfirmBlocks(q.qitemId, confirmText, opts.confirmOutcome, q.humanIntent !== "update") : null;
+  const confirmParts = confirmText && !closed ? buildConfirmBlocks(q.qitemId, confirmText, opts.confirmOutcome, q.humanIntent !== "update") : null;
   if (opts.extraBlocks?.length) {
     throw new HumanMessageShapeError("Extra blocks have no complete accessible fallback. Use mediaRefs for images or author supplemental human detail.");
   }
-  const text = bounded([headline, body, questionParts?.text, confirmParts?.text, attr, evidence ? evidence.text : null, attachmentText, opts.reconcileMarker].filter(Boolean).join("\n"), SLACK_TEXT_CAP, "complete fallback");
+  const text = bounded([headline, body, questionParts?.text, confirmParts?.text, closed ? `*${closed}*` : null, attr, evidence ? evidence.text : null, attachmentText, opts.reconcileMarker].filter(Boolean).join("\n"), SLACK_TEXT_CAP, "complete fallback");
   const blocks: unknown[] = headline ? [{ type: "section", text: { type: "mrkdwn", text: headline } }] : [];
   if (body.trim()) blocks.push({ type: "section", text: { type: "mrkdwn", text: body } });
   if (questionParts) blocks.push(...questionParts.blocks);
   if (confirmParts) blocks.push(...confirmParts.blocks);
+  if (closed) blocks.push({ type: "section", text: { type: "mrkdwn", text: `*${closed}*` } });
   blocks.push(...imageBlocks);
   if (evidence) blocks.push(evidence.block);
   blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: attr }] });

@@ -477,6 +477,18 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       if (!r.ok) log(`request lifecycle post failed thread=${threadTs}: ${r.error}`);
       return r.ok;
     },
+    closeCard: async (qitemId, channel, line) => {
+      const item = opts.queueRepo.getById(qitemId);
+      // The request's own card: the message its latest posted receipt names.
+      const messageTs = [...opts.queueRepo.transitionLog.listForQitem(qitemId)].reverse()
+        .find((t) => t.actorSession === "daemon@kernel" && t.transitionNote?.startsWith("slack-owner-notification-posted "))
+        ?.transitionNote?.split(/\s+/).find((f) => f.startsWith("message_ts="))?.slice("message_ts=".length) ?? null;
+      if (!item || !messageTs) return { ok: true, messageTs: null };
+      if (!bot) return { ok: false, messageTs, error: "bot token unavailable" };
+      const message = buildOutboundMessage(item, { ...repostInputs(item), closedNote: line });
+      const r = await updateChatMessage(bot, { channel, ts: messageTs, ...message }, opts.fetchImpl);
+      return r.ok ? { ok: true, messageTs } : { ok: false, messageTs, error: r.error ?? "update failed" };
+    },
     log,
   };
 
@@ -818,6 +830,17 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       unsubscribeOutbound = opts.queueRepo.events.subscribe((event) => {
         if ((event.type === "queue.created" || event.type === "queue.updated" || event.type === "queue.handed_off")
           && opts.queueRepo.transitionLog.latestOwnerNotificationForQitem(event.qitemId)) driver.kick();
+        // A canceled request (an expired approval included) closes now, not at the next sweep, so its
+        // card loses its buttons while the human may still be looking at it.
+        const change = event as { type: string; qitemId: string; fromState?: string; toState?: string };
+        if (change.type === "queue.updated" && change.toState === "canceled" && change.fromState !== "canceled") {
+          // After the current write finishes: a close already under way (a human's cancel) has closed the thread by then.
+          setImmediate(() => {
+            const root = threadMap.resolveByConversation(change.qitemId);
+            if (root?.state !== "open" || root.conversationId !== change.qitemId) return;
+            void closeRequest(lifecycle, root, "canceled-by-seat", "daemon@kernel").catch((e) => log(`request ${change.qitemId} close failed: ${(e as Error).message}`));
+          });
+        }
       });
       log("slack outbound driver started (subsystem path)");
     });
