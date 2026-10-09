@@ -40,6 +40,12 @@ export function makeThreadRouteResolver(opts: {
     const threadTs = (ev as { thread_ts?: string }).thread_ts;
     if (threadTs) {
       const mapping = opts.map.resolveByThread(threadTs);
+      // A thread whose seat is its own human (left by the Confirm self-loop) has no agent: its replies
+      // go where an unrouted message goes, never back to the human.
+      if (mapping?.human && mapping.seat.split("@")[0] === mapping.human.split("@")[0]) {
+        log(`inbound thread_ts=${threadTs} has no agent seat (seat is its human) -> unrouted-signal to ${unrouted}`);
+        return { destination: unrouted, tags: [...BASE_TAGS, "unrouted-signal", `thread-ts:${threadTs}`], routeClass: "unmapped-thread" };
+      }
       if (mapping) {
         // FOUNDER ROOT INVARIANT (2026-08-27): the map stores the bare local seat because the
         // queue row's source_session is bare inside one instance — the seat routes as stored.

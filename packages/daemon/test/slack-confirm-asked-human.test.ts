@@ -118,5 +118,12 @@ describe("Confirm in explicit-answers mode", () => {
     await click(`or-confirm:${offer.qitemId}`, "77.1");
     expect(repo.list({ limit: 100 }).filter((q) => q.sourceSession === "reco@external" && q.destinationSession === "reco@external")).toEqual([]);
   });
+
+  it("a reply in a thread whose seat is its own human reaches the channel's inbound seat, not the human", async () => {
+    const offer = await repo.create({ sourceSession: "lead@rig", destinationSession: "reco@external", summary: "x", body: "self-seated thread fixture", nudge: false });
+    new ThreadSeatMap(db).open({ threadTs: "88.1", channel: "C-MAIN", human: "reco@external", seat: "reco@external", conversationId: offer.qitemId });
+    socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-self-reply", type: "events_api", payload: { event: { type: "message", user: "UFOUNDER", text: "is this thing on", ts: "88.2", thread_ts: "88.1", channel: "C-MAIN" } } }) });
+    await vi.waitFor(() => expect(repo.list({ limit: 100 }).find((q) => q.body.includes("is this thing on"))?.destinationSession).toBe("lead@rig"));
+  });
 });
 
