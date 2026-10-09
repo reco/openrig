@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { makeStuckPromptWatch, type StuckPrompt } from "../src/domain/stuck-prompt-watch.js";
+import { answerPrompt, makeStuckPromptWatch, promptChoices, readPrompt, type StuckPrompt } from "../src/domain/stuck-prompt-watch.js";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const prompt = (question: string) => ["", "  Edit file", question, "❯ 1. Yes", "  2. Yes, and don't ask again", "  3. No", ""].join("\n");
 
@@ -100,4 +102,40 @@ describe("stuck-prompt watch", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]!.promptLine).toBe("Do you want to   proceed?");
   });
+
+  const claude = readFileSync(resolve(__dirname, "fixtures/claude-permission-prompt-2.1.295.txt"), "utf8");
+  const codex = ["  Would you like to run the following command?", "", "  $ touch /tmp/x", "",
+    "› 1. Yes, proceed (y)", "  2. Yes, and don't ask again for commands that start with `touch` (p)", "  3. No, and tell Codex what to do differently (esc)", "",
+    "  Press enter to confirm or esc to cancel"].join("\n");
+
+  it("Approve is the plain Yes and Deny the No, never always-allow or switch-to-auto (Claude 2.1.295, Codex 0.161)", () => {
+    expect(promptChoices(claude)).toEqual({ allow: { key: "1", label: "Yes" }, deny: { key: "4", label: "No" } });
+    expect(promptChoices(codex)).toEqual({ allow: { key: "1", label: "Yes, proceed" }, deny: { key: "3", label: "No, and tell Codex what to do differently" } });
+    expect(promptChoices(["Which color?", "❯ 1. Red", "  2. Blue"].join("\n"))).toBeUndefined();
+    expect(promptChoices(["Allow network access?", "› 1. Yes, just this once (y)", "  2. No (n)"].join("\n"))).toBeUndefined();
+  });
+
+  it("a stuck permission prompt's notice carries its fingerprint and choices", async () => {
+    let t = 0;
+    const sent: StuckPrompt[] = [];
+    const watch = makeStuckPromptWatch({ runningSessions: () => ["cfo@finance"], capture: async () => claude, notify: async (p) => { sent.push(p); }, now: () => t });
+    await watch.tick(); t = 6 * 60_000; await watch.tick();
+    expect(sent[0]).toMatchObject({ key: readPrompt(claude)!.key, choices: { allow: { key: "1" }, deny: { key: "4" } } });
+  });
+
+  it("an answer is typed only while the same prompt is up", async () => {
+    const keys: string[] = [];
+    let pane = claude;
+    const deps = { capture: async () => pane, sendKey: async (_s: string, k: string) => { keys.push(k); } };
+    const key = readPrompt(claude)!.key;
+    expect(await answerPrompt(deps, "cfo@finance", key, "1")).toBe("sent");
+    expect(keys).toEqual(["1"]);
+    expect(readPrompt(claude.replace("\n touch digit-probe-1.txt\n", "\n rm -rf /work/project\n"))!.key).not.toBe(key);
+    pane = claude.replaceAll("touch digit-probe-1.txt", "rm -rf /work/project");
+    expect(await answerPrompt(deps, "cfo@finance", key, "1")).toBe("moved-on");
+    pane = "✻ Working… (esc to interrupt)";
+    expect(await answerPrompt(deps, "cfo@finance", key, "1")).toBe("moved-on");
+    expect(keys).toEqual(["1"]);
+  });
 });
+

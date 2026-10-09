@@ -1,7 +1,8 @@
 // The Confirm button in explicit-answers mode: only on a post that waits on a human, and a click
 // by that human replaces it with the confirmed state, also for a park on the human's own address.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { actOnPromptAnswers, readPrompt } from "../src/domain/stuck-prompt-watch.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDb } from "../src/db/connection.js";
@@ -141,6 +142,43 @@ describe("Confirm in explicit-answers mode", () => {
     await vi.waitFor(() => expect(repo.list({ limit: 100 }).find((q) => q.body.includes("Yes") && q.sourceSession === "reco@external")?.destinationSession).toBe("lead@rig"));
     await vi.waitFor(() => expect(repo.list({ limit: 100 }).find((q) => q.body.includes("go ahead"))?.destinationSession).toBe("worker@rig"));
     expect(repo.list({ limit: 100 }).some((q) => q.destinationSession === "daemon@kernel")).toBe(false);
+  });
+
+  it("a stuck permission prompt is answered from Slack: Approve types its plain Yes once; a late click types nothing", async () => {
+    const pane = readFileSync(join(__dirname, "fixtures/claude-permission-prompt-2.1.295.txt"), "utf8");
+    const prompt = readPrompt(pane)!;
+    const notice = async () => repo.create({
+      tags: ["stuck-prompt", "stuck-prompt:ep1", "stuck-prompt-session:cfo@finance", `stuck-prompt-key:${prompt.key}`, "stuck-prompt-allow:1", "stuck-prompt-deny:4"],
+      sourceSession: "cfo@finance", destinationSession: "reco@external", humanIntent: "decision", summary: "cfo@finance is waiting at a selection prompt",
+      body: "Do you want to proceed?", humanQuestions: [{ id: "answer", question: "Answer cfo@finance's prompt?", options: [{ id: "allow", label: "Approve" }, { id: "deny", label: "Deny" }] }], nudge: false,
+    });
+    const answerClick = (ts: string, option: string, user = "UFOUNDER") => {
+      socket.onmessage?.({ data: JSON.stringify({ envelope_id: `e-q-${ts}-${option}-${user}`, type: "interactive", payload: {
+        type: "block_actions", user: { id: user }, channel: { id: "C-MAIN" }, container: { type: "message", message_ts: ts, channel_id: "C-MAIN" }, message: { ts },
+        actions: [{ type: "button", block_id: "or-q:answer", action_id: `or-opt:${option}`, value: option, action_ts: `${Date.now()}` }] } }) });
+      return new Promise((r) => setTimeout(r, 100));
+    };
+    let screen = pane;
+    const keys: string[] = [];
+    const deps = { capture: async () => screen, sendKey: async (_s: string, k: string) => { keys.push(k); screen = "✻ Working… (esc to interrupt)"; } };
+
+    const first = await notice();
+    await vi.waitFor(() => expect(posts.some((p) => p.text && JSON.stringify(p.blocks).includes(`or-opt:allow`) && String(p.text).includes("Do you want to proceed?"))).toBe(true));
+    const ts = `${posts.findIndex((p) => String(p.text).includes("Do you want to proceed?")) + 1}.1`;
+    await answerClick(ts, "allow", "USTRANGER");
+    await actOnPromptAnswers(repo, deps);
+    expect(keys).toEqual([]);
+    await answerClick(ts, "allow");
+    await actOnPromptAnswers(repo, deps);
+    await actOnPromptAnswers(repo, deps);
+    expect(keys).toEqual(["1"]);
+    expect(repo.list({ limit: 100 }).find((q) => q.replyTo === first.qitemId && q.summary === "Approved in the terminal")).toBeDefined();
+
+    const late = await notice();
+    repo.recordHumanAnswer({ qitemId: late.qitemId, actorSession: "reco@external", questionId: "answer", optionId: "allow" });
+    await actOnPromptAnswers(repo, deps);
+    expect(keys).toEqual(["1"]);
+    expect(repo.list({ limit: 100 }).find((q) => q.replyTo === late.qitemId)?.body).toContain("had already moved on");
   });
 });
 
