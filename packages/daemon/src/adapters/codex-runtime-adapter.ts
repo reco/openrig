@@ -186,7 +186,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     }
     const configPath = this.resolveCodexConfigPath();
     const existing = this.fs.exists(configPath) ? this.fs.readFile(configPath) : "";
-    const withHooks = upsertCodexActivityHooks(existing, relay);
+    // The Slack approval hook ships beside the relay; Codex reads no plugin hooks/codex.json.
+    const approvalPath = nodePath.join(nodePath.dirname(relay), "approval-request.cjs");
+    const approval = this.fs.exists(approvalPath) ? approvalPath : null;
+    const withHooks = upsertCodexActivityHooks(existing, relay, approval);
     if (withHooks !== existing) {
       this.fs.mkdirp(nodePath.dirname(configPath));
       this.fs.writeFile(configPath, withHooks);
@@ -198,7 +201,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     // — without a blanket native trust keystroke. If native identity/hash semantics
     // change, the remaining review is surfaced for a decision. Idempotent
     // + non-clobbering; only touches our 4 keys. See applyCodexActivityHookTrust for the RTFM.
-    const trusted = this.applyCodexActivityHookTrust(withHooks, configPath, relay);
+    const trusted = this.applyCodexActivityHookTrust(withHooks, configPath, relay, approval);
     if (trusted !== withHooks) {
       this.fs.mkdirp(nodePath.dirname(configPath));
       this.fs.writeFile(configPath, trusted);
@@ -215,7 +218,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
    * string is the value Codex deserializes from our TOML literal `'node "<relay>"'` — i.e.
    * `node "<relay>"` WITHOUT the outer TOML quote delimiters. Timeout=5, matcher/status None.
    */
-  private applyCodexActivityHookTrust(content: string, configPath: string, relay: string): string {
+  private applyCodexActivityHookTrust(content: string, configPath: string, relay: string, approval: string | null): string {
     let keySource = configPath;
     try {
       keySource = fs.realpathSync.native(configPath);
@@ -227,6 +230,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     let next = content;
     for (const event of OPENRIG_ACTIVITY_HOOK_EVENTS) {
       const { key, hash } = computeCodexHookTrust(event, { keySource, command, timeoutSec: 5 });
+      next = upsertCodexHookTrust(next, key, hash);
+    }
+    if (approval) {
+      const { key, hash } = computeCodexHookTrust("PermissionRequest", { keySource, command: `node "${approval}"`, timeoutSec: CODEX_APPROVAL_HOOK_TIMEOUT_SEC, handlerIndex: 1 });
       next = upsertCodexHookTrust(next, key, hash);
     }
     return next;
@@ -1212,10 +1219,16 @@ const OPENRIG_ACTIVITY_HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "Stop"
  * runs the hook under. No matcher (verified on 0.139: no-matcher fires for every
  * turn-scope event).
  */
-function upsertCodexActivityHooks(content: string, relayPath: string): string {
+/** Matches the Claude plugin's approval hook; the hook's own wait (580 s) and the daemon's expiry stay under it. */
+const CODEX_APPROVAL_HOOK_TIMEOUT_SEC = 600;
+
+function upsertCodexActivityHooks(content: string, relayPath: string, approvalPath: string | null = null): string {
   const command = `'node "${relayPath}"'`;
+  const approvalHandler = approvalPath
+    ? `\n\n[[hooks.PermissionRequest.hooks]]\ntype = "command"\ncommand = 'node "${approvalPath}"'\ntimeout = ${CODEX_APPROVAL_HOOK_TIMEOUT_SEC}`
+    : "";
   const stanzas = OPENRIG_ACTIVITY_HOOK_EVENTS
-    .map((ev) => `[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${command}\ntimeout = 5`)
+    .map((ev) => `[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${command}\ntimeout = 5${ev === "PermissionRequest" ? approvalHandler : ""}`)
     .join("\n\n");
   const block = `${OPENRIG_ACTIVITY_HOOKS_BEGIN}\n${stanzas}\n${OPENRIG_ACTIVITY_HOOKS_END}\n`;
 
