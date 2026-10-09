@@ -65,4 +65,24 @@ describe("stuck-prompt watch", () => {
     t = 5 * 60_000; pane = prompt("Run npm test?"); await watch.tick();
     expect(sent).toHaveLength(1);
   });
+
+  it("a new Claude approval with the same question is a new episode; the same prompt is reminded hourly", async () => {
+    let t = 0;
+    const claude = (command: string) => ["", " Bash command", "", `   ${command}`, "   Run the command", "", " Do you want to proceed?",
+      " ❯ 1. Yes", "   2. Yes, and don't ask again for this command", "   3. No, and tell Claude what to do differently (esc)", ""].join("\n");
+    let pane = claude("npm test");
+    const sent: StuckPrompt[] = [];
+    const watch = makeStuckPromptWatch({ runningSessions: () => ["lead@rig"], capture: async () => pane, notify: async (p) => { sent.push(p); }, now: () => t });
+    await watch.tick();
+    t = 6 * 60_000; await watch.tick();
+    pane = claude("git push origin feature"); t = 7 * 60_000; await watch.tick();
+    t = 13 * 60_000; await watch.tick();
+    expect(sent.map((p) => p.promptLine)).toEqual(["Do you want to proceed?", "Do you want to proceed?"]);
+    expect(sent[0]!.episodeId).not.toBe(sent[1]!.episodeId);
+    t = 72 * 60_000; await watch.tick();
+    expect(sent).toHaveLength(2);
+    t = 73 * 60_000; await watch.tick();
+    expect(sent).toHaveLength(3);
+    expect(sent[2]).toMatchObject({ episodeId: sent[1]!.episodeId, waitingMinutes: 66 });
+  });
 });

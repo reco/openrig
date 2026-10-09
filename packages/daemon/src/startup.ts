@@ -2151,9 +2151,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         notify: async (p) => {
           const registry = loadHumanRegistryForDelivery(OPENRIG_HOME);
           const human = registry.ok ? registry.entities.find((e) => e.role !== "requester") : undefined;
-          // One notice per prompt episode; the same prompt again within an hour (a restart) is not a new one.
+          // The same prompt episode again soon after (a restart) is not a new notice; the hourly reminder is.
           const recent = db.prepare(`SELECT 1 FROM queue_items WHERE tags LIKE ? AND ts_created > ? LIMIT 1`)
-            .get(`%"stuck-prompt:${p.episodeId}"%`, new Date(Date.now() - 60 * 60_000).toISOString());
+            .get(`%"stuck-prompt:${p.episodeId}"%`, new Date(Date.now() - 50 * 60_000).toISOString());
           if (!human || recent) return;
           await queueRepoInstance.create({
             tags: ["stuck-prompt", `stuck-prompt:${p.episodeId}`],
@@ -2161,7 +2161,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
             destinationSession: human.address,
             humanIntent: "update",
             summary: `${p.session} is waiting at a ${p.reason === "permission_prompt" ? "permission" : "selection"} prompt`,
-            body: `${p.promptLine}\n\nWaiting for over 5 minutes. Attach: \`${p.attach}\``,
+            body: `${p.promptLine}\n\nWaiting for ${p.waitingMinutes} minutes. Attach: \`${p.attach}\``,
             nudge: false,
           });
         },
