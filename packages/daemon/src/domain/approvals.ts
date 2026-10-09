@@ -80,11 +80,9 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
     const item = deps.queueRepo.getById(requestId);
     // An answer already given stands: the hook returns it, whatever closes the row afterwards.
     if (!item || item.state !== "pending" || item.humanAnswers?.[QUESTION_ID]) return;
+    // Canceling closes the request: its card loses its buttons and its own thread says why and where
+    // the prompt went (request-lifecycle closeRequest).
     deps.queueRepo.update({ qitemId: requestId, actorSession: "daemon@kernel", state: "canceled", transitionNote: `approval expired: ${why}` });
-    await deps.queueRepo.create({
-      sourceSession: item.sourceSession, destinationSession: item.destinationSession, humanIntent: "update", replyTo: requestId,
-      summary: "Expired", body: `Not used: ${why}. Approve / Deny here no longer does anything; the prompt is waiting in the terminal: tmux attach -t ${item.sourceSession}`, nudge: false,
-    }).catch(() => {});
   };
   const service: ApprovalService = {
     verify: (sessionName, seatToken) => deps.verifySeat(sessionName, seatToken),

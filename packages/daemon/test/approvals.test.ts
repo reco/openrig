@@ -101,7 +101,8 @@ describe("Slack approvals", () => {
     t += 30_000; await s.sweep();
     expect(repo.getById(gone)?.state).toBe("canceled");
     expect(repo.getById(asking)?.state).toBe("pending");
-    expect(repo.list({ limit: 50 }).find((q) => q.replyTo === gone)?.body).toContain("the seat stopped waiting for it");
+    expect(repo.transitionLog.listForQitem(gone).some((t) => t.transitionNote === "approval expired: the seat stopped waiting for it")).toBe(true);
+    expect(repo.list({ limit: 50 }).some((q) => q.replyTo === gone)).toBe(false);
     expect(click(gone, "reco@external", "allow")).not.toMatchObject({ status: "recorded" });
 
     const answered = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "make test" } }))!;
@@ -112,7 +113,7 @@ describe("Slack approvals", () => {
 
     deadlineMs = 60_000;
     expect(await s.wait(asking, "psa-dev@psa", 1)).toBe("expired");
-    expect(repo.list({ limit: 50 }).find((q) => q.replyTo === asking)?.body).toContain("no answer in time");
+    expect(repo.transitionLog.listForQitem(asking).some((t) => t.transitionNote === "approval expired: no answer in time")).toBe(true);
   });
 
   it("approvalTimeoutSeconds defaults to thirty minutes and stays within an hour", () => {

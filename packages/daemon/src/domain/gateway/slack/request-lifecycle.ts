@@ -112,7 +112,10 @@ export async function closeRequest(deps: RequestLifecycleDeps, root: ThreadMappi
     });
   }
   await closeCard(deps, root.conversationId, root.channel, `Closed: ${describeClose(reason)}`);
-  const posted = await deps.postInThread(root.channel, root.threadTs, escapeSlackText(redactSecrets(`Closed: ${describeClose(reason)}`)));
+  // An expired approval's thread also says where its prompt went (the note used to be a separate post,
+  // which found this thread already closed and became a new top-level message).
+  const where = expiry ? ` Approve / Deny here no longer does anything; the prompt is waiting in the terminal: tmux attach -t ${root.seat}` : "";
+  const posted = await deps.postInThread(root.channel, root.threadTs, escapeSlackText(redactSecrets(`Closed: ${describeClose(reason)}${where}`)));
   if (!posted) deps.log?.(`request ${root.conversationId} closed; the closing line was not posted`);
 }
 

@@ -72,7 +72,10 @@ describe("an expired or canceled approval card loses its buttons", () => {
     expect(actionable(card)).toBe(false);
     expect(String(card.text)).toContain("Closed: expired, the seat stopped waiting for it.");
     expect(String(card.text)).toContain("rm -rf build");
-    await vi.waitFor(() => expect(posts.some((p) => p.thread_ts === ts && String(p.text).includes("Closed: expired"))).toBe(true));
+    await vi.waitFor(() => expect(posts.some((p) => p.thread_ts === ts && String(p.text).includes("Closed: expired") && String(p.text).includes("tmux attach -t dev@rig"))).toBe(true));
+    // The explanation lives in the card's own thread: nothing about it is posted as a new top-level message.
+    await new Promise((r) => setTimeout(r, 150));
+    expect(posts.filter((p) => p.thread_ts === undefined && /Expired|Not used|no longer does anything/.test(String(p.text)))).toEqual([]);
     expect(repo.transitionLog.listForQitem(id).some((x) => x.transitionNote?.startsWith(`slack-card-closed channel=C-MAIN message_ts=${ts}`))).toBe(true);
   });
 
