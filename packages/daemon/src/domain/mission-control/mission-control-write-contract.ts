@@ -87,6 +87,9 @@ export interface MissionControlActionInput {
    * notify failure does NOT roll back durable state.
    */
   notify?: boolean;
+  /** In-process only (the HTTP route never sets it): the caller verified the actor is the human
+   *  this park waits on, so a park on that human's own address (not a human@kernel seat) resolves. */
+  parkedOnActor?: boolean;
 }
 
 export interface MissionControlActionResult {
@@ -381,7 +384,7 @@ export class MissionControlWriteContract {
         { qitemId: input.qitemId },
       );
     }
-    if (source.state !== "blocked" || !isHumanSeatSession(source.blockedOn)) {
+    if (source.state !== "blocked" || !(isHumanSeatSession(source.blockedOn) || (input.parkedOnActor && source.blockedOn))) {
       throw new MissionControlWriteContractError(
         "qitem_not_leg1_parked",
         `verb=resolve requires a leg-1 parked qitem (state=blocked with a human-seat blocked_on); ` +

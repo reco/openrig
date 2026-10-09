@@ -84,6 +84,14 @@ describe("Confirm in explicit-answers mode", () => {
     const replaced = updates.find((u) => u.ts === ts)!;
     expect(JSON.stringify(replaced.blocks)).not.toContain("or-confirm");
     expect(String(replaced.text)).toContain("Decided");
+
+    repo.update({ qitemId: work.qitemId, actorSession: "lead@rig", state: "blocked", blockedOn: "reco@external", transitionNote: "parked again" });
+    await vi.waitFor(() => expect(posts.filter((p) => String(p.text).includes("Slack enabled; verify")).length).toBeGreaterThan(1));
+    const again = posts.findLast((p) => String(p.text).includes("Slack enabled; verify"))!;
+    const againTs = `${posts.lastIndexOf(again) + 1}.1`;
+    await click(`or-confirm:${work.qitemId}`, againTs);
+    await vi.waitFor(() => expect(repo.getById(work.qitemId)?.state).toBe("in-progress"));
+    expect(db.prepare("SELECT COUNT(*) AS n FROM mission_control_actions WHERE qitem_id = ? AND action_verb = 'resolve'").get(work.qitemId)).toEqual({ n: 2 });
   });
 
   it("a notice that waits on no human carries no Confirm button", async () => {

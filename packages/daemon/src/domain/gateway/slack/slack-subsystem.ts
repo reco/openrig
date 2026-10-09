@@ -74,7 +74,7 @@ export interface SlackWireOpts {
 }
 
 interface HumanReplyActionPort {
-  act(input: { verb: "resolve"; qitemId: string; actorSession: string; decision: string }): Promise<unknown>;
+  act(input: { verb: "resolve"; qitemId: string; actorSession: string; decision: string; parkedOnActor?: boolean }): Promise<unknown>;
 }
 
 const isResolvedNotice = (q: { ownerNotificationKind?: string | null }) => q.ownerNotificationKind === "human-decision-resolved";
@@ -90,7 +90,8 @@ export function makeHumanReplyResolver(
     if (queueRepo.getById(input.qitemId)?.humanIntent === "update") return "not-applicable";
     if (!contract) return "not-applicable";
     try {
-      await contract.act({ verb: "resolve", ...input });
+      // Only reached behind the gateway's asked-human check, so a park on that human's own address counts.
+      await contract.act({ verb: "resolve", ...input, parkedOnActor: true });
       return "resolved";
     } catch (error) {
       if ((error as { code?: string }).code !== "qitem_not_leg1_parked") throw error;
@@ -104,18 +105,6 @@ export function makeHumanReplyResolver(
       // disposition; the inbound create is already the one wake back to the
       // source, so a second nudge here would duplicate attention.
       const direct = queueRepo.getById(input.qitemId);
-      // A park on a registered human's own address (not a human@kernel seat): the caller has
-      // already checked that this human is the one it waits on, so the answer unparks it.
-      if (direct?.state === "blocked") {
-        queueRepo.update({
-          qitemId: input.qitemId,
-          actorSession: input.actorSession,
-          state: "in-progress",
-          transitionNote: input.decision,
-          ownerNotificationKind: "human-decision-resolved",
-        });
-        return "resolved";
-      }
       if (
         direct?.state !== "pending" ||
         direct.destinationSession !== input.actorSession ||
