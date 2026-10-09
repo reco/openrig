@@ -76,4 +76,13 @@ describe("Slack approvals", () => {
     expect(JSON.parse(hook.decisionOutput("deny")!).hookSpecificOutput.decision.behavior).toBe("deny");
     expect(hook.decisionOutput(null)).toBeNull();
   });
+
+  it("shows a Codex network grant as network access, and an apply_patch as the patch text", async () => {
+    const s = service();
+    const net = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "curl https://registry.npmjs.org", description: "network-access registry.npmjs.org" } }))!;
+    expect(repo.getById(net)?.body).toContain("*Network access to registry.npmjs.org*\n```\ncurl https://registry.npmjs.org\n```");
+    const patch = "*** Begin Patch\n*** Update File: a.ts\n@@\n-x\n+y\n*** End Patch";
+    const edit = (await s.start({ sessionName: "psa-dev@psa", toolName: "apply_patch", toolInput: { command: patch } }))!;
+    expect(repo.getById(edit)?.body).toContain(`\`\`\`\n${patch}\n\`\`\``);
+  });
 });

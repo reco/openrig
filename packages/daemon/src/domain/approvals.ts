@@ -44,11 +44,20 @@ export const APPROVAL_TIMEOUT_MS = 570_000;
 const QUESTION_ID = "approval";
 const MAX_PENDING_PER_SEAT = 3;
 
-/** What the human approves, in full: the shell command, or the tool input as JSON. */
+/** What the human approves, in full: the command or patch text as written (Bash, Codex's
+ *  apply_patch), else the tool input as JSON. */
 export function approvalText(toolName: string, toolInput: unknown): string {
   const input = toolInput as { command?: unknown } | null;
-  const raw = toolName === "Bash" && typeof input?.command === "string" ? input.command : JSON.stringify(toolInput ?? {}, null, 2);
+  const raw = typeof input?.command === "string" ? input.command : JSON.stringify(toolInput ?? {}, null, 2);
   return maskSecrets(raw).replace(/```/g, "`​``");
+}
+
+/** Codex says why it asks: a network grant ("network-access <target>") or the agent's justification. */
+function approvalReason(toolInput: unknown): string | null {
+  const description = (toolInput as { description?: unknown } | null)?.description;
+  if (typeof description !== "string" || !description.trim()) return null;
+  const target = /^network-access\s+(.+)$/.exec(description.trim())?.[1];
+  return maskSecrets(target ? `*Network access to ${target}*` : `Reason: ${description.trim()}`).replace(/`/g, "'");
 }
 
 export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService {
@@ -61,7 +70,8 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
       const human = deps.approver();
       if (!human) return null;
       const cwd = deps.cwdOf?.(input.sessionName);
-      const body = `${cwd ? `In \`${cwd.replace(/`/g, "")}\`\n` : ""}\`\`\`\n${approvalText(input.toolName, input.toolInput)}\n\`\`\``;
+      const reason = approvalReason(input.toolInput);
+      const body = `${cwd ? `In \`${cwd.replace(/`/g, "")}\`\n` : ""}${reason ? `${reason}\n` : ""}\`\`\`\n${approvalText(input.toolName, input.toolInput)}\n\`\`\``;
       if (escapeSlackText(redactSecrets(body)).length > SLACK_SECTION_CAP) {
         log(`approval for ${input.sessionName} not sent: the ${input.toolName} input is too long to show in full`);
         return null;
