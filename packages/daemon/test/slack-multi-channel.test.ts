@@ -182,13 +182,17 @@ describe("several Slack channels", () => {
     await vi.waitFor(() => expect(repo.getById(decision.qitemId)?.state).toBe("done"));
   });
 
-  it("a reply into a thread of an unconfigured channel still posts top-level", async () => {
+  it("a reply to a mention in an unconfigured channel answers in the human's thread there, and keeps answering there", async () => {
     await say("UFOUNDER", "C-ELSEWHERE", "From another channel", "130.1");
     const there = rowWith("From another channel")!;
     const update = await repo.create({ sourceSession: "advisor@kernel", destinationSession: "human-founder@external", humanIntent: "update", summary: "Answer", body: "Answered elsewhere.", replyTo: there.qitemId, nudge: false });
     await vi.waitFor(() => expect(posts.some((p) => String(p.text).includes("Answered elsewhere."))).toBe(true));
-    expect(posts.find((p) => String(p.text).includes("Answered elsewhere."))?.thread_ts).toBeUndefined();
-    expect(repo.getById(update.qitemId)?.replyToFallback).toContain("root-other-channel");
+    expect(posts.find((p) => String(p.text).includes("Answered elsewhere."))).toMatchObject({ channel: "C-ELSEWHERE", thread_ts: "130.1" });
+    expect(repo.getById(update.qitemId)?.replyToFallback ?? null).toBeNull();
+    const again = await repo.create({ sourceSession: "advisor@kernel", destinationSession: "human-founder@external", humanIntent: "update", summary: "More", body: "Still elsewhere.", replyTo: update.qitemId, nudge: false });
+    await vi.waitFor(() => expect(posts.some((p) => String(p.text).includes("Still elsewhere."))).toBe(true));
+    expect(posts.find((p) => String(p.text).includes("Still elsewhere."))).toMatchObject({ channel: "C-ELSEWHERE", thread_ts: "130.1" });
+    expect(repo.getById(again.qitemId)?.replyToFallback ?? null).toBeNull();
   });
 
   it("a requester bound to one channel is heard only there, as untrusted conversation", async () => {

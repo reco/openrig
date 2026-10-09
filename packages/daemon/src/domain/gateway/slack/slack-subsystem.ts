@@ -394,6 +394,11 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   // #96 — where a replyTo update posts. Walks back through earlier threaded updates (which
   // open no root of their own) to the item that owns the root.
   const MAX_REPLY_TO_CHAIN = 32;
+  // The human wrote there, so the bot can answer there even when the channel is not configured.
+  const isHumanStartedRoot = (root: { threadTs: string; channel: string; conversationId: string }) => {
+    const message = receivedMessage(opts.queueRepo.getById(root.conversationId)?.tags);
+    return message?.channel === root.channel && message.ts === root.threadTs;
+  };
   const deriveReplyToChoice = (p: OutboundPostPayload): ReplyToChoice => {
     let item = p.replyTo ? opts.queueRepo.getById(p.replyTo) : null;
     for (let depth = 0; item && depth < MAX_REPLY_TO_CHAIN; depth++) {
@@ -403,15 +408,15 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       const root = (inThread ? threadMap.resolveByThread(inThread) : null) ?? threadMap.resolveByConversation(item.qitemId);
       if (root) {
         if (root.state === "closed") return { kind: "fallback", reason: "root-closed", threadTs: root.threadTs };
-        if (!isConfiguredChannel(root.channel)) return { kind: "fallback", reason: "root-other-channel", threadTs: root.threadTs };
+        if (!isConfiguredChannel(root.channel) && !isHumanStartedRoot(root)) return { kind: "fallback", reason: "root-other-channel", threadTs: root.threadTs };
         if (root.seat !== (p.sourceSession ?? "")) return { kind: "fallback", reason: "root-other-seat", threadTs: root.threadTs };
         return { kind: "thread", threadTs: root.threadTs };
       }
-      // A human-started message has no root of ours: answer in that message's own thread and
-      // register it as the thread's root, so the human's later replies route back to this seat.
+      // A human-started message has no root of ours: answer in that message's own thread, in the
+      // channel the human wrote in, and register it as the thread's root, so the human's later
+      // replies route back to this seat.
       const humanMessage = receivedMessage(item.tags);
       if (humanMessage && !item.tags?.some((t) => t.startsWith("reply-to:"))) {
-        if (!isConfiguredChannel(humanMessage.channel)) return { kind: "fallback", reason: "root-other-channel", threadTs: humanMessage.ts };
         const root = { threadTs: humanMessage.ts, channel: humanMessage.channel, human: item.sourceSession, seat: p.sourceSession ?? "", conversationId: item.qitemId };
         threadMap.open(root);
         opts.queueRepo.update({ qitemId: item.qitemId, actorSession: "daemon@kernel", transitionNote: formatPostedStamp({ ...root, messageTs: humanMessage.ts }) });
