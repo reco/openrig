@@ -2164,17 +2164,39 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           const recent = db.prepare(`SELECT 1 FROM queue_items WHERE tags LIKE ? AND ts_created > ? LIMIT 1`)
             .get(`%"stuck-prompt:${p.episodeId}"%`, new Date(Date.now() - 50 * 60_000).toISOString());
           if (!human || recent) return;
+          const summary = `${p.session} is waiting at a ${p.reason === "permission_prompt" ? "permission" : "selection"} prompt`;
+          const waiting = `Waiting for ${p.waitingMinutes} minutes. Attach: \`${p.attach}\``;
+          if (!p.choices) {
+            await queueRepoInstance.create({ tags: ["stuck-prompt", `stuck-prompt:${p.episodeId}`], sourceSession: "daemon@kernel",
+              destinationSession: human.address, humanIntent: "update", summary, body: `${p.promptLine}\n\n${waiting}`, nudge: false });
+            return;
+          }
+          // Answerable from Slack: the seat is the source, so the answer's reply row reaches it.
           await queueRepoInstance.create({
-            tags: ["stuck-prompt", `stuck-prompt:${p.episodeId}`],
-            sourceSession: "daemon@kernel",
+            tags: ["stuck-prompt", `stuck-prompt:${p.episodeId}`, `stuck-prompt-session:${p.session}`, `stuck-prompt-key:${p.key}`,
+              `stuck-prompt-allow:${p.choices.allow.key}`, `stuck-prompt-deny:${p.choices.deny.key}`],
+            sourceSession: p.session,
             destinationSession: human.address,
-            humanIntent: "update",
-            summary: `${p.session} is waiting at a ${p.reason === "permission_prompt" ? "permission" : "selection"} prompt`,
-            body: `${p.promptLine}\n\nWaiting for ${p.waitingMinutes} minutes. Attach: \`${p.attach}\``,
+            humanIntent: "decision",
+            summary,
+            body: `${p.promptLine}\n\nApprove selects "${p.choices.allow.label}" in the terminal, Deny selects "${p.choices.deny.label}", only while this prompt is still up. ${waiting}`,
+            humanQuestions: [{ id: "answer", question: `Answer ${p.session}'s prompt?`, options: [{ id: "allow", label: "Approve" }, { id: "deny", label: "Deny" }] }],
             nudge: false,
           });
         },
       });
+      // A human's Approve / Deny on a stuck-prompt notice is typed into the seat's terminal once, and
+      // only while the same prompt is up; the thread says what happened either way.
+      const { actOnPromptAnswers } = await import("./domain/stuck-prompt-watch.js");
+      let answering = false;
+      setInterval(() => {
+        if (answering) return;
+        answering = true;
+        void actOnPromptAnswers(queueRepoInstance, {
+          capture: (session) => tmuxAdapter.capturePaneContent(session, 40),
+          sendKey: async (session, key) => { const r = await tmuxAdapter.sendKeys(session, [key]); if (!r.ok) throw new Error(r.message ?? "send failed"); },
+        }).catch((e) => console.log(`[stuck-prompt] answer pass failed: ${(e as Error).message}`)).finally(() => { answering = false; });
+      }, 3_000).unref();
     }
     const watchdogScheduler = new WatchdogScheduler({
       jobsRepo: watchdogJobsRepoInstance,
