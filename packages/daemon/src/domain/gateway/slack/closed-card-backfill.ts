@@ -36,7 +36,8 @@ export function planClosedApprovalCards(db: Database.Database, sourceLabel: stri
     if (Object.keys(answers).length > 0 || row.human_confirm || row.human_intent !== "decision") return [];
     const daemon = notesOf(db, row.qitem_id).filter((t) => t.actor === "daemon@kernel" && t.note);
     const expiry = daemon.find((t) => t.note!.startsWith("approval expired: "))?.note;
-    if (!expiry || daemon.some((t) => t.note!.startsWith("slack-card-closed "))) return [];
+    // An open thread is still closed (and its card rewritten) by the live request sweep.
+    if (!expiry || !daemon.some((t) => t.note!.startsWith("request-closed ")) || daemon.some((t) => t.note!.startsWith("slack-card-closed "))) return [];
     const receipt = [...daemon].reverse().find((t) => t.note!.startsWith("slack-owner-notification-posted ") && !/\skind=human-decision-resolved(\s|$)/.test(t.note!))?.note;
     const messageTs = receipt?.split(/\s+/).find((f) => f.startsWith("message_ts="))?.slice("message_ts=".length);
     const posted = daemon.find((t) => t.note!.startsWith("slack-posted ") && t.note!.includes(` message_ts=${messageTs} `))?.note;

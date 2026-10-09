@@ -24,6 +24,7 @@ describe("closed approval card backfill", () => {
     repo.update({ qitemId: row.qitemId, actorSession: "daemon@kernel", transitionNote: `slack-owner-notification-posted notification_key=k level=ALERT kind=human-required message_ts=${n}.1 thread_ts=${n}.1` });
     extra(row.qitemId);
     repo.update({ qitemId: row.qitemId, actorSession: "daemon@kernel", state: "canceled", transitionNote: "approval expired: the prompt is in the terminal" });
+    repo.update({ qitemId: row.qitemId, actorSession: "daemon@kernel", transitionNote: "request-closed reason=canceled-by-seat" });
     return row.qitemId;
   }
 
@@ -38,6 +39,10 @@ describe("closed approval card backfill", () => {
     expect(JSON.stringify(plan[0]!.message.blocks)).not.toContain('"type":"actions"');
     expect(plan[0]!.message.text).toContain("rm -rf /tmp/x");
     expect(planClosedApprovalCards(db, "openrig", [answered])).toEqual([]);
+    const stillOpen = (await repo.create(approval)).qitemId;
+    repo.update({ qitemId: stillOpen, actorSession: "daemon@kernel", transitionNote: "slack-owner-notification-posted notification_key=k level=ALERT kind=human-required message_ts=4.1 thread_ts=4.1" });
+    repo.update({ qitemId: stillOpen, actorSession: "daemon@kernel", state: "canceled", transitionNote: "approval expired: the seat stopped waiting for it" });
+    expect(planClosedApprovalCards(db, "openrig", [stillOpen])).toEqual([]);
   });
 
   it("applies through chat.update on the planned message and returns the note to record", async () => {

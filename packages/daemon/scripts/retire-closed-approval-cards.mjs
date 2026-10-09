@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Operator one-off: take the buttons off expired approval cards that closed before closed cards
 // lost them. Dry run by default (prints the plan, reads the queue read-only, writes nothing).
+// Run from a built checkout of the installed commit (it imports ../dist; the package does not ship it).
 //   node scripts/retire-closed-approval-cards.mjs [--home <OPENRIG_HOME>]                 # plan every candidate
 //   node scripts/retire-closed-approval-cards.mjs --qitem <id> [--qitem <id>] --apply      # rewrite exactly these cards
 // After --apply, record each printed note on its row: rig queue update <id> --note "<note>".
@@ -29,7 +30,9 @@ if (!apply) { console.error(`dry run: ${cards.length} card(s); nothing written`)
 
 const bot = resolveSecret("SLACK_BOT_TOKEN", { envFile: cfg.secretsEnvFile ?? undefined });
 if (!bot) { console.error("SLACK_BOT_TOKEN unresolved; nothing written"); process.exit(2); }
-for (const r of await retireClosedApprovalCards(cards, bot)) {
+const results = await retireClosedApprovalCards(cards, bot);
+for (const r of results) {
   console.log(JSON.stringify(r));
   console.log(`rig queue update ${r.qitemId} --note ${JSON.stringify(r.note)}`);
 }
+if (missing.length || results.some((r) => !r.ok)) process.exit(1);
