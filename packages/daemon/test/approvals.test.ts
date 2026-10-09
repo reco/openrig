@@ -8,6 +8,10 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import { makeApprovalService } from "../src/domain/approvals.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadConfig } from "../src/domain/gateway/slack/config.js";
 
 const require = createRequire(import.meta.url);
 const hook = require("../assets/plugins/openrig-core/hooks/scripts/approval-request.cjs") as { decisionOutput: (d: unknown) => string | null; askUntilAnswered: (post: (body: unknown) => Promise<Record<string, unknown>>, first: unknown, deadline: number) => Promise<string | null> };
@@ -19,7 +23,7 @@ describe("Slack approvals", () => {
   let repo: QueueRepository;
   beforeEach(() => { db = createDb(); migrate(db, ALL_MIGRATIONS); repo = new QueueRepository(db, new EventBus(db), { loadHumanRegistry: () => registry }); });
   afterEach(() => db.close());
-  const service = (timeoutMs = 2000) => makeApprovalService({ queueRepo: repo, optedIn: () => ["psa-dev@psa"], approver: () => "reco@external", verifySeat: () => true, cwdOf: () => "/work/psa", timeoutMs, pollMs: 10 });
+  const service = (timeoutMs = 2000) => makeApprovalService({ queueRepo: repo, optedIn: () => ["psa-dev@psa"], approver: () => "reco@external", verifySeat: () => true, cwdOf: () => "/work/psa", timeoutMs: () => timeoutMs, pollMs: 10 });
   const click = (id: string, actor: string, option: string) => repo.recordHumanAnswer({ qitemId: id, actorSession: actor, questionId: "approval", optionId: option });
 
   it("asks the approver with the full command, literal credentials masked, and returns their Approve", async () => {
@@ -85,4 +89,34 @@ describe("Slack approvals", () => {
     const edit = (await s.start({ sessionName: "psa-dev@psa", toolName: "apply_patch", toolInput: { command: patch } }))!;
     expect(repo.getById(edit)?.body).toContain(`\`\`\`\n${patch}\n\`\`\``);
   });
+
+  it("the sweep expires a request whose hook stopped asking, and one past the configured deadline", async () => {
+    let t = Date.now();
+    let deadlineMs = 1_800_000;
+    const s = makeApprovalService({ queueRepo: repo, optedIn: () => ["psa-dev@psa"], approver: () => "reco@external", verifySeat: () => true, timeoutMs: () => deadlineMs, pollMs: 10, now: () => t });
+    const gone = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "make release" } }))!;
+    const asking = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "make docs" } }))!;
+    expect(await s.wait(gone, "psa-dev@psa", 1)).toBe("pending");
+    t += 100_000; expect(await s.wait(asking, "psa-dev@psa", 1)).toBe("pending");
+    t += 30_000; await s.sweep();
+    expect(repo.getById(gone)?.state).toBe("canceled");
+    expect(repo.getById(asking)?.state).toBe("pending");
+    expect(repo.list({ limit: 50 }).find((q) => q.replyTo === gone)?.body).toContain("the seat stopped waiting for it");
+    expect(click(gone, "reco@external", "allow")).not.toMatchObject({ status: "recorded" });
+
+    deadlineMs = 60_000;
+    expect(await s.wait(asking, "psa-dev@psa", 1)).toBe("expired");
+    expect(repo.list({ limit: 50 }).find((q) => q.replyTo === asking)?.body).toContain("no answer in time");
+  });
+
+  it("approvalTimeoutSeconds defaults to thirty minutes and stays within an hour", () => {
+    const home = mkdtempSync(join(tmpdir(), "approval-config-"));
+    try {
+      writeFileSync(join(home, "slack-connector.json"), JSON.stringify({ enabled: false }));
+      expect(loadConfig(home).approvalTimeoutSeconds).toBe(1800);
+      writeFileSync(join(home, "slack-connector.json"), JSON.stringify({ enabled: false, approvalTimeoutSeconds: 3601 }));
+      expect(() => loadConfig(home)).toThrow(/approvalTimeoutSeconds/);
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
 });
+

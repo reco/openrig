@@ -1219,8 +1219,8 @@ const OPENRIG_ACTIVITY_HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "Stop"
  * runs the hook under. No matcher (verified on 0.139: no-matcher fires for every
  * turn-scope event).
  */
-/** Matches the Claude plugin's approval hook; the hook's own wait (580 s) and the daemon's expiry stay under it. */
-const CODEX_APPROVAL_HOOK_TIMEOUT_SEC = 600;
+/** Just above the longest approval deadline (an hour); the daemon ends the wait, as for Claude seats. */
+const CODEX_APPROVAL_HOOK_TIMEOUT_SEC = 3660;
 
 function upsertCodexActivityHooks(content: string, relayPath: string, approvalPath: string | null = null): string {
   const command = `'node "${relayPath}"'`;

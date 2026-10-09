@@ -1340,9 +1340,10 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       const { ensureSeatTokenSecret, seatToken, seatTokenMatches } = await import("./domain/seat-token.js");
       const { loadConfig: loadSlackConfig } = await import("./domain/gateway/slack/config.js");
       const { loadHumanRegistry } = await import("./domain/gateway/human-registry.js");
-      return makeApprovalService({
+      const service = makeApprovalService({
         queueRepo: queueRepoInstance,
         optedIn: () => { try { return loadSlackConfig(OPENRIG_HOME).approvalSeats; } catch { return []; } },
+        timeoutMs: () => { try { return loadSlackConfig(OPENRIG_HOME).approvalTimeoutSeconds * 1000; } catch { return 1_800_000; } },
         approver: () => { const r = loadHumanRegistry(OPENRIG_HOME); return r.ok ? r.entities.find((e) => e.role !== "requester")?.address ?? null : null; },
         verifySeat: (sessionName, presented) => {
           const row = db.prepare("SELECT node_id FROM sessions WHERE session_name = ? ORDER BY id DESC LIMIT 1").get(sessionName) as { node_id: string } | undefined;
@@ -1352,6 +1353,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         cwdOf: (sessionName) => (db.prepare("SELECT n.cwd AS cwd FROM nodes n JOIN sessions s ON s.node_id = n.id WHERE s.session_name = ? ORDER BY s.id DESC LIMIT 1").get(sessionName) as { cwd: string | null } | undefined)?.cwd ?? null,
         log: (m) => console.log(`[approvals] ${m}`),
       });
+      setInterval(() => { void service.sweep().catch((e) => console.log(`[approvals] sweep failed: ${(e as Error).message}`)); }, 30_000).unref();
+      return service;
     })(),
     contextUsageStore,
     healthProjection,

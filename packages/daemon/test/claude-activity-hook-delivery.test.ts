@@ -16,7 +16,8 @@
 // source produces NO dangling commands and NO false projected claim.
 
 import { describe, it, expect } from "vitest";
-import { ClaudeCodeAdapter, type ClaudeAdapterFsOps } from "../src/adapters/claude-code-adapter.js";
+import { ClaudeCodeAdapter, PACKAGED_APPROVAL_HASHES, type ClaudeAdapterFsOps } from "../src/adapters/claude-code-adapter.js";
+import { createHash } from "node:crypto";
 import { shellQuote } from "../src/adapters/shell-quote.js";
 import type { NodeBinding } from "../src/domain/runtime-adapter.js";
 import { readFileSync, existsSync, statSync } from "node:fs";
@@ -365,3 +366,33 @@ describe("Claude activity-hook — REAL SHIPPED-spec resolver -> planner -> adap
     }
   });
 });
+
+describe("Slack approval hook projection", () => {
+  const APPROVAL_SRC = "/assets/plugins/openrig-core/hooks/scripts/approval-request.cjs";
+  const APPROVAL_DEST = "/project/.openrig/hooks/scripts/approval-request.cjs";
+  const shipped = readFileSync(pathResolve(__dirname, "../assets/plugins/openrig-core/hooks/scripts/approval-request.cjs"), "utf8");
+  const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+
+  it("the shipped approval-request.cjs is in the list of versions projection may replace", () => {
+    expect(PACKAGED_APPROVAL_HASHES.has(sha(shipped))).toBe(true);
+  });
+
+  it("projects the approval hook with the hour-long outer timeout, replacing an older shipped copy", async () => {
+    const older = "older shipped copy";
+    const fs = enableFs({ [APPROVAL_SRC]: shipped, [APPROVAL_DEST]: older });
+    PACKAGED_APPROVAL_HASHES.add(sha(older));
+    try { await makeAdapter(fs).project(plan([activityEntry()]), binding()); } finally { PACKAGED_APPROVAL_HASHES.delete(sha(older)); }
+    expect(fs._store[APPROVAL_DEST]).toBe(shipped);
+    const hook = readSettings(fs).hooks.PermissionRequest.flatMap((g: any) => g.hooks).find((h: any) => h.command === `node ${shellQuote(APPROVAL_DEST)}`);
+    expect(hook.timeout).toBe(3660);
+  });
+
+  it("keeps a project copy someone edited in place, and still points the hook at it", async () => {
+    const edited = shipped.replace("async function main", "// local policy\nasync function main");
+    const fs = enableFs({ [APPROVAL_SRC]: shipped, [APPROVAL_DEST]: edited });
+    await makeAdapter(fs).project(plan([activityEntry()]), binding());
+    expect(fs._store[APPROVAL_DEST]).toBe(edited);
+    expect(allCommands(readSettings(fs))).toContain(`node ${shellQuote(APPROVAL_DEST)}`);
+  });
+});
+

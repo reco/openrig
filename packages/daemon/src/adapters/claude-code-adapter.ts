@@ -954,10 +954,15 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       const approvalSource = nodePath.join(nodePath.dirname(this.activityRelayPath!), "approval-request.cjs");
       if (this.fs.exists(approvalSource)) {
         const approvalDest = nodePath.join(nodePath.dirname(relayDest), "approval-request.cjs");
-        this.fs.copyFile(approvalSource, approvalDest);
-        this.preserveMode(approvalSource, approvalDest);
+        // A copy someone edited in place (a local policy) is kept; only a shipped version is replaced.
+        if (!this.fs.exists(approvalDest) || PACKAGED_APPROVAL_HASHES.has(hashContent(this.fs.readFile(approvalDest)))) {
+          this.fs.copyFile(approvalSource, approvalDest);
+          this.preserveMode(approvalSource, approvalDest);
+        } else if (hashContent(this.fs.readFile(approvalDest)) !== hashContent(this.fs.readFile(approvalSource))) {
+          console.error(`[openrig] kept the locally edited ${approvalDest}; it does not get the shipped approval-request.cjs updates`);
+        }
         const groups = Array.isArray(hooks["PermissionRequest"]) ? (hooks["PermissionRequest"] as unknown[]) : [];
-        groups.push({ hooks: [{ type: "command", command: `node ${shellQuote(approvalDest)}`, timeout: 600 }] });
+        groups.push({ hooks: [{ type: "command", command: `node ${shellQuote(approvalDest)}`, timeout: APPROVAL_HOOK_TIMEOUT_SEC }] });
         hooks["PermissionRequest"] = groups;
       }
     }
@@ -992,6 +997,16 @@ interface ActivityHookOutcome {
 // user command that merely contains the path (echo, or node with extra args) does NOT.
 const OWNED_RELAY_SUFFIX = "/.openrig/hooks/scripts/activity-relay.cjs";
 const OWNED_APPROVAL_SUFFIX = "/.openrig/hooks/scripts/approval-request.cjs";
+/** Just above the longest approval deadline (MAX_APPROVAL_TIMEOUT_SECONDS); the daemon ends the wait. */
+const APPROVAL_HOOK_TIMEOUT_SEC = 3660;
+/** sha256 of every approval-request.cjs this package has shipped: a project copy matching one is ours to update. */
+export const PACKAGED_APPROVAL_HASHES = new Set([
+  "c009fe7c6717b942aa18cb5de744134aad2e52548bfc76ab337407973339232e",
+  "afc0d089bf1e46a3811c0088afc3c889e35a1164e0507b592f8363b7d88e0a0e",
+  "362370ab22d138306c19dd611074f6760863d474811dbf6bcf5a4bf79025fb7f",
+  "f6f31b1aa5271bf0129613ed7f6bff4002e4958728a3cfbcd6ab100ece93222b",
+  "4152246955b46253172cf2cdada892798daf921a509ceb46e3d12d526e7fef1c",
+]);
 
 function hookCommand(hook: unknown): string | undefined {
   return isPlainObject(hook) && typeof hook["command"] === "string" ? (hook["command"] as string) : undefined;

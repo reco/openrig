@@ -2,10 +2,12 @@
 // PermissionRequest hook: ask the seat's human in Slack (when the seat opted in) and wait.
 // Prints the runtime's allow/deny decision; prints nothing (normal terminal prompt) when there
 // is no answer, the seat did not opt in, or OpenRig is unreachable. Each call to the daemon waits
-// at most a minute (under fetch's header timeout); the hook repeats it until an answer.
+// at most a minute (under fetch's header timeout); the hook repeats it until an answer or until the
+// daemon expires the request (its approvalTimeoutSeconds, at most an hour). WAIT_MS only bounds a
+// daemon that keeps answering "pending"; the runtimes' hook timeout (3660 s) sits just above it.
 const { parseJson, resolveEndpoint } = require("./activity-relay.cjs");
 
-const WAIT_MS = 580_000;
+const WAIT_MS = 3_630_000;
 
 async function readStdin() {
   let data = "";

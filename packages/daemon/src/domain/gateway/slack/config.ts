@@ -46,6 +46,8 @@ export interface SlackConnectorConfig {
   extraChannels: Array<{ id: string; inboundDestination: string }>;
   /** Seats (session names) whose permission prompts go to Slack as Approve / Deny buttons. */
   approvalSeats: string[];
+  /** How long a Slack approval waits for the human before the prompt falls back to the terminal. */
+  approvalTimeoutSeconds: number;
   /** Reaction names (the workspace's custom ones included) that count as 👍 or 👎 feedback. */
   feedbackReactions: { up: string[]; down: string[] };
 }
@@ -67,7 +69,11 @@ export const DEFAULT_CONFIG: SlackConnectorConfig = {
   extraChannels: [],
   feedbackReactions: { up: ["+1", "thumbsup"], down: ["-1", "thumbsdown"] },
   approvalSeats: [],
+  approvalTimeoutSeconds: 1800,
 };
+
+/** The hooks wait at most an hour (their runtime timeouts sit just above), so the daemon's deadline stays under it. */
+export const MAX_APPROVAL_TIMEOUT_SECONDS = 3600;
 
 /** Every configured channel with the seat its new messages land on; `channel` first. */
 export function channelsOf(cfg: SlackConnectorConfig): Array<{ id: string; inboundDestination: string }> {
@@ -102,6 +108,9 @@ function validateConfig(cfg: SlackConnectorConfig): void {
   if (up.some((n) => down.includes(n))) throw new Error("feedbackReactions: an emoji cannot be both up and down");
   if (!Array.isArray(cfg.approvalSeats) || cfg.approvalSeats.some((s) => typeof s !== "string" || !s.includes("@"))) {
     throw new Error("approvalSeats must be a list of seat session names (member@rig)");
+  }
+  if (!Number.isInteger(cfg.approvalTimeoutSeconds) || cfg.approvalTimeoutSeconds < 60 || cfg.approvalTimeoutSeconds > MAX_APPROVAL_TIMEOUT_SECONDS) {
+    throw new Error(`approvalTimeoutSeconds must be a whole number of seconds from 60 to ${MAX_APPROVAL_TIMEOUT_SECONDS} (got ${String(cfg.approvalTimeoutSeconds)})`);
   }
   if (typeof cfg.staleReminderDays !== "number" || !(cfg.staleReminderDays > 0)) {
     throw new Error(`staleReminderDays must be a positive number of days (got ${String(cfg.staleReminderDays)})`);

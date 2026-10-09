@@ -33,7 +33,7 @@ describe("Codex Slack approval hook projection", () => {
     new CodexRuntimeAdapter({ tmux, fsOps: fs, activityRelayPath: RELAY }).ensureCodexActivityHooks();
     const cfg = fs._store["/home/test/.codex/config.toml"]!;
     const group = cfg.slice(cfg.indexOf("[[hooks.PermissionRequest]]"));
-    expect(group).toContain(`command = 'node "${RELAY}"'\ntimeout = 5\n\n[[hooks.PermissionRequest.hooks]]\ntype = "command"\ncommand = 'node "${APPROVAL}"'\ntimeout = 600`);
+    expect(group).toContain(`command = 'node "${RELAY}"'\ntimeout = 5\n\n[[hooks.PermissionRequest.hooks]]\ntype = "command"\ncommand = 'node "${APPROVAL}"'\ntimeout = 3660`);
     expect(cfg).toContain('[hooks.state."/home/test/.codex/config.toml:permission_request:0:1"]');
   });
 
@@ -85,7 +85,7 @@ describe.skipIf(!bin)("native Codex (>= 0.161) loads the projected hooks as trus
       const permission = hooks.filter((h) => h.eventName === "permissionRequest").map((h) => ({ command: h.command, timeoutSec: h.timeoutSec, trustStatus: h.trustStatus }));
       expect(permission).toEqual([
         { command: `node "${RELAY}"`, timeoutSec: 5, trustStatus: "trusted" },
-        { command: `node "${APPROVAL}"`, timeoutSec: 600, trustStatus: "trusted" },
+        { command: `node "${APPROVAL}"`, timeoutSec: 3660, trustStatus: "trusted" },
       ]);
       expect(hooks.every((h) => h.trustStatus === "trusted")).toBe(true);
     } finally { rmSync(codexHome, { recursive: true, force: true }); }

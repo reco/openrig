@@ -1,7 +1,8 @@
 // Approvals without a terminal: a seat that opted in sends its permission prompt here (its
 // PermissionRequest hook waits on the answer). The human gets Approve / Deny buttons with the
 // full command or tool input, literal credentials masked; the click is returned to the hook. No
-// answer before the hook's timeout returns nothing, and the prompt shows in the terminal as before.
+// answer before the deadline (approvalTimeoutSeconds), or a hook that stops asking, expires the
+// request with a note in its thread, and the prompt shows in the terminal as before.
 // This answers permission prompts only: it cannot override a runtime's own safety denials.
 
 import { createHash } from "node:crypto";
@@ -28,8 +29,10 @@ export interface ApprovalServiceDeps {
   verifySeat: (sessionName: string, seatToken: string | null) => boolean;
   /** The seat's working directory, shown on the card. */
   cwdOf?: (sessionName: string) => string | null;
-  timeoutMs?: number;
+  /** Read at each check, so a config change applies to open requests too. */
+  timeoutMs?: () => number;
   pollMs?: number;
+  now?: () => number;
   log?: (msg: string) => void;
 }
 
@@ -38,9 +41,15 @@ export interface ApprovalService {
   start: (input: ApprovalRequest) => Promise<string | null>;
   /** Only the seat that asked may wait on its request. */
   wait: (requestId: string, sessionName: string, sliceMs: number) => Promise<ApprovalWait>;
+  /** Expire every open request whose deadline passed or whose hook stopped asking (killed,
+   *  answered in the terminal, an older hook that gave up, a daemon restart). */
+  sweep: () => Promise<void>;
 }
 
-export const APPROVAL_TIMEOUT_MS = 570_000;
+/** A hook asks again within a minute (one wait slice); twice that without a call means it is gone. */
+export const APPROVAL_ABANDONED_MS = 120_000;
+
+export const APPROVAL_TIMEOUT_MS = 1_800_000;
 const QUESTION_ID = "approval";
 const MAX_PENDING_PER_SEAT = 3;
 
@@ -62,7 +71,20 @@ function approvalReason(toolInput: unknown): string | null {
 
 export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService {
   const log = deps.log ?? (() => {});
-  const timeoutMs = deps.timeoutMs ?? APPROVAL_TIMEOUT_MS;
+  const timeoutMs = deps.timeoutMs ?? (() => APPROVAL_TIMEOUT_MS);
+  const now = deps.now ?? Date.now;
+  const startedAt = now();
+  const lastAsked = new Map<string, number>();
+  const expire = async (requestId: string, why: string) => {
+    lastAsked.delete(requestId);
+    const item = deps.queueRepo.getById(requestId);
+    if (!item || item.state !== "pending") return;
+    deps.queueRepo.update({ qitemId: requestId, actorSession: "daemon@kernel", state: "canceled", transitionNote: `approval expired: ${why}` });
+    await deps.queueRepo.create({
+      sourceSession: item.sourceSession, destinationSession: item.destinationSession, humanIntent: "update", replyTo: requestId,
+      summary: "Expired", body: `Not used: ${why}. Approve / Deny here no longer does anything; the prompt is waiting in the terminal: tmux attach -t ${item.sourceSession}`, nudge: false,
+    }).catch(() => {});
+  };
   const service: ApprovalService = {
     verify: (sessionName, seatToken) => deps.verifySeat(sessionName, seatToken),
     async start(input) {
@@ -95,8 +117,16 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
       });
       return qitemId;
     },
+    async sweep() {
+      const open = deps.queueRepo.list({ limit: 200 }).filter((q) => q.state === "pending" && q.tags?.includes("approval-request"));
+      for (const item of open) {
+        if (now() - Date.parse(item.tsCreated) >= timeoutMs()) await expire(item.qitemId, "no answer in time");
+        else if (now() - (lastAsked.get(item.qitemId) ?? Math.max(startedAt, Date.parse(item.tsCreated))) >= APPROVAL_ABANDONED_MS) await expire(item.qitemId, "the seat stopped waiting for it");
+      }
+    },
     async wait(requestId, sessionName, sliceMs) {
       const sliceEnd = Date.now() + sliceMs;
+      lastAsked.set(requestId, now());
       for (;;) {
         const item = deps.queueRepo.getById(requestId);
         if (!item?.tags?.includes("approval-request") || item.sourceSession !== sessionName) return "expired";
@@ -108,15 +138,11 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
           return answer;
         }
         if (item.state !== "pending" || item.deliveryOutcome === "transport-failed") return "expired";
-        if (Date.now() - Date.parse(item.tsCreated) >= timeoutMs) {
-          deps.queueRepo.update({ qitemId: requestId, actorSession: "daemon@kernel", state: "canceled", transitionNote: "approval expired: the prompt is in the terminal" });
-          await deps.queueRepo.create({
-            sourceSession: item.sourceSession, destinationSession: item.destinationSession, humanIntent: "update", replyTo: requestId,
-            summary: "Expired", body: `No answer in time; the prompt is waiting in the terminal: tmux attach -t ${item.sourceSession}`, nudge: false,
-          }).catch(() => {});
+        if (now() - Date.parse(item.tsCreated) >= timeoutMs()) {
+          await expire(requestId, "no answer in time");
           return "expired";
         }
-        if (Date.now() >= sliceEnd) return "pending";
+        if (Date.now() >= sliceEnd) { lastAsked.set(requestId, now()); return "pending"; }
         await new Promise((r) => setTimeout(r, deps.pollMs ?? 500));
       }
     },
