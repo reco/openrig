@@ -129,6 +129,10 @@ describe("Confirm in explicit-answers mode", () => {
   it("a reply to the daemon's own alert thread reaches the channel's inbound seat; an agent's thread still routes to the agent", async () => {
     const alert = await repo.create({ sourceSession: "daemon@kernel", destinationSession: "reco@external", humanIntent: "update", summary: "dev@rig is waiting at a prompt", body: "daemon alert fixture", nudge: false });
     new ThreadSeatMap(db).open({ threadTs: "91.1", channel: "C-MAIN", human: "reco@external", seat: "daemon@kernel", conversationId: alert.qitemId });
+    const usage = await repo.create({ sourceSession: "codex-usage@host", destinationSession: "reco@external", humanIntent: "update", summary: "usage", body: "usage fixture", nudge: false });
+    new ThreadSeatMap(db).open({ threadTs: "93.1", channel: "C-MAIN", human: "reco@external", seat: "codex-usage@host", conversationId: usage.qitemId });
+    socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-93.1", type: "events_api", payload: { event: { type: "message", user: "UFOUNDER", text: "thanks usage", ts: "93.15", thread_ts: "93.1", channel: "C-MAIN" } } }) });
+    await vi.waitFor(() => expect(repo.list({ limit: 100 }).find((q) => q.body.includes("thanks usage"))?.destinationSession).toBe("lead@rig"));
     const work = await repo.create({ sourceSession: "worker@rig", destinationSession: "reco@external", summary: "agent ask", body: "agent thread fixture", nudge: false });
     new ThreadSeatMap(db).open({ threadTs: "92.1", channel: "C-MAIN", human: "reco@external", seat: "worker@rig", conversationId: work.qitemId });
     for (const [ts, text] of [["91.1", "Yes"], ["92.1", "go ahead"]]) {

@@ -24,15 +24,15 @@ export interface InboundRoute {
 
 const BASE_TAGS = ["founder-slack", "inbound"];
 
-/** The daemon and its machinery post as sessions no agent reads (daemon@kernel, *@system, system:*). */
-const isMachinerySeat = (seat: string) => seat === "daemon@kernel" || seat.endsWith("@system") || seat.startsWith("system:");
-
 export function makeThreadRouteResolver(opts: {
   map: ThreadSeatMap;
   /** The orchestrator slot for unrouted signals (first-class config: inboundDestination). */
   unroutedDestination: string;
   /** A channel with its own inbound seat lands its unrouted messages there. */
   destinationForChannel?: (channel: string | undefined) => string | undefined;
+  /** Whether a thread's seat is an agent this daemon knows. A thread posted by the daemon or other
+   *  machinery (daemon@kernel, codex-usage@host, ...) has no agent to read its replies. */
+  isAgentSeat?: (seat: string) => boolean;
   /** A thread the human started routes to the seat but correlates to no request. */
   isHumanStarted?: (conversationId: string) => boolean;
   log?: (msg: string) => void;
@@ -45,7 +45,7 @@ export function makeThreadRouteResolver(opts: {
       const mapping = opts.map.resolveByThread(threadTs);
       // A thread with no agent behind it (the daemon's own alerts, other machinery, or a seat that is
       // its own human, left by the Confirm self-loop): its replies go where an unrouted message goes.
-      if (mapping && (isMachinerySeat(mapping.seat) || (mapping.human && mapping.seat.split("@")[0] === mapping.human.split("@")[0]))) {
+      if (mapping && ((opts.isAgentSeat && !opts.isAgentSeat(mapping.seat)) || (mapping.human && mapping.seat.split("@")[0] === mapping.human.split("@")[0]))) {
         log(`inbound thread_ts=${threadTs} has no agent seat (${mapping.seat}) -> unrouted-signal to ${unrouted}`);
         return { destination: unrouted, tags: [...BASE_TAGS, "unrouted-signal", `thread-ts:${threadTs}`], routeClass: "unmapped-thread" };
       }

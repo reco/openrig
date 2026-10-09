@@ -865,6 +865,10 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       // or human-initiated → the configured orchestrator slot as an unrouted-signal row.
       resolveRoute: makeThreadRouteResolver({ map: threadMap, unroutedDestination: cfg.inboundDestination, log,
         destinationForChannel: (channel) => channels.find((c) => c.id === channel)?.inboundDestination,
+        // Machinery sends as daemon@kernel, <name>@host, <name>@system or system:<name> and never has a
+        // session here; a real rig that happens to use such a name does.
+        isAgentSeat: (seat) => !(/^daemon@kernel$|@host$|@system$|^system:/.test(seat))
+          || !!opts.queueRepo.db.prepare("SELECT 1 FROM sessions WHERE session_name = ? LIMIT 1").get(seat),
         isHumanStarted: (conversationId) => {
           const item = opts.queueRepo.getById(conversationId);
           const root = threadMap.resolveByConversation(conversationId);
