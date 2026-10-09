@@ -57,8 +57,10 @@ export function readPrompt(pane: string): { reason: string; key: string; promptL
   const seen = classifyPaneActivity(pane);
   if (seen.state !== "attention" || !PROMPT_REASONS.has(seen.reason ?? "")) return null;
   const evidence = String(seen.evidence ?? "");
-  const key = createHash("sha256").update(`${seen.reason}|${promptBody(pane, evidence)}`).digest("hex");
-  return { reason: seen.reason!, key, promptLine: questionLine(pane, evidence), choices: promptChoices(pane) };
+  const { body, bordered } = promptBody(pane, evidence);
+  const key = createHash("sha256").update(`${seen.reason}|${body}`).digest("hex");
+  // Answerable only when the whole dialog is in view: a cut-off top could hide what is being approved.
+  return { reason: seen.reason!, key, promptLine: questionLine(pane, evidence), choices: bordered ? promptChoices(pane) : undefined };
 }
 
 export interface StuckPromptWatchDeps {
@@ -91,13 +93,16 @@ function questionLine(pane: string, evidence: string): string {
 
 /** The prompt as the seat shows it, from its dialog's top rule (else 20 lines above the options)
  *  to the end, with whitespace and frame characters dropped so a resize or reflow is the same prompt. */
-function promptBody(pane: string, evidence: string): string {
+const DIALOG_BORDER = /^[╭─━]{20,}/;
+
+/** The prompt's text from its dialog's top border (else 60 lines above the options) to the end. The
+ *  border starts at the left edge; a rule inside the shown command is indented. */
+function promptBody(pane: string, evidence: string): { body: string; bordered: boolean } {
   const raw = pane.split("\n");
   const at = Math.max(0, anchorLine(raw.map((l) => l.trim()), evidence));
-  // The dialog's own top border starts at the left edge; a rule inside the shown command is indented.
   let from = at;
-  while (from > Math.max(0, at - 60) && !/^[╭─━]{20,}/.test(raw[from]!)) from--;
-  return flat(raw.slice(from).join(""));
+  while (from > Math.max(0, at - 60) && !DIALOG_BORDER.test(raw[from]!)) from--;
+  return { body: flat(raw.slice(from).join("")), bordered: DIALOG_BORDER.test(raw[from]!) };
 }
 
 export interface StuckPromptWatch {

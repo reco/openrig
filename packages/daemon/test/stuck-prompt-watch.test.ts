@@ -150,6 +150,11 @@ describe("stuck-prompt watch", () => {
     expect(readPrompt(dialog(["rm -rf /", "───────", "echo done"]))!.key).not.toBe(readPrompt(dialog(["ls", "───────", "echo done"]))!.key);
   });
 
+  it("offers no buttons when the dialog's top is cut off (a command longer than the window)", () => {
+    const long = [" Bash command", "", ...Array.from({ length: 70 }, (_, i) => `   echo ${i}`), "", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""].join("\n");
+    expect(readPrompt("─".repeat(80) + "\n" + long)!.choices).toBeUndefined();
+  });
+
   it("offers no buttons when the cursor is not on the plain Yes", () => {
     expect(promptChoices(claude.replace(" ❯ 1. Yes", "   1. Yes").replace("   4. No", " ❯ 4. No"))).toBeUndefined();
   });
