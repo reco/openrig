@@ -30,7 +30,7 @@ import { makeInboundSenderResolver, type RegistrySurface } from "./inbound-admis
 import { ThreadSeatMap, formatPostedStamp } from "./thread-seat-map.js";
 import { attributionFromSession, buildOutboundMessage, DEFAULT_CONFIRM_DECISION } from "./message.js";
 import { makeThreadRouteResolver } from "./thread-routing.js";
-import { closeRequest, currentGateResolved, entityOf, gateOpenedAt, githubLinkState, isRequestHuman, sweepRequests, type LinkState, type RequestLifecycleDeps, type RequestLink } from "./request-lifecycle.js";
+import { closeRequest, isRequestToHuman, currentGateResolved, entityOf, gateOpenedAt, githubLinkState, isRequestHuman, sweepRequests, type LinkState, type RequestLifecycleDeps, type RequestLink } from "./request-lifecycle.js";
 import { startSocketInbound, type SocketInboundHandle, type WsLike } from "./socket-inbound.js";
 import { loadHumanRegistry, resolveRegisteredHumanAddress, resolveSlackHandle } from "../human-registry.js";
 import { hasLiveHumanGate, type QueueRepository } from "../../queue-repository.js";
@@ -479,13 +479,16 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     },
     closeCard: async (qitemId, channel, line) => {
       const item = opts.queueRepo.getById(qitemId);
-      // The request's own card: the message its latest posted receipt names.
-      const messageTs = [...opts.queueRepo.transitionLog.listForQitem(qitemId)].reverse()
-        .find((t) => t.actorSession === "daemon@kernel" && t.transitionNote?.startsWith("slack-owner-notification-posted "))
+      // The request's own card: the message its latest posted receipt names (a resolved notice is a
+      // separate message, never the card).
+      const transitions = opts.queueRepo.transitionLog.listForQitem(qitemId);
+      const messageTs = [...transitions].reverse()
+        .find((t) => t.actorSession === "daemon@kernel" && t.transitionNote?.startsWith("slack-owner-notification-posted ") && !/\skind=human-decision-resolved(\s|$)/.test(t.transitionNote))
         ?.transitionNote?.split(/\s+/).find((f) => f.startsWith("message_ts="))?.slice("message_ts=".length) ?? null;
       if (!item || !messageTs) return { ok: true, messageTs: null };
       if (!bot) return { ok: false, messageTs, error: "bot token unavailable" };
-      const message = buildOutboundMessage(item, { ...repostInputs(item), closedNote: line });
+      const won = transitions.some((t) => t.transitionNote === CONFIRM_WON_NOTE && t.actorSession === "daemon@kernel");
+      const message = buildOutboundMessage(item, { ...repostInputs(item), closedNote: line, ...(won ? { confirmOutcome: "confirmed" as const } : {}) });
       const r = await updateChatMessage(bot, { channel, ts: messageTs, ...message }, opts.fetchImpl);
       return r.ok ? { ok: true, messageTs } : { ok: false, messageTs, error: r.error ?? "update failed" };
     },
@@ -837,7 +840,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
           // After the current write finishes: a close already under way (a human's cancel) has closed the thread by then.
           setImmediate(() => {
             const root = threadMap.resolveByConversation(change.qitemId);
-            if (root?.state !== "open" || root.conversationId !== change.qitemId) return;
+            if (root?.state !== "open" || root.conversationId !== change.qitemId || !isRequestToHuman(opts.queueRepo.getById(change.qitemId), root)) return;
             void closeRequest(lifecycle, root, "canceled-by-seat", "daemon@kernel").catch((e) => log(`request ${change.qitemId} close failed: ${(e as Error).message}`));
           });
         }

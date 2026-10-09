@@ -56,6 +56,11 @@ function lastPark(repo: QueueRepository, qitemId: string): { ts: string; transit
 
 export const entityOf = (session: string | null | undefined): string => (session ?? "").split("@")[0] ?? "";
 
+/** A request to the thread's human, not a thread the human started (that is conversation: nothing to close or remind). */
+export function isRequestToHuman(item: { humanIntent?: string | null; sourceSession: string } | null, root: ThreadMapping): boolean {
+  return !!item && item.humanIntent !== "update" && entityOf(item.sourceSession) !== entityOf(root.human);
+}
+
 /** The request's asked human, as recorded on its thread when it was posted. */
 export function isRequestHuman(root: ThreadMapping, actorSession: string): boolean {
   return entityOf(root.human) !== "" && entityOf(root.human) === entityOf(actorSession);
@@ -80,6 +85,8 @@ function describeClose(reason: string): string {
 /** Close a request: its thread map rows, an unanswered direct request's row, a note on the row
  *  and a closing line in the thread. `canceled` marks the row canceled instead of done. */
 export async function closeRequest(deps: RequestLifecycleDeps, root: ThreadMapping, reason: string, actorSession: string, canceled = false): Promise<void> {
+  // Closing twice (a sweep that listed the thread before another close landed) says nothing new.
+  if (deps.threadMap.resolveByThread(root.threadTs)?.state === "closed") return;
   const item = deps.queueRepo.getById(root.conversationId);
   // An approval the daemon expired was not canceled by its seat: say what happened.
   const expiry = reason === "canceled-by-seat"
@@ -115,11 +122,13 @@ async function closeCard(deps: RequestLifecycleDeps, qitemId: string, channel: s
   if (!deps.closeCard) return;
   const r = await deps.closeCard(qitemId, channel, line).catch((e: Error) => ({ ok: false as const, messageTs: "?", error: e.message }));
   if (r.ok && r.messageTs === null) return;
+  // Only a passing failure (rate limit, timeout, network, Slack trouble) is worth another try.
+  const retry = !r.ok && /ratelimit|timeout|timed out|transport|fetch|network|internal_error|service_unavailable|fatal_error|http 5\d\d/i.test(r.error);
   const note = r.ok
     ? `${CARD_CLOSED_PREFIX} channel=${channel} message_ts=${r.messageTs} line=${JSON.stringify(line)}`
-    : `${CARD_CLOSE_FAILED_PREFIX} channel=${channel} message_ts=${r.messageTs} line=${JSON.stringify(line)} error=${r.error}`;
+    : `${CARD_CLOSE_FAILED_PREFIX} channel=${channel} message_ts=${r.messageTs} retry=${retry} line=${JSON.stringify(line)} error=${r.error}`;
   deps.queueRepo.update({ qitemId, actorSession: "daemon@kernel", transitionNote: note });
-  if (!r.ok) deps.log?.(`request ${qitemId}: its card still shows buttons (${r.error}); retried on the next sweep`);
+  if (!r.ok) deps.log?.(`request ${qitemId}: its card still shows buttons (${r.error})${retry ? "; retried on the next sweep" : ""}`);
 }
 
 /** Cards whose last rewrite failed, with the line it was to show. */
@@ -130,7 +139,7 @@ function cardsToRetry(deps: RequestLifecycleDeps): Array<{ qitemId: string; chan
         AND t.transition_id = (SELECT MAX(u.transition_id) FROM queue_transitions u WHERE u.qitem_id = t.qitem_id AND u.actor_session = 'daemon@kernel'
           AND (u.transition_note LIKE ? OR u.transition_note LIKE ?))`,
   ).all(`${CARD_CLOSED_PREFIX} %`, `${CARD_CLOSE_FAILED_PREFIX} %`, `${CARD_CLOSED_PREFIX} %`, `${CARD_CLOSE_FAILED_PREFIX} %`) as Array<{ qitemId: string; note: string }>;
-  return rows.filter((r) => r.note.startsWith(`${CARD_CLOSE_FAILED_PREFIX} `)).flatMap((r) => {
+  return rows.filter((r) => r.note.startsWith(`${CARD_CLOSE_FAILED_PREFIX} `) && r.note.includes(" retry=true ") && deps.queueRepo.getById(r.qitemId)).flatMap((r) => {
     const channel = /\bchannel=(\S+)/.exec(r.note)?.[1];
     const line = /\bline=("(?:[^"\\]|\\.)*")/.exec(r.note)?.[1];
     return channel && line ? [{ qitemId: r.qitemId, channel, line: JSON.parse(line) as string }] : [];
@@ -164,8 +173,7 @@ export async function sweepRequests(deps: RequestLifecycleDeps, now = new Date()
     if (Number(root.threadTs) * 1000 < (deps.floorMs ?? 0)) continue;
     try {
       const item = deps.queueRepo.getById(root.conversationId);
-      // A thread the human started is conversation, not a request to them: nothing to close or remind.
-      if (!item || item.humanIntent === "update" || entityOf(item.sourceSession) === entityOf(root.human)) continue;
+      if (!item || !isRequestToHuman(item, root)) continue;
       if (item.state === "canceled") {
         await closeRequest(deps, root, "canceled-by-seat", "daemon@kernel");
         closed.push(root.conversationId);

@@ -318,7 +318,8 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
     : opts.answered ? buildAnsweredBlocks(q.humanQuestions, q.humanAnswers ?? {})
     : buildQuestionBlocks(q.humanQuestions, explicit ? null : TYPED_REPLY_HINT);
   const confirmText = q.humanConfirm ?? (explicit && q.humanIntent !== "update" && !q.humanQuestions?.length ? DEFAULT_CONFIRM_LABEL : null);
-  const confirmParts = confirmText && !closed ? buildConfirmBlocks(q.qitemId, confirmText, opts.confirmOutcome, q.humanIntent !== "update") : null;
+  // A closed card keeps a Confirm that decided it (no button left), and drops one that did not.
+  const confirmParts = confirmText && (!closed || opts.confirmOutcome === "confirmed") ? buildConfirmBlocks(q.qitemId, confirmText, opts.confirmOutcome, q.humanIntent !== "update") : null;
   if (opts.extraBlocks?.length) {
     throw new HumanMessageShapeError("Extra blocks have no complete accessible fallback. Use mediaRefs for images or author supplemental human detail.");
   }
