@@ -23,7 +23,8 @@ import { resolvePickupThresholdMinutes } from "./queue-pickup.js";
 // share one contract instead of two guesses. S03 owns park/wake honesty: state=blocked rows
 // legitimately wait and are never findings.
 
-import { defaultResolveOrchestrator } from "./queue-owner.js";
+import { defaultResolveOrchestrator, resolveSessionNodeId } from "./queue-owner.js";
+import { isHumanSeatSessionRef, parseSessionName } from "./session-name.js";
 import type Database from "better-sqlite3";
 import { deriveCrossHostSuccessorId, type QueueItem, type QueueRepository } from "./queue-repository.js";
 import { stalledPickupFinding } from "./queue-pickup.js";
@@ -365,6 +366,12 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       deps.resolveOrchestrator ?? ((session: string) => defaultResolveOrchestrator(deps.db, session));
     const isRegisteredHost = deps.isRegisteredHost ?? defaultIsRegisteredHost(log);
     const candidates: Candidate[] = [];
+    // An obligation addressed to a seat no known node holds (a typo) has nobody there to act;
+    // its creator hears about it instead.
+    const ownerOrSender = (row: QueueItem) => resolveOrch(row.destinationSession)
+      ?? (parseSessionName(row.destinationSession).kind === "canonical" && !isHumanSeatSessionRef(row.destinationSession)
+        && !resolveSessionNodeId(deps.db, row.destinationSession)
+        ? row.sourceSession : row.destinationSession);
 
     // Half 1 — claimed-never-closed. The claimant holds the obligation; the finding
     // routes to them.
@@ -436,7 +443,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       candidates.push({
         kind: "undelivered-wake",
         row,
-        route: resolveOrch(row.destinationSession) ?? row.destinationSession,
+        route: ownerOrSender(row),
         ageMinutes: minutesSince(row.tsCreated, now),
         evidenceAt: latestIso(row.tsUpdated, row.lastNudgeAttempt),
         why: `wake failed (${row.lastNudgeResult ?? "failed"}) and nothing retried it`,
@@ -470,7 +477,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       candidates.push({
         kind: "unclaimed-obligation",
         row,
-        route: resolveOrch(row.destinationSession) ?? row.destinationSession,
+        route: ownerOrSender(row),
         ageMinutes: minutesSince(actionableAt, now),
         evidenceAt: actionableAt,
         why: `actionable with a destination and unclaimed for ${minutesSince(actionableAt, now)} min (threshold ${ageMinutes})`,

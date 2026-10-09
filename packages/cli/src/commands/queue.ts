@@ -153,7 +153,8 @@ async function withClient<T>(
 function printResult(json: boolean, body: unknown, status: number): void {
   // A destination that matches no seat of a known rig is accepted as typed (aliases, adopted
   // seats); say so where a human or agent sees it, not only inside the JSON.
-  const advisories = (body as { advisories?: unknown } | null)?.advisories;
+  const result = body as { advisories?: unknown; created?: { advisories?: unknown } } | null;
+  const advisories = result?.advisories ?? result?.created?.advisories;
   for (const advisory of Array.isArray(advisories) ? advisories : []) {
     const message = (advisory as { message?: unknown } | null)?.message;
     if (typeof message === "string") console.error(`Warning: ${message}`);

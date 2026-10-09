@@ -265,6 +265,15 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     expect(findings[0]!.evidenceRef).toBe(`rig queue show ${row.qitemId}`);
   });
 
+  it("a row to a seat no known node holds (a typo) sends its finding to the row's creator", async () => {
+    const row = await repo.create({ sourceSession: "sender@r", destinationSession: "cfo@r", body: "Kickoff", summary: "Kickoff", nudge: false });
+    failNudge(row.qitemId);
+    expect((await runSweep()).result.outcome).toBe("findings");
+    const findings = await findingsFor(row.qitemId);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]!.destinationSession).toBe("sender@r");
+  });
+
   it.each(["human@host", "human-owner@kernel"])("a finding for %s carries real source evidence, stays unroutable, dedupes, and resolves", async (destinationSession) => {
     // Disable the repository's pre-topology transport shortcut. Resolution is
     // real; the injected transport must never receive these unknown addresses.
