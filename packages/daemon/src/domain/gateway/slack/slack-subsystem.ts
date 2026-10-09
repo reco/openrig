@@ -104,6 +104,18 @@ export function makeHumanReplyResolver(
       // disposition; the inbound create is already the one wake back to the
       // source, so a second nudge here would duplicate attention.
       const direct = queueRepo.getById(input.qitemId);
+      // A park on a registered human's own address (not a human@kernel seat): the caller has
+      // already checked that this human is the one it waits on, so the answer unparks it.
+      if (direct?.state === "blocked") {
+        queueRepo.update({
+          qitemId: input.qitemId,
+          actorSession: input.actorSession,
+          state: "in-progress",
+          transitionNote: input.decision,
+          ownerNotificationKind: "human-decision-resolved",
+        });
+        return "resolved";
+      }
       if (
         direct?.state !== "pending" ||
         direct.destinationSession !== input.actorSession ||
@@ -568,6 +580,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         resolveChannel: channelForPost,
         sourceLabel: cfg.sourceLabel,
         answerHint: cfg.explicitAnswersOnly,
+        asksHuman: (p) => !!p.qitemId && askedHumanOf(p.qitemId) !== null,
         fetchImpl: opts.fetchImpl,
         delivered,
         attempted,

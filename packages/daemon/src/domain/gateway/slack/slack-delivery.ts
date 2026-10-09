@@ -32,6 +32,8 @@ export interface SubsystemSlackDeliveryOpts {
   bodyExcerpt?: number;
   /** Phase 1: decisions tell their human that only an `answer:` reply decides. */
   answerHint?: boolean;
+  /** Whether the post waits on a human; only then does explicit-answers mode add its default Confirm. */
+  asksHuman?: (q: OutboundPostPayload) => boolean;
   fetchImpl?: FetchImpl;
   /** decisionId-keyed delivered-store (idempotent redelivery: replay re-acks, never re-posts). */
   delivered: SeenStore;
@@ -209,7 +211,7 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
       },
       {
         sourceLabel: opts.sourceLabel,
-        answerHint: opts.answerHint && q.ownerNotificationKind !== "human-decision-resolved",
+        answerHint: opts.answerHint && q.ownerNotificationKind !== "human-decision-resolved" && (opts.asksHuman?.(q) ?? true),
         bodyExcerpt: opts.bodyExcerpt,
         mediaRefs,
         evidenceLink,
@@ -440,7 +442,7 @@ export function subsystemSlackDeliver(opts: SubsystemSlackDeliveryOpts): Subsyst
         const partEvidence = evidenceAttachment(part.media, part.evidenceRef, part.summary);
         buildOutboundMessage(part, {
           sourceLabel: opts.sourceLabel,
-          answerHint: opts.answerHint && q.ownerNotificationKind !== "human-decision-resolved",
+          answerHint: opts.answerHint && q.ownerNotificationKind !== "human-decision-resolved" && (opts.asksHuman?.(q) ?? true),
           attribution: attributionFromSession(part.sourceSession),
           mentionUserId: index === 0 ? opts.resolveMentionUserId?.(q) : undefined,
           reconcileMarker: reconcileToken(partId(index)),
