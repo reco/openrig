@@ -32,22 +32,33 @@ export interface StuckPromptWatchDeps {
 
 const OPTION_LINE = /^\s*[❯›]?\s*\d+\.\s/;
 
+const flat = (text: string) => text.replace(/[\s│┃╭╮╰╯─━]+/g, "");
+
+/** The pane line the classifier's evidence starts at; evidence is whitespace-compacted and may be cut. */
+function anchorLine(lines: string[], evidence: string): number {
+  const target = flat(evidence.replace(/\.\.\.$/, ""));
+  for (let i = lines.length - 1; i >= 0; i--) if (flat(lines[i]!) && target.startsWith(flat(lines[i]!))) return i;
+  return -1;
+}
+
 /** The question above the prompt's options (the nearest line ending in '?', else the nearest
  *  text line), with credentials masked: it may quote the command being approved. */
 function questionLine(pane: string, evidence: string): string {
   const lines = pane.split("\n").map((l) => l.trim());
-  const at = lines.lastIndexOf(evidence.split("\n")[0]!.trim());
+  const at = anchorLine(lines, evidence);
   const above = at > 0 ? lines.slice(Math.max(0, at - 8), at).reverse().filter((l) => l && !OPTION_LINE.test(l) && !/^[─━-]+$/.test(l)) : [];
   return maskSecrets(above.find((l) => l.endsWith("?")) ?? above[0] ?? evidence.split("\n")[0]!.trim());
 }
 
-/** The prompt as the seat shows it: its block of text above the options, and the options. */
+/** The prompt as the seat shows it, from its dialog's top rule (else 20 lines above the options)
+ *  to the end, with whitespace and frame characters dropped so a resize or reflow is the same prompt. */
 function promptBody(pane: string, evidence: string): string {
   const lines = pane.split("\n").map((l) => l.trim());
-  const at = lines.lastIndexOf(evidence.split("\n")[0]!.trim());
-  return lines.slice(Math.max(0, at - 20)).filter(Boolean).join("\n");
+  const at = Math.max(0, anchorLine(lines, evidence));
+  let from = at;
+  while (from > Math.max(0, at - 20) && !/^[╭─━]{3,}/.test(lines[from]!)) from--;
+  return flat(lines.slice(from).join(""));
 }
-
 
 export interface StuckPromptWatch {
   tick: () => Promise<void>;

@@ -85,4 +85,19 @@ describe("stuck-prompt watch", () => {
     expect(sent).toHaveLength(3);
     expect(sent[2]).toMatchObject({ episodeId: sent[1]!.episodeId, waitingMinutes: 66 });
   });
+
+  it("a resized pane and output above the dialog are the same prompt", async () => {
+    let t = 0;
+    const dialog = (width: number, above: string) => [above, "─".repeat(width), " Bash command", "",
+      ...(width > 60 ? ["   npm run test:repo -- --reporter verbose"] : ["   npm run test:repo --", "   --reporter verbose"]),
+      "", " Do you want to   proceed?", " ❯ 1. Yes", "   2. No", ""].join("\n");
+    let pane = dialog(80, "Task(explore) · 1.2k tokens · 3s");
+    const sent: StuckPrompt[] = [];
+    const watch = makeStuckPromptWatch({ runningSessions: () => ["lead@rig"], capture: async () => pane, notify: async (p) => { sent.push(p); }, now: () => t });
+    await watch.tick();
+    t = 2 * 60_000; pane = dialog(40, "Task(explore) · 4.8k tokens · 61s"); await watch.tick();
+    t = 6 * 60_000; await watch.tick();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.promptLine).toBe("Do you want to   proceed?");
+  });
 });
