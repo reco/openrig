@@ -24,12 +24,16 @@ const CAPABILITY_ERRORS = new Set(["missing_scope", "not_in_channel", "channel_n
 
 /** One owner across socket generations. Stop fences admission and checkpoint writes;
  * already admitted I/O remains owned until it settles (no timeout/unlock race). */
+const REPLIES_CALL_MS = 5000;
+
 export class ChannelRecovery {
   private readonly store: ChannelCoverageStore;
   private readonly now: () => number;
   private coverage?: ChannelCoverage;
   private pass?: Promise<void>;
   private stopped = false;
+  /** Per root, the settled bound of its last read attempt this process: a failed root waits its turn too. */
+  private readonly attempted = new Map<string, bigint>();
   private state = "not-started";
   private reason: string | undefined;
   private lastScanAt: string | undefined;
@@ -105,12 +109,16 @@ export class ChannelRecovery {
     const degraded: Record<string, string> = Object.fromEntries(Object.entries(base.degraded ?? {}).filter(([root]) => followed.includes(root)));
     const floor = (root: string) => roots[root] ?? (slackMicros(root)! > slackMicros(base.since)! ? root : base.since);
     const behind = (root: string) => slackMicros(floor(root))!;
+    // Least recently visited first, whether the last visit succeeded or failed: every root gets its
+    // turn, so neither healthy nor failing threads can be starved when a pass cannot reach them all.
+    const turn = (root: string) => { const tried = this.attempted.get(root) ?? 0n; return tried > behind(root) ? tried : behind(root); };
     const todo = followed.filter((root) => !deleted.has(root) && slackMicros(root) !== null && behind(root) < slackMicros(upper)!)
-      .sort((a, b) => Number(a in degraded) - Number(b in degraded) || (behind(a) < behind(b) ? -1 : 1));
+      .sort((a, b) => (turn(a) < turn(b) ? -1 : turn(a) > turn(b) ? 1 : 0));
     const persist = (extra: Partial<typeof base> = {}) =>
       this.save({ ...this.coverage!, threads: { since: base.since, roots, deleted: [...deleted].filter((r) => followed.includes(r)), degraded, ...extra } });
     for (const root of todo) {
-      if (this.stopped || this.now() >= deadline - 1000) return;
+      if (this.stopped || this.now() > deadline - REPLIES_CALL_MS) return;
+      this.attempted.set(root, slackMicros(upper)!);
       const from = slackMicros(floor(root))!;
       const read = await this.readReplies(root, from, upper, deadline);
       if (this.stopped) return;
@@ -143,11 +151,12 @@ export class ChannelRecovery {
     let cursor = "";
     let pages = 0;
     do {
-      if (this.now() >= deadline - 1000) { if (!replies.length) return { kind: "out-of-budget" }; break; }
+      // A call starts only with its full timeout left, so the pass budget never cuts one short into a failure.
+      if (this.now() > deadline - REPLIES_CALL_MS) { if (!replies.length) return { kind: "out-of-budget" }; break; }
       const r = await callWebApi("conversations.replies", this.opts.token!, {
         channel: this.opts.channel, ts: root, oldest: slackTimestamp(from > 0n ? from - 1n : 0n), latest: upper, inclusive: false, limit: 100,
         ...(cursor ? { cursor } : {}),
-      }, this.opts.fetchImpl, Math.min(5000, Math.max(1, deadline - this.now())), "get-query");
+      }, this.opts.fetchImpl, REPLIES_CALL_MS, "get-query");
       if (!r.ok) {
         if (r.status === 429 || r.error === "ratelimited") return { kind: "rate-limited", retryAfterSeconds: r.retryAfterSeconds ?? 30 };
         if (DELETED_ROOT_ERRORS.has(r.error ?? "")) return { kind: "deleted" };

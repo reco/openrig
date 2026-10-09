@@ -391,3 +391,15 @@ it("a thread cut short by the pass budget keeps the replies it read and is not m
   for (let pass = 1; pass <= 2; pass++) { t.at(1_040_000 + pass * 20_000); await r.run(); }
   for (let call = 1; call <= 4; call++) expect(t.bodies().split(`reply ${call};`)).toHaveLength(2);
 });
+
+it("when a pass cannot reach every followed thread, a thread that failed once still gets its turn", async () => {
+  const roots = Array.from({ length: 40 }, (_, i) => `${900 + i}.000001`);
+  const failing = new Set(roots.slice(0, 3));
+  const t = threadFixture(roots, (root, call) => failing.has(root) && call === 1
+    ? { ok: false, error: "internal_error" }
+    : { ok: true, messages: [reply(root, `1003.${root.slice(0, 3)}001`, `reply in ${root};`)] }, 1000);
+  const r = t.recovery();
+  for (let pass = 0; pass < 12 && t.f.repo.list({ limit: 500 }).length < 40; pass++) { t.at(1_010_000 + pass * 20_000); await r.run(); }
+  for (const root of roots) expect(t.bodies()).toContain(`reply in ${root};`);
+  expect(r.status().threads?.degraded).toEqual({});
+});
