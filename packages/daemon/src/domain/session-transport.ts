@@ -5,7 +5,7 @@ import { OutboxHandler } from "./outbox-handler.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
-import type { TmuxAdapter } from "../adapters/tmux.js";
+import type { TmuxAdapter, TmuxResult } from "../adapters/tmux.js";
 import type { AgentActivityStore } from "./agent-activity-store.js";
 import type { EventBus } from "./event-bus.js";
 import type { AgentActivity } from "./types.js";
@@ -222,6 +222,22 @@ function findPromptDraftBeforeFooter(paneContent: string): string | null {
 /** Typed before a pasted message to a Claude seat. Plain words only: "@", "/", "!", "#" and a leading
  *  "?" are Claude Code input shortcuts. */
 export const ROUTED_MESSAGE_PREFIX = "OpenRig delivered the message below to this seat; act on it as your instructions: ";
+
+/** Paste a message into a seat's input. A Claude seat first gets ROUTED_MESSAGE_PREFIX as typed
+ *  input when the message is multi-line: Claude Code shows such a paste as pasted content, which its guidance follows only when the
+ *  user's own message asks, and the typed line in the same message is that ask. A paste that fails
+ *  after the line was typed clears the line, so no stray draft joins the next message. */
+export async function sendToSeat(tmux: Pick<TmuxAdapter, "sendText" | "sendKeys">, session: string, text: string,
+  runtime: string | null | undefined, beforeWrite?: () => void): Promise<TmuxResult> {
+  const paste = () => beforeWrite ? tmux.sendText(session, text, beforeWrite) : tmux.sendText(session, text);
+  // A slash command or a one-line text is input, not pasted content: it gets no line in front.
+  if (runtime !== "claude-code" || text.startsWith("/") || !text.includes("\n")) return paste();
+  const typed = await tmux.sendText(session, ROUTED_MESSAGE_PREFIX, beforeWrite, { bracketed: false });
+  if (!typed.ok) return typed;
+  const pasted = await paste();
+  if (!pasted.ok) await tmux.sendKeys(session, ["C-u"]).catch(() => undefined);
+  return pasted;
+}
 
 export function classifyPaneActivity(paneContent: string): PaneActivityClassification {
   const lastNonBlank = trimPaneLines(paneContent);
@@ -1526,12 +1542,7 @@ export class SessionTransport {
       () => {
         opts?.beforeWrite?.();
         if (promptOverride) return this.tmuxAdapter.sendText(sessionName, text, opts?.beforeWrite, { bracketed: false });
-        const paste = () => opts?.beforeWrite ? this.tmuxAdapter.sendText(sessionName, text, opts.beforeWrite) : this.tmuxAdapter.sendText(sessionName, text);
-        if (runtime !== "claude-code") return paste();
-        // Claude Code shows a paste as pasted content, which its guidance says to follow only when the
-        // user's own message asks; one typed line in the same message says this one is routed work.
-        return this.tmuxAdapter.sendText(sessionName, ROUTED_MESSAGE_PREFIX, opts?.beforeWrite, { bracketed: false })
-          .then((typed) => typed.ok ? paste() : typed);
+        return sendToSeat(this.tmuxAdapter, sessionName, text, runtime, opts?.beforeWrite);
       },
       (result) => result.ok ? "ok" : "failed",
     );

@@ -16,6 +16,7 @@ import { SuccessorSessionLauncher } from "./successor-session-launcher.js";
 import { deriveResumeToken, type ResumeTokenCaptureDeps } from "./resume-token-capture.js";
 import { validateResumeToken } from "./resume-token-validation.js";
 import type { RuntimeAdapter } from "./runtime-adapter.js";
+import { sendToSeat } from "./session-transport.js";
 import type { OccupantInvalidator } from "./occupant-invalidator.js";
 import type { JsonlExchange } from "./session-jsonl.js";
 import type { PersistedEvent } from "./types.js";
@@ -498,7 +499,7 @@ export class SeatHandoverService {
       // B16 — the recap was resolved at step 1b (pre-launch); an unavailable verdict rides the
       // packet as a NAMED line, never a silent omission.
       const resolved = "recap" in predecessorRecapResolution ? predecessorRecapResolution : null;
-      const delivered = await this.deliverRestorePacket(launch.tmuxSession, {
+      const delivered = await this.deliverRestorePacket(launch.tmuxSession, node.runtime, {
         seatRef: input.seatRef,
         reason,
         departingSession: latestSession.session_name,
@@ -555,7 +556,7 @@ export class SeatHandoverService {
         emptyChainReason = "artifacts" in chain ? "the durable chain resolved to zero artifacts" : chain.emptyReason;
       }
       sourceOutcome = { mode: "rebuild", primedArtifacts, gaps, ...(emptyChainReason ? { emptyChainReason } : {}) };
-      const delivered = await this.deliverRebuildPrimingPacket(launch.tmuxSession, {
+      const delivered = await this.deliverRebuildPrimingPacket(launch.tmuxSession, node.runtime, {
         seatRef: input.seatRef,
         reason,
         departingSession: latestSession.session_name,
@@ -812,6 +813,7 @@ export class SeatHandoverService {
    *  gap and an empty chain out loud — never a silent partial priming. */
   private async deliverRebuildPrimingPacket(
     successorSession: string,
+    runtime: string | null,
     info: {
       seatRef: string;
       reason: string;
@@ -836,7 +838,7 @@ export class SeatHandoverService {
     if (info.emptyChainReason) {
       lines.push("", `The durable chain is EMPTY: ${info.emptyChainReason}. You start from seat identity alone — say so in your first status report.`);
     }
-    const sent = await this.tmuxAdapter.sendText(successorSession, lines.join("\n"));
+    const sent = await sendToSeat(this.tmuxAdapter, successorSession, lines.join("\n"), runtime);
     if (!sent.ok) {
       return { ok: false, message: (sent as { message?: string }).message ?? "send_text failed" };
     }
@@ -854,6 +856,7 @@ export class SeatHandoverService {
    *  orchestrator's initial-prompt delivery. */
   private async deliverRestorePacket(
     successorSession: string,
+    runtime: string | null,
     info: {
       seatRef: string;
       reason: string;
@@ -869,7 +872,7 @@ export class SeatHandoverService {
     },
   ): Promise<{ ok: true } | { ok: false; message: string }> {
     const packet = buildRestorePacket({ ...info, handoverAt: this.now().toISOString() });
-    const sent = await this.tmuxAdapter.sendText(successorSession, packet);
+    const sent = await sendToSeat(this.tmuxAdapter, successorSession, packet, runtime);
     if (!sent.ok) {
       return { ok: false, message: (sent as { message?: string }).message ?? "send_text failed" };
     }

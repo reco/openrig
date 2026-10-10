@@ -415,6 +415,10 @@ describe("SessionTransport", () => {
     expect(typedPrefixes[0]!.rest).toContainEqual({ bracketed: false });
     expect(order).toEqual(["paste", "Enter"]);
     expect(ROUTED_MESSAGE_PREFIX).not.toMatch(/[@\/!#\n]|^\?/);
+    typedPrefixes.length = 0;
+    await createTransport(tmux).send("dev-impl@my-rig", "/rename impl");
+    await createTransport(tmux).send("dev-impl@my-rig", "one line");
+    expect(typedPrefixes).toEqual([]);
   });
 
   // Test 2: send to canonical session name resolves correctly

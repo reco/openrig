@@ -21,6 +21,7 @@ import { observeClaudePermission } from "../domain/permission-drift.js";
 import { unresolvedClaudePermissionModes } from "../domain/native-permission-selection.js";
 import type { ClaudeManagedLaunch } from "../domain/claude-managed-launch.js";
 import { contextUsageDirectory, providerUsageDirectory } from "../domain/telemetry-state-paths.js";
+import { sendToSeat } from "../domain/session-transport.js";
 
 export interface ClaudeAdapterFsOps {
   readFile(path: string): string;
@@ -212,7 +213,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
                 await sendInteractiveText(content);
                 break;
               }
-              const textResult = await this.tmux.sendText(binding.tmuxSession, content);
+              const textResult = await sendToSeat(this.tmux, binding.tmuxSession, content, "claude-code");
               if (!textResult.ok) throw new Error(textResult.message);
               await this.sleep(200);
               const submitResult = await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);
