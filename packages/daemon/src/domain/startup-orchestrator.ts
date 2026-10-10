@@ -11,7 +11,6 @@ import type {
   ProjectionResult, StartupDeliveryResult, ForkSource,
 } from "./runtime-adapter.js";
 import { isAttentionRequiredReadinessCode, resolveConcreteHint } from "./runtime-adapter.js";
-import { sendToSeat } from "./session-transport.js";
 import type { ProjectionPlan } from "./projection-planner.js";
 import { issueStartupChallenge, STARTUP_PROOF_INSTRUCTION_LINE } from "./startup-proof.js";
 import { resolveStartupProof } from "./startup-resolver.js";
@@ -779,7 +778,7 @@ export class StartupOrchestrator {
     const sendOrder = ++input.sendOrder;
     const tmuxSession = input.binding.tmuxSession!;
     input.lastSubmissionConfirmed = false;
-    const textResult = await sendToSeat(this.tmuxAdapter, tmuxSession, text, input.adapter.runtime);
+    const textResult = await this.tmuxAdapter.sendText(tmuxSession, text);
     if (!textResult.ok) {
       return { error: (textResult as { message?: string }).message ?? "unknown" };
     }

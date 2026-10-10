@@ -1,3 +1,4 @@
+import { ROUTED_MESSAGE_PREFIX } from "../src/domain/session-transport.js";
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import { createDb } from "../src/db/connection.js";
@@ -100,7 +101,8 @@ async function sendAfterHook(mode: Mode, consumer: "send" | "wake" | "handoff" =
       getPaneCommand: async () => "sh",
       listPanes: async () => [{ id: mode === "changed-pane" ? "%2" : "%1" }],
       capturePaneContent: async () => screen,
-      sendText: async () => {
+      sendText: async (_target: string, text: string) => {
+        if (text === ROUTED_MESSAGE_PREFIX) return { ok: true };
         calls.push("text");
         if (mode === "changed-after-paste") registry.updateBinding(node.id, { tmuxSession: name, tmuxPane: "%2" });
         return { ok: true };

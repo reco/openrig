@@ -1,3 +1,4 @@
+import { ROUTED_MESSAGE_PREFIX } from "../src/domain/session-transport.js";
 // #142 — a seat whose agent runtime failed shows a bare shell. Automatic wakes (and any send) must not be
 // typed there, because the shell executes the text; the refusal must reach the watchdog as an honest failure.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -277,7 +278,8 @@ describe("#142 transport refuses to type into a bare shell where an agent runtim
     expect(stored.lastNudgeAttempt).not.toBeNull();
     if (identity !== "different-runtime") {
       expect(stored.lastNudgeResult).toBe("delivered-ack-pending");
-      expect(sendText).toHaveBeenCalledOnce();
+      // The Claude seat gets the typed routed-work line, then the one pasted nudge.
+      expect(sendText.mock.calls.map((c) => (c as unknown[])[1])).toEqual([ROUTED_MESSAGE_PREFIX, expect.stringContaining("Queue handoff:")]);
       expect(sendText).toHaveBeenCalledWith("dev-check@my-rig", expect.stringContaining(`Queue handoff: ${created.qitemId}`));
       expect(sendKeys).toHaveBeenCalledOnce();
     } else {

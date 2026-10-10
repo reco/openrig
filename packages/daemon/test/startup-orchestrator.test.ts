@@ -1,4 +1,3 @@
-import { ROUTED_MESSAGE_PREFIX } from "../src/domain/session-transport.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb } from "./helpers/test-app.js";
@@ -19,11 +18,6 @@ import type { SettingsStore } from "../src/domain/user-settings/settings-store.j
 import { assessNativeResumeProbe } from "../src/domain/native-resume-probe.js";
 
 // -- Mocks --
-
-/** The pasted messages a mock tmux received, without the typed routed-work line a Claude seat gets first. */
-function messageCalls(fn: unknown): unknown[][] {
-  return (fn as { mock: { calls: unknown[][] } }).mock.calls.filter((c) => c[1] !== ROUTED_MESSAGE_PREFIX);
-}
 
 function mockTmux(overrides?: Partial<TmuxAdapter>): TmuxAdapter {
   return {
@@ -170,7 +164,7 @@ describe("StartupOrchestrator", () => {
   it("deliberate fresh replacement appends the named durable obligation read without an extra message", async () => {
     const seed = seedSession();
     await createOrchestrator().startNode(makeInput(seed, { startupActions: [makeIdentityAction()], includeDurableObligations: true }));
-    expect(messageCalls(tmux.sendText)).toHaveLength(1);
+    expect(tmux.sendText).toHaveBeenCalledTimes(1);
     expect(tmux.sendText).toHaveBeenCalledWith("r01-impl", expect.stringContaining("rig queue list --destination r01-impl --state pending,in-progress,blocked"));
     expect(tmux.sendText).toHaveBeenCalledWith("r01-impl", expect.stringContaining(makeIdentityAction().value));
   });
@@ -371,7 +365,7 @@ describe("StartupOrchestrator", () => {
     expect(result).toMatchObject({ ok: false, startupStatus: "attention_required",
       errors: [expect.stringContaining("workspace trust approval")] });
     expect(adapter.checkReady).toHaveBeenCalledTimes(2);
-    expect(messageCalls(t.sendText)).toHaveLength(1);
+    expect(t.sendText).toHaveBeenCalledTimes(1);
     expect(t.sendKeys).toHaveBeenCalledTimes(1); // no extra Enter into the trust menu
     expect(t.killSession).not.toHaveBeenCalled();
     expect(db.prepare("SELECT startup_status FROM sessions WHERE id = ?").get(seed.sessionId)).toEqual({ startup_status: "attention_required" });
@@ -716,12 +710,12 @@ describe("StartupOrchestrator", () => {
       startupStatus: "ready",
       continuityOutcome: "fresh",
     });
-    expect(messageCalls(sendText)[0]?.slice(0, 2)).toEqual(["r01-impl", expect.any(String)]);
-    const firstPrompt = messageCalls(sendText)[0]?.[1];
+    expect(sendText).toHaveBeenNthCalledWith(1, "r01-impl", expect.any(String));
+    const firstPrompt = sendText.mock.calls[0]?.[1];
     expect(firstPrompt).toContain("dev-impl@test-rig");
     expect(firstPrompt).toContain("OpenRig session identity:");
     expect(firstPrompt).toContain("Role instructions go here.");
-    expect(messageCalls(sendText)[1]).toEqual(["r01-impl", "/rename impl"]);
+    expect(sendText).toHaveBeenNthCalledWith(2, "r01-impl", "/rename impl");
     expect(deliverStartup).toHaveBeenCalledTimes(1);
   });
 
@@ -745,7 +739,7 @@ describe("StartupOrchestrator", () => {
       startupStatus: "ready",
       continuityOutcome: "resumed",
     });
-    expect(messageCalls(sendText)).toHaveLength(1);
+    expect(sendText).toHaveBeenCalledTimes(1);
     expect(sendText).toHaveBeenCalledWith("r01-impl", "/rename impl");
   });
 
@@ -866,7 +860,7 @@ describe("StartupOrchestrator", () => {
     expect(challenged.n).toBe(1);
     expect(deriveOriented(db, seed.nodeId)).toBe("missing");
     // The challenge instruction is embedded in the first delivered prompt.
-    expect(messageCalls(sendText)[0]?.[1]).toContain("startup orientation challenge");
+    expect(sendText.mock.calls[0]?.[1]).toContain("startup orientation challenge");
   });
 
   // Claude shows the long startup paste as pasted content and won't act on an instruction found only
@@ -879,9 +873,9 @@ describe("StartupOrchestrator", () => {
       const sendText = vi.fn(async (_session: string, _text: string) => ({ ok: true as const }));
       const result = await createOrchestrator({ tmux: mockTmux({ sendText }) }).startNode(makeInput(seed, { startupActions: challengeAndIdentity() }));
       expect(result).toMatchObject({ ok: true, startupStatus: "ready" });
-      expect(messageCalls(sendText).map((c) => c[1])).toHaveLength(2);
-      expect(messageCalls(sendText)[0]![1]).toContain("startup orientation challenge");
-      expect(messageCalls(sendText)[1]![1]).toBe(STARTUP_PROOF_INSTRUCTION_LINE);
+      expect(sendText.mock.calls.map((c) => c[1])).toHaveLength(2);
+      expect(sendText.mock.calls[0]![1]).toContain("startup orientation challenge");
+      expect(sendText.mock.calls[1]![1]).toBe(STARTUP_PROOF_INSTRUCTION_LINE);
       expect(deriveOriented(db, seed.nodeId)).toBe("missing");
     });
 
@@ -950,7 +944,7 @@ describe("StartupOrchestrator", () => {
     expect(result).toMatchObject({ ok: true, startupStatus: "ready" });
     expect(adapter.project).toHaveBeenCalledOnce();
     expect(adapter.checkReady).toHaveBeenCalledTimes(2);
-    expect(messageCalls(tmux.sendText)).toEqual([["r01-impl", makeIdentityAction().value]]);
+    expect(tmux.sendText).toHaveBeenCalledExactlyOnceWith("r01-impl", makeIdentityAction().value);
     expect(deriveOriented(db, seed.nodeId)).toBe("n-a");
     const row = db.prepare("SELECT payload FROM events WHERE type='node.startup_pending'").get() as { payload: string };
     expect(JSON.parse(row.payload).startupProof).toEqual({ mode: "none", source: "default" });
