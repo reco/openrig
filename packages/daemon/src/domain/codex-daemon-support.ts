@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 // #69 — Newer Codex attaches the interactive TUI to one machine-wide `codex app-server`
 // daemon, and tool shells run under that daemon's environment. A seat's tools can then
 // act under another seat's OpenRig identity. `--no-daemon` keeps the app-server inside the
@@ -57,3 +59,22 @@ export function unknownDaemonSupportMessage(detail: string): string {
     + "seat's tools under another seat's identity, so OpenRig did not launch it. Make sure "
     + "`codex --help` runs in the seat's working directory with the daemon's PATH, then launch again.";
 }
+
+/** Is a shared Codex app-server daemon running for this CODEX_HOME? Codex records it in
+ *  app-server-daemon/daemon.pid ({"pid": n, ...}); a missing, unreadable or dead entry is no. */
+export function sharedCodexDaemonRunning(codexHome: string, readFile: (file: string) => string = (f) => readFileSync(f, "utf8"),
+  alive: (pid: number) => boolean = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; } }): boolean {
+  try {
+    const pid = (JSON.parse(readFile(join(codexHome, "app-server-daemon", "daemon.pid"))) as { pid?: unknown }).pid;
+    return typeof pid === "number" && pid > 0 && alive(pid);
+  } catch {
+    return false;
+  }
+}
+
+export function legacyCodexWithSharedDaemonMessage(): string {
+  return "The Codex this seat would run has no --no-daemon option, and a shared Codex app-server daemon is running. "
+    + "That Codex may run this seat's tools inside the shared daemon, without the seat's OpenRig identity, so OpenRig did not launch it. "
+    + "Put a Codex that lists --no-daemon in `codex --help` first on the daemon's PATH (check with `codex --version`), then launch again.";
+}
+

@@ -25,7 +25,7 @@ import {
   type ResolveHomeDirByPid,
 } from "../domain/codex-thread-id.js";
 import { assessNativeResumeProbe, buildCodexResumeCore, hasCodexUpdateHeader, type NativeResumeProbeResult } from "../domain/native-resume-probe.js";
-import { unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
+import { legacyCodexWithSharedDaemonMessage, unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
 import { codexNetworkDefaultArg, type CodexNetworkDefaultReader } from "../domain/codex-network-default.js";
 import { resolveCodexGitAddDirs, type CodexGitAddDirResolver } from "../domain/codex-git-add-dirs.js";
 import { mergeManagedBlock } from "../domain/managed-blocks.js";
@@ -83,6 +83,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   // #69: whether the installed Codex supports --no-daemon. Startup wires the real probe;
   // absent (unit tests, other embedders) keeps the existing invocation unchanged.
   private detectDaemonSupport?: CodexDaemonSupportDetector;
+  private sharedDaemonRunning?: () => boolean;
   // #275: Codex's own answer on whether the plain floor may get network access. Startup wires the
   // real reader; absent keeps every invocation unchanged.
   private readNetworkDefault?: CodexNetworkDefaultReader;
@@ -110,6 +111,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     launchPath?: string;
     verifyProfilePreflight?: (profile: string) => Promise<CodexProfileProbeResult>;
     detectDaemonSupport?: CodexDaemonSupportDetector;
+    /** A shared Codex app-server daemon is running (a Codex without --no-daemon may attach to it). */
+    sharedDaemonRunning?: () => boolean;
     readNetworkDefault?: CodexNetworkDefaultReader;
     resolveGitAddDirs?: CodexGitAddDirResolver;
   }) {
@@ -119,6 +122,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.codexHome = deps.codexHome;
     this.launchPath = deps.launchPath;
     this.detectDaemonSupport = deps.detectDaemonSupport;
+    this.sharedDaemonRunning = deps.sharedDaemonRunning;
     this.readNetworkDefault = deps.readNetworkDefault;
     this.resolveGitAddDirs = deps.resolveGitAddDirs ?? resolveCodexGitAddDirs;
     this.activityRelayPath = deps.activityRelayPath;
@@ -385,6 +389,9 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const daemonSupport = this.detectDaemonSupport ? await this.detectDaemonSupport(binding.cwd) : undefined;
     if (daemonSupport?.kind === "unknown") {
       return { ok: false, error: unknownDaemonSupportMessage(daemonSupport.detail) };
+    }
+    if (daemonSupport?.kind === "legacy" && this.sharedDaemonRunning?.()) {
+      return { ok: false, error: legacyCodexWithSharedDaemonMessage() };
     }
     const daemonOptOut = daemonSupport?.kind === "supported";
     const daemonArg = daemonOptOut ? " --no-daemon" : "";

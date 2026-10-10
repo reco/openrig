@@ -8,7 +8,7 @@ import { runSyncSite } from "../domain/sync-site-wrap.js";
 import { shellQuote } from "./shell-quote.js";
 import { codexPostureArg } from "./yolo-mode.js";
 import { observeCodexSandbox } from "../domain/permission-drift.js";
-import { unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
+import { legacyCodexWithSharedDaemonMessage, unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
 import { codexNetworkDefaultArg, type CodexNetworkDefaultReader } from "../domain/codex-network-default.js";
 
 const CODEX_TYPES = new Set(["codex_id", "codex_last"]);
@@ -26,6 +26,8 @@ interface CodexResumeOptions {
   exec?: (cmd: string) => Promise<string>;
   /** #69: whether the installed Codex supports --no-daemon; absent keeps the existing invocation. */
   detectDaemonSupport?: CodexDaemonSupportDetector;
+  /** A shared Codex app-server daemon is running (a Codex without --no-daemon may attach to it). */
+  sharedDaemonRunning?: () => boolean;
   /** #275: Codex's own answer on the plain floor's network default; absent keeps the existing invocation. */
   readNetworkDefault?: CodexNetworkDefaultReader;
 }
@@ -90,6 +92,9 @@ export class CodexResumeAdapter {
     const daemonSupport = this.options.detectDaemonSupport ? await this.options.detectDaemonSupport(cwd) : undefined;
     if (daemonSupport?.kind === "unknown") {
       return { ok: false, code: "resume_failed", message: unknownDaemonSupportMessage(daemonSupport.detail) };
+    }
+    if (daemonSupport?.kind === "legacy" && this.options.sharedDaemonRunning?.()) {
+      return { ok: false, code: "resume_failed", message: legacyCodexWithSharedDaemonMessage() };
     }
 
     const profileArg = codexConfigProfile ? ` -p ${shellQuote(codexConfigProfile)}` : "";
