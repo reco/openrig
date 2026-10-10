@@ -127,6 +127,14 @@ describe("structured human questions (#193)", () => {
     type Block = { type: string; block_id?: string; text?: { text: string }; elements?: Array<{ type: string; action_id: string; value: string; style?: string; text: { type: string; text: string } }> };
     const render = () => buildOutboundMessage({ qitemId: "q", summary: "Two quick questions", body: "Pick one for each.", humanQuestions: questions }, { sourceLabel: "proof" });
 
+    it("a long recommended label is shortened to fit the button with its suffix", () => {
+      const long = "x".repeat(70);
+      const msg = buildOutboundMessage({ qitemId: "q", summary: "s", body: "b", humanQuestions: [{ id: "a", question: "Pick?", options: [{ id: "l", label: long, recommended: true }, { id: "s", label: "Short" }] }] }, { sourceLabel: "proof" });
+      const button = (msg.blocks as Block[]).find((b) => b.type === "actions")!.elements![0]!;
+      expect(button.text.text.length).toBeLessThanOrEqual(75);
+      expect(button.text.text.endsWith("… (recommended)")).toBe(true);
+    });
+
     it("renders one button row per question, the recommended option said in words (green reads as selected)", () => {
       const blocks = render().blocks as Block[];
       const rows = blocks.filter((b) => b.type === "actions");
