@@ -458,6 +458,13 @@ export class InboundRouter {
       const [just] = formatHumanAnswers(recorded.questions.filter((q) => q.id === picked.questionId), recorded.answers);
       const waiting = unansweredQuestions(recorded.questions, recorded.answers).map((q) => q.question);
       if (live) await acknowledge(escapeSlackText(redactSecrets(`Recorded: ${just}. Still to answer: ${waiting.join("; ")}`)));
+      if (payload.channel?.id) {
+        try {
+          await this.deps.retireQuestionButtons?.({ channel: payload.channel.id, messageTs: payload.container?.message_ts ?? payload.message?.ts ?? rootTs, qitemId });
+        } catch (e) {
+          this.deps.log?.(`answered question not shown on the card qitem=${qitemId}: ${(e as Error).message}`);
+        }
+      }
       return { status: "accepted", reason: "answer-recorded" };
     }
     let resolution: "resolved" | "already-resolved" | "not-applicable" | undefined;

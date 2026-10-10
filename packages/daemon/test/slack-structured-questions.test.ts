@@ -127,12 +127,12 @@ describe("structured human questions (#193)", () => {
     type Block = { type: string; block_id?: string; text?: { text: string }; elements?: Array<{ type: string; action_id: string; value: string; style?: string; text: { type: string; text: string } }> };
     const render = () => buildOutboundMessage({ qitemId: "q", summary: "Two quick questions", body: "Pick one for each.", humanQuestions: questions }, { sourceLabel: "proof" });
 
-    it("renders one button row per question, the recommended option styled primary", () => {
+    it("renders one button row per question, the recommended option said in words (green reads as selected)", () => {
       const blocks = render().blocks as Block[];
       const rows = blocks.filter((b) => b.type === "actions");
       expect(rows.map((r) => r.block_id)).toEqual(["or-q:db", "or-q:ship"]);
       expect(rows[0]!.elements).toEqual([
-        { type: "button", action_id: "or-opt:pg", value: "pg", style: "primary", text: { type: "plain_text", text: "Postgres" } },
+        { type: "button", action_id: "or-opt:pg", value: "pg", text: { type: "plain_text", text: "Postgres (recommended)" } },
         { type: "button", action_id: "or-opt:sqlite", value: "sqlite", text: { type: "plain_text", text: "SQLite" } },
       ]);
       // Each row follows its question's text.
@@ -251,15 +251,19 @@ describe("structured human questions (#193)", () => {
       expect(answer?.body).toContain("Ship this week?: Yes");
     });
 
-    it("replaces the button rows with the chosen answers once every question is answered", async () => {
+    it("shows each pick on the card as it is answered, and every pick once all are answered", async () => {
       await click("db", "pg");
-      expect(posts.filter((p) => p.ts === "1.1")).toEqual([]);
+      const partial = posts.filter((p) => p.ts === "1.1");
+      expect(partial).toHaveLength(1);
+      expect(String(partial[0]?.text)).toContain("✓ Postgres");
+      expect(JSON.stringify(partial[0]?.blocks)).not.toContain("or-opt:pg");
+      expect(JSON.stringify(partial[0]?.blocks)).toContain("or-opt:yes");
       await click("ship", "yes");
       const edits = posts.filter((p) => p.ts === "1.1");
-      expect(edits).toHaveLength(1);
-      expect(JSON.stringify(edits[0]?.blocks)).not.toContain("or-opt:");
-      expect(String(edits[0]?.text)).toContain("Answered: Which database?: Postgres");
-      expect(String(edits[0]?.text)).toContain("Answered: Ship this week?: Yes");
+      expect(edits).toHaveLength(2);
+      expect(JSON.stringify(edits[1]?.blocks)).not.toContain("or-opt:");
+      expect(String(edits[1]?.text)).toContain("Answered: Which database?: Postgres");
+      expect(String(edits[1]?.text)).toContain("Answered: Ship this week?: Yes");
     });
 
     it("lands exactly one reply when the final click is replayed or clicked again", async () => {

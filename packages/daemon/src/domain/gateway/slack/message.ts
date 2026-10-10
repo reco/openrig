@@ -175,12 +175,22 @@ function buildAnsweredBlocks(questions: readonly HumanQuestion[], answers: Human
 
 /** #193 — the questions as blocks (a section, then a button row, per question) plus the
  *  complete text they must also appear as in the accessible fallback. */
-function buildQuestionBlocks(questions: readonly HumanQuestion[], hint: string | null): { blocks: unknown[]; text: string } {
+function buildQuestionBlocks(questions: readonly HumanQuestion[], hint: string | null, answers: HumanAnswers = {}): { blocks: unknown[]; text: string } {
   const blocks: unknown[] = [];
   const lines: string[] = [];
   for (const q of questions) {
     const question = bounded(`*${inert(q.question)}*`, SLACK_SECTION_CAP, "question");
     blocks.push({ type: "section", text: { type: "mrkdwn", text: question } });
+    // An answered question shows its pick and loses its buttons; the others stay answerable.
+    const picked = Object.hasOwn(answers, q.id) ? q.options.find((o) => o.id === answers[q.id]) : undefined;
+    if (picked) {
+      const done = bounded(`✓ ${inert(picked.label)}`, SLACK_SECTION_CAP, "answer");
+      blocks.push({ type: "section", text: { type: "mrkdwn", text: done } });
+      lines.push(question, done);
+      continue;
+    }
+    // A recommendation is said in words: a green button reads as already selected.
+    const label = (o: HumanQuestion["options"][number]) => `${inert(o.label)}${o.recommended ? " (recommended)" : ""}`;
     blocks.push({
       type: "actions",
       block_id: `${QUESTION_BLOCK_PREFIX}${q.id}`,
@@ -188,11 +198,10 @@ function buildQuestionBlocks(questions: readonly HumanQuestion[], hint: string |
         type: "button",
         action_id: `${OPTION_ACTION_PREFIX}${o.id}`,
         value: o.id,
-        ...(o.recommended ? { style: "primary" } : {}),
-        text: { type: "plain_text", text: bounded(inert(o.label), MAX_OPTION_LABEL, "option label") },
+        text: { type: "plain_text", text: bounded(label(o), MAX_OPTION_LABEL, "option label") },
       })),
     });
-    lines.push(question, ...q.options.map((o) => `• ${inert(o.label)}${o.recommended ? " (recommended)" : ""}`));
+    lines.push(question, ...q.options.map((o) => `• ${label(o)}`));
   }
   if (hint) {
     blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: hint }] });
@@ -316,7 +325,7 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
   const questionParts = !q.humanQuestions?.length ? null
     : closed ? (answeredAny ? buildAnsweredBlocks(q.humanQuestions, q.humanAnswers ?? {}) : null)
     : opts.answered ? buildAnsweredBlocks(q.humanQuestions, q.humanAnswers ?? {})
-    : buildQuestionBlocks(q.humanQuestions, explicit ? null : TYPED_REPLY_HINT);
+    : buildQuestionBlocks(q.humanQuestions, explicit ? null : TYPED_REPLY_HINT, q.humanAnswers ?? {});
   const confirmText = q.humanConfirm ?? (explicit && q.humanIntent !== "update" && !q.humanQuestions?.length ? DEFAULT_CONFIRM_LABEL : null);
   // A closed card keeps a Confirm that decided it (no button left), and drops one that did not.
   const confirmParts = confirmText && (!closed || opts.confirmOutcome === "confirmed") ? buildConfirmBlocks(q.qitemId, confirmText, opts.confirmOutcome, q.humanIntent !== "update") : null;

@@ -12,6 +12,7 @@
 // the relay's history IS the subsystem's history — enabling the subsystem replays nothing the
 // relay already delivered (the enable-time backlog rule survives the cutover by construction).
 
+import { unansweredQuestions } from "../../human-questions.js";
 import { ChannelRecovery } from "./channel-recovery.js";
 import { channelStateDigest } from "../channel-operations.js";
 import path from "node:path";
@@ -927,7 +928,9 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         retireQuestionButtons: async ({ channel, messageTs, qitemId }: { channel: string; messageTs: string; qitemId: string }) => {
           const decision = opts.queueRepo.getById(qitemId);
           if (!decision?.humanQuestions?.length) return;
-          const message = buildOutboundMessage(decision, { ...repostInputs(decision), answered: true });
+          // Every answered question shows its pick; while some are open their buttons stay.
+          const complete = unansweredQuestions(decision.humanQuestions, decision.humanAnswers ?? {}).length === 0;
+          const message = buildOutboundMessage(decision, { ...repostInputs(decision), answered: complete });
           const r = await updateChatMessage(bot, { channel, ts: messageTs, ...message }, opts.fetchImpl);
           if (!r.ok) log(`question buttons not replaced qitem=${qitemId}: ${r.error}`);
         },
