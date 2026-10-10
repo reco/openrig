@@ -15,7 +15,7 @@ import { agentspecRebootSchema } from "../src/db/migrations/014_agentspec_reboot
 import { externalCliAttachmentSchema } from "../src/db/migrations/019_external_cli_attachment.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
-import { classifyPaneActivity, SessionTransport } from "../src/domain/session-transport.js";
+import { classifyPaneActivity, ROUTED_MESSAGE_PREFIX, SessionTransport } from "../src/domain/session-transport.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
@@ -289,6 +289,8 @@ function setupDb(): Database.Database {
   return createFullTestDb();
 }
 
+const typedPrefixes: Array<{ target: string; rest: unknown[] }> = [];
+
 function mockTmux(overrides?: Partial<{
   hasSession: (name: string) => Promise<boolean>;
   sendText: (target: string, text: string) => Promise<TmuxResult>;
@@ -303,7 +305,11 @@ function mockTmux(overrides?: Partial<{
     // hasSession; a throwing hasSession propagates (the fail-closed class).
     probeSession: async (name: string) =>
       (await hasSession(name)) ? { state: "present" as const } : { state: "absent" as const },
-    sendText: overrides?.sendText ?? (async () => ({ ok: true as const })),
+    // The typed routed-work line before a Claude paste is recorded apart; each test's sendText sees the message.
+    sendText: async (target: string, text: string, ...rest: unknown[]) => {
+      if (text === ROUTED_MESSAGE_PREFIX) { typedPrefixes.push({ target, rest }); return { ok: true as const }; }
+      return (overrides?.sendText ?? (async () => ({ ok: true as const })))(target, text);
+    },
     sendKeys: overrides?.sendKeys ?? (async () => ({ ok: true as const })),
     capturePaneContent: overrides?.capturePaneContent ?? (async () => "idle prompt\n❯ "),
     createSession: async () => ({ ok: true as const }),
@@ -397,6 +403,18 @@ describe("SessionTransport", () => {
     const result = await transport.send("dev-impl@my-rig", "hello");
     expect(result.ok).toBe(true);
     expect(callOrder).toEqual(["sendText", "sendKeys:Enter"]);
+  });
+
+  it("a Claude seat gets one typed routed-work line before the pasted message, in the same input", async () => {
+    seedCanonicalRig();
+    typedPrefixes.length = 0;
+    const order: string[] = [];
+    const tmux = mockTmux({ sendText: async () => { order.push("paste"); return { ok: true }; }, sendKeys: async () => { order.push("Enter"); return { ok: true }; } });
+    expect((await createTransport(tmux).send("dev-impl@my-rig", "From: lead@rig\n---\nDo the thing\n---")).ok).toBe(true);
+    expect(typedPrefixes).toHaveLength(1);
+    expect(typedPrefixes[0]!.rest).toContainEqual({ bracketed: false });
+    expect(order).toEqual(["paste", "Enter"]);
+    expect(ROUTED_MESSAGE_PREFIX).not.toMatch(/[@\/!#\n]|^\?/);
   });
 
   // Test 2: send to canonical session name resolves correctly

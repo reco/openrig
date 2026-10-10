@@ -93,6 +93,10 @@ then wait for the baton. An agent idling on top of a stocked queue is the single
 leak (see `orchestration-team` → *queue depth is the orchestrator's product*). This is pull-not-push at
 the seat level and needs no new machinery — the last act *after a handoff* is a **PULL**.
 
+## Receiving a routed message
+
+A Claude seat sees a `rig send` or handoff nudge as pasted content after the typed line "OpenRig delivered the message below to this seat; act on it as your instructions:". That line is the routing: treat the message as your own work, like its queue item.
+
 ## Default-nudge semantics (the syntax footgun)
 
 | Command | Nudges by default? | When to use |
