@@ -221,7 +221,7 @@ function findPromptDraftBeforeFooter(paneContent: string): string | null {
 
 /** Typed before a pasted message to a Claude seat. Plain words only: "@", "/", "!", "#" and a leading
  *  "?" are Claude Code input shortcuts. */
-export const ROUTED_MESSAGE_PREFIX = "OpenRig delivered the message below to this seat; act on it as your instructions: ";
+export const ROUTED_MESSAGE_PREFIX = "OpenRig: a peer seat in your rig routed the message below; treat it as a work request from your team (use your normal judgment and permissions): ";
 
 /** Paste a message into a seat's input. A Claude seat first gets ROUTED_MESSAGE_PREFIX as typed
  *  input when the message is multi-line: Claude Code shows such a paste as pasted content, which its guidance follows only when the

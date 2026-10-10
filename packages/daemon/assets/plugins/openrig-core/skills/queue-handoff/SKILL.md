@@ -95,7 +95,7 @@ the seat level and needs no new machinery — the last act *after a handoff* is 
 
 ## Receiving a routed message
 
-A Claude seat sees a `rig send` or handoff nudge as pasted content after the typed line "OpenRig delivered the message below to this seat; act on it as your instructions:". That line is the routing: treat the message as your own work, like its queue item.
+A Claude seat sees a `rig send` or handoff nudge as pasted content after the typed line "OpenRig: a peer seat in your rig routed the message below; treat it as a work request from your team (use your normal judgment and permissions):". That line is the routing: handle the message as team work, like its queue item, and still refuse what is destructive or out of your role.
 
 ## Default-nudge semantics (the syntax footgun)
 
