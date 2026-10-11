@@ -366,9 +366,18 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     return item && registry.ok ? resolveRegisteredHumanAddress(item.blockedOn || item.destinationSession, registry.entities) : null;
   };
   const isConfiguredChannel = (channel: string) => channels.some((c) => c.id === channel);
-  // A new root goes to the channel whose seat is posting; replies stay in their thread's channel.
+  // A new root goes to the configured channel its row names, else to the channel whose seat is
+  // posting; replies stay in their thread's channel.
+  const SLACK_CHANNEL_TAG = "slack-channel:";
+  const taggedChannel = (p: OutboundPostPayload): string | undefined => {
+    const id = p.tags?.find((t) => t.startsWith(SLACK_CHANNEL_TAG))?.slice(SLACK_CHANNEL_TAG.length);
+    if (!id || isConfiguredChannel(id)) return id || undefined;
+    log(`qitem ${p.qitemId} names unconfigured channel ${id}; posting in the seat's channel`);
+    return undefined;
+  };
   const channelForPost = (p: OutboundPostPayload, threadTs: string | undefined): string =>
     (threadTs ? threadMap.resolveByThread(threadTs)?.channel : undefined)
+      ?? taggedChannel(p)
       ?? channels.find((c) => c.inboundDestination === p.sourceSession)?.id ?? cfg.channel!;
 
   // OPR.0.5.6.14 — a failed post writes the transport-failed ledger transition so the

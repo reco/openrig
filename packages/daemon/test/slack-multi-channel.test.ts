@@ -104,6 +104,23 @@ describe("several Slack channels", () => {
     expect(posts.find((p) => String(p.text).includes("Header changed."))).toMatchObject({ channel: "C-PSA", thread_ts: "103.1" });
   });
 
+  it("a new row tagged slack-channel:<configured id> opens its root there, and its replies follow that thread", async () => {
+    const ask = await repo.create({ sourceSession: "advisor@kernel", destinationSession: "human-founder@external", humanIntent: "update", summary: "PSA note", body: "Posted to PSA.", tags: ["slack-channel:C-PSA"], nudge: false });
+    await vi.waitFor(() => expect(posts.some((p) => String(p.text).includes("Posted to PSA."))).toBe(true));
+    const root = posts.find((p) => String(p.text).includes("Posted to PSA."))!;
+    expect(root).toMatchObject({ channel: "C-PSA" });
+    expect(root.thread_ts).toBeUndefined();
+    await repo.create({ sourceSession: "advisor@kernel", destinationSession: "human-founder@external", humanIntent: "update", summary: "More", body: "Follow-up.", replyTo: ask.qitemId, tags: ["slack-channel:C-MAIN"], nudge: false });
+    await vi.waitFor(() => expect(posts.some((p) => String(p.text).includes("Follow-up."))).toBe(true));
+    expect(posts.find((p) => String(p.text).includes("Follow-up."))).toMatchObject({ channel: "C-PSA", thread_ts: `${posts.indexOf(root) + 1}.1` });
+  });
+
+  it("a slack-channel tag naming an unconfigured channel falls back to the seat's channel", async () => {
+    await repo.create({ sourceSession: "advisor@kernel", destinationSession: "human-founder@external", humanIntent: "update", summary: "Elsewhere", body: "Not there.", tags: ["slack-channel:C-ELSEWHERE"], nudge: false });
+    await vi.waitFor(() => expect(posts.some((p) => String(p.text).includes("Not there."))).toBe(true));
+    expect(posts.find((p) => String(p.text).includes("Not there."))).toMatchObject({ channel: "C-MAIN" });
+  });
+
   it("with more than one human in a channel, only an @mention addresses the app, in its threads too", async () => {
     await vi.waitFor(() => expect(counted).toEqual(expect.arrayContaining(["C-PSA", "C-MAIN"])));
     await new Promise((r) => setTimeout(r, 50));
