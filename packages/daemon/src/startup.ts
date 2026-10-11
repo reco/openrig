@@ -2164,7 +2164,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           const registry = loadHumanRegistryForDelivery(OPENRIG_HOME);
           const human = registry.ok ? registry.entities.find((e) => e.role !== "requester") : undefined;
           // The same prompt episode again soon after (a restart) is not a new notice; the hourly reminder is.
-          const recent = db.prepare(`SELECT 1 FROM queue_items WHERE tags LIKE ? AND ts_created > ? LIMIT 1`)
+          const recent = db.prepare(`SELECT 1 FROM queue_items WHERE tags LIKE ? AND ts_created > ? AND state != 'canceled' LIMIT 1`)
             .get(`%"stuck-prompt:${p.episodeId}"%`, new Date(Date.now() - 50 * 60_000).toISOString());
           if (!human) return { skipped: "no-human" as const };
           if (recent) return { skipped: "recent" as const };
