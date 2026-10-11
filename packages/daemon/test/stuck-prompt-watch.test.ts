@@ -153,6 +153,19 @@ describe("stuck-prompt watch", () => {
     expect(await watch.requestCard("cfo@finance", { by: "advisor-lead@kernel", reason: "r" })).toEqual({ outcome: "already-posted" });
   });
 
+  it("each tick reports what every readable seat shows, so notices for prompts no longer in view can be retired", async () => {
+    let pane: string | null = claude;
+    const reports: Array<{ running: string[]; shown: Array<[string, string | null]> }> = [];
+    const watch = makeStuckPromptWatch({ runningSessions: () => ["cfo@finance", "dev@rig"], capture: async (s) => (s === "dev@rig" ? "✻ Working…" : pane), notify: async () => {},
+      retire: (running, shown) => { reports.push({ running, shown: [...shown] }); } });
+    await watch.tick();
+    pane = null; await watch.tick();
+    expect(reports).toEqual([
+      { running: ["cfo@finance", "dev@rig"], shown: [["cfo@finance", readPrompt(claude)!.key], ["dev@rig", null]] },
+      { running: ["cfo@finance", "dev@rig"], shown: [["dev@rig", null]] },
+    ]);
+  });
+
   it("an answer is typed only while the same prompt is up", async () => {
     const keys: string[] = [];
     let pane = claude;

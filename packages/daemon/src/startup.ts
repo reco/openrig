@@ -2148,7 +2148,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     });
     queueRepoInstance.startWaitReminders();
     {
-      const { makeStuckPromptWatch, promptBlock } = await import("./domain/stuck-prompt-watch.js");
+      const { makeStuckPromptWatch, promptBlock, retireStalePromptNotices, supersedePromptNotices } = await import("./domain/stuck-prompt-watch.js");
       // Enough for a long command's whole dialog, so two prompts differing only near the top differ.
       const STUCK_PROMPT_CAPTURE_LINES = 120;
       deps.stuckPromptWatch = makeStuckPromptWatch({
@@ -2159,6 +2159,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
             AND s.id = (SELECT s2.id FROM sessions s2 WHERE s2.node_id = s.node_id ORDER BY s2.id DESC LIMIT 1)
         `).all() as Array<{ session_name: string }>).map((r) => r.session_name),
         capture: (session) => tmuxAdapter.capturePaneContent(session, STUCK_PROMPT_CAPTURE_LINES),
+        retire: (running, shown) => { retireStalePromptNotices(queueRepoInstance, running, shown); },
         notify: async (p) => {
           const registry = loadHumanRegistryForDelivery(OPENRIG_HOME);
           const human = registry.ok ? registry.entities.find((e) => e.role !== "requester") : undefined;
@@ -2170,8 +2171,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           const summary = `${p.session} is waiting at a ${p.reason === "permission_prompt" ? "permission" : "selection"} prompt`;
           const waiting = p.requestedBy ? `Card requested by ${p.requestedBy}: ${p.requestReason} Attach: \`${p.attach}\``
             : `Waiting for ${p.waitingMinutes} minutes. Attach: \`${p.attach}\``;
+          supersedePromptNotices(queueRepoInstance, p.session);
           if (!p.choices) {
-            await queueRepoInstance.create({ tags: ["stuck-prompt", `stuck-prompt:${p.episodeId}`], sourceSession: "daemon@kernel",
+            await queueRepoInstance.create({ tags: ["stuck-prompt", `stuck-prompt:${p.episodeId}`, `stuck-prompt-session:${p.session}`, `stuck-prompt-key:${p.key}`], sourceSession: "daemon@kernel",
               destinationSession: human.address, humanIntent: "update", summary, body: `${promptBlock(p)}\n\n${waiting}`, nudge: false });
             return;
           }

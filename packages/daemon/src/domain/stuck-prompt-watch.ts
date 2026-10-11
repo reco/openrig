@@ -90,6 +90,8 @@ export interface StuckPromptWatchDeps {
   runningSessions: () => string[];
   capture: (session: string) => Promise<string | null>;
   notify: (prompt: StuckPrompt) => Promise<NotifyResult | void>;
+  /** Each tick: the running seats, and the prompt key each readable one shows (null: no prompt). */
+  retire?: (running: string[], shown: Map<string, string | null>) => void;
   now?: () => number;
   afterMs?: number;
 }
@@ -162,10 +164,12 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
     async tick() {
       const sessions = deps.runningSessions();
       for (const gone of [...open.keys()].filter((s) => !sessions.includes(s))) open.delete(gone);
+      const shown = new Map<string, string | null>();
       for (const session of sessions) {
         const pane = await deps.capture(session).catch(() => null);
         if (pane === null) continue; // an unreadable pane says nothing about the prompt; keep the episode
         const prompt = readPrompt(pane);
+        shown.set(session, prompt?.key ?? null);
         if (!prompt) { open.delete(session); continue; }
         const { key, promptLine } = prompt;
         const episode = open.get(session);
@@ -175,6 +179,7 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
         await deps.notify({ session, reason: prompt.reason, promptLine, attach: `tmux attach -t ${session}`, episodeId: episodeIdOf(session, key), key, dialog: prompt.dialog,
           ...(prompt.choices ? { choices: prompt.choices } : {}), waitingMinutes: Math.floor((now() - episode.since) / 60_000) });
       }
+      deps.retire?.(sessions, shown);
     },
     async requestCard(session, request) {
       if (!deps.runningSessions().includes(session)) return { outcome: "not-a-seat" };
@@ -216,6 +221,38 @@ export async function answerPrompt(deps: AnswerDeps, session: string, expectedKe
 }
 
 const tagValue = (tags: readonly string[] | null | undefined, name: string) => tags?.find((t) => t.startsWith(`${name}:`))?.slice(name.length + 1);
+
+/** The note a retired card's row carries; the request sweep closes its Slack card with the text after it. */
+export const PROMPT_CLEARED_PREFIX = "stuck-prompt cleared: ";
+
+function openPromptNotices(repo: QueueRepository): Array<{ qitemId: string; session: string; key: string | undefined }> {
+  const rows = repo.db.prepare(`SELECT qitem_id, tags FROM queue_items WHERE state IN ('pending', 'in-progress', 'blocked') AND tags LIKE '%"stuck-prompt-session:%'`)
+    .all() as Array<{ qitem_id: string; tags: string }>;
+  return rows.flatMap((r) => {
+    const tags = JSON.parse(r.tags) as string[];
+    const session = tagValue(tags, "stuck-prompt-session");
+    return session ? [{ qitemId: r.qitem_id, session, key: tagValue(tags, "stuck-prompt-key") }] : [];
+  });
+}
+
+function cancelNotice(repo: QueueRepository, qitemId: string, why: string): void {
+  repo.update({ qitemId, actorSession: "daemon@kernel", state: "canceled", transitionNote: `${PROMPT_CLEARED_PREFIX}${why}` });
+}
+
+/** Cancel the cards whose prompt is no longer in view: the seat stopped running, or its readable pane
+ *  shows no prompt or a different one. A seat whose pane could not be read keeps its card. */
+export function retireStalePromptNotices(repo: QueueRepository, running: string[], shown: Map<string, string | null>): string[] {
+  const stale = openPromptNotices(repo).filter((n) => !running.includes(n.session) || (shown.has(n.session) && shown.get(n.session) !== n.key));
+  for (const n of stale) cancelNotice(repo, n.qitemId, "answered in the terminal");
+  return stale.map((n) => n.qitemId);
+}
+
+/** Cancel the seat's open cards before a newer one is posted, so only the latest card has buttons. */
+export function supersedePromptNotices(repo: QueueRepository, session: string): string[] {
+  const earlier = openPromptNotices(repo).filter((n) => n.session === session);
+  for (const n of earlier) cancelNotice(repo, n.qitemId, "replaced by a newer card for this seat");
+  return earlier.map((n) => n.qitemId);
+}
 
 /** A human's Approve / Deny on a stuck-prompt notice is typed into the seat's terminal once, and
  *  only while the same prompt is up; the notice's thread says what happened either way. Only a

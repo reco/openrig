@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import type { QueueRepository, RequestLink } from "../../queue-repository.js";
 import type { ThreadMapping, ThreadSeatMap } from "./thread-seat-map.js";
 import { escapeSlackText, redactSecrets } from "./message.js";
+import { PROMPT_CLEARED_PREFIX } from "../../stuck-prompt-watch.js";
 
 export type { RequestLink } from "../../queue-repository.js";
 export type LinkState = "open" | "merged" | "closed" | "done" | "canceled" | "unknown";
@@ -76,6 +77,8 @@ function describeClose(reason: string): string {
   if (reason === "linked-outcome-finished") return "the linked work is finished.";
   const expired = /^approval-expired: (.*)$/s.exec(reason);
   if (expired) return `expired, ${expired[1]}.`;
+  const cleared = /^prompt-cleared: (.*)$/s.exec(reason);
+  if (cleared) return `${cleared[1]}.`;
   if (reason === "canceled-by-seat") return "canceled by the asking seat.";
   const human = /^canceled-by-human(?:: (.*))?$/s.exec(reason);
   if (human) return human[1] ? `canceled (${human[1]})` : "canceled.";
@@ -93,6 +96,10 @@ export async function closeRequest(deps: RequestLifecycleDeps, root: ThreadMappi
     ? [...deps.queueRepo.transitionLog.listForQitem(root.conversationId)].reverse().find((t) => t.transitionNote?.startsWith("approval expired: "))?.transitionNote
     : undefined;
   if (expiry) reason = `approval-expired: ${expiry.slice("approval expired: ".length)}`;
+  const cleared = reason === "canceled-by-seat"
+    ? [...deps.queueRepo.transitionLog.listForQitem(root.conversationId)].reverse().find((t) => t.transitionNote?.startsWith(PROMPT_CLEARED_PREFIX))?.transitionNote
+    : undefined;
+  if (cleared) reason = `prompt-cleared: ${cleared.slice(PROMPT_CLEARED_PREFIX.length)}`;
   const active = item && ["pending", "in-progress"].includes(item.state) && item.destinationSession === root.human;
   deps.queueRepo.update({
     qitemId: root.conversationId,
