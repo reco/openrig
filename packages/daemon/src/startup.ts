@@ -2165,16 +2165,18 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           // The same prompt episode again soon after (a restart) is not a new notice; the hourly reminder is.
           const recent = db.prepare(`SELECT 1 FROM queue_items WHERE tags LIKE ? AND ts_created > ? LIMIT 1`)
             .get(`%"stuck-prompt:${p.episodeId}"%`, new Date(Date.now() - 50 * 60_000).toISOString());
-          if (!human || recent) return;
+          if (!human) return { skipped: "no-human" as const };
+          if (recent) return { skipped: "recent" as const };
           const summary = `${p.session} is waiting at a ${p.reason === "permission_prompt" ? "permission" : "selection"} prompt`;
-          const waiting = `Waiting for ${p.waitingMinutes} minutes. Attach: \`${p.attach}\``;
+          const waiting = p.requestedBy ? `Card requested by ${p.requestedBy}: ${p.requestReason} Attach: \`${p.attach}\``
+            : `Waiting for ${p.waitingMinutes} minutes. Attach: \`${p.attach}\``;
           if (!p.choices) {
             await queueRepoInstance.create({ tags: ["stuck-prompt", `stuck-prompt:${p.episodeId}`], sourceSession: "daemon@kernel",
               destinationSession: human.address, humanIntent: "update", summary, body: `${promptBlock(p)}\n\n${waiting}`, nudge: false });
             return;
           }
           // Answerable from Slack: the seat is the source, so the answer's reply row reaches it.
-          await queueRepoInstance.create({
+          const card = await queueRepoInstance.create({
             tags: ["stuck-prompt", `stuck-prompt:${p.episodeId}`, `stuck-prompt-session:${p.session}`, `stuck-prompt-key:${p.key}`,
               `stuck-prompt-allow:${p.choices.allow.key}`, `stuck-prompt-deny:${p.choices.deny.key}`],
             sourceSession: p.session,
@@ -2185,6 +2187,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
             humanQuestions: [{ id: "answer", question: `Answer ${p.session}'s prompt?`, options: [{ id: "allow", label: "Approve" }, { id: "deny", label: "Deny" }] }],
             nudge: false,
           });
+          return { qitemId: card.qitemId };
         },
       });
       // A human's Approve / Deny on a stuck-prompt notice is typed into the seat's terminal once, and

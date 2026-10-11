@@ -123,6 +123,36 @@ describe("stuck-prompt watch", () => {
     expect(sent[0]).toMatchObject({ key: readPrompt(claude)!.key, choices: { allow: { key: "1" }, deny: { key: "4" } } });
   });
 
+  it("a requested card is posted at once for an answerable prompt, carrying who asked and why", async () => {
+    let t = 0;
+    const sent: StuckPrompt[] = [];
+    const watch = makeStuckPromptWatch({ runningSessions: () => ["cfo@finance"], capture: async () => claude, notify: async (p) => { sent.push(p); return { qitemId: "q1" }; }, now: () => t });
+    expect(await watch.requestCard("cfo@finance", { by: "advisor-lead@kernel", reason: "safe touch in its own worktree" })).toEqual({ outcome: "posted", qitemId: "q1" });
+    expect(sent[0]).toMatchObject({ session: "cfo@finance", key: readPrompt(claude)!.key, choices: { allow: { key: "1" }, deny: { key: "4" } },
+      requestedBy: "advisor-lead@kernel", requestReason: "safe touch in its own worktree" });
+    await watch.tick(); t = 6 * 60_000; await watch.tick();
+    expect(sent).toHaveLength(1);
+  });
+
+  it("a requested card is refused for a non-seat, a pane at no prompt, or a prompt without a plain Yes/No in full view", async () => {
+    let pane = "✻ Working… (esc to interrupt)";
+    const sent: StuckPrompt[] = [];
+    const watch = makeStuckPromptWatch({ runningSessions: () => ["cfo@finance"], capture: async () => pane, notify: async (p) => { sent.push(p); return { qitemId: "q1" }; } });
+    const ask = (s: string) => watch.requestCard(s, { by: "advisor-lead@kernel", reason: "r" });
+    expect(await ask("other@rig")).toEqual({ outcome: "not-a-seat" });
+    expect(await ask("cfo@finance")).toEqual({ outcome: "no-prompt" });
+    pane = ["Which color?", "❯ 1. Red", "  2. Blue"].join("\n");
+    expect(await ask("cfo@finance")).toEqual({ outcome: "not-answerable" });
+    pane = "─".repeat(80) + "\n" + [" Bash command", "", ...Array.from({ length: 70 }, (_, i) => `   echo ${i}`), "", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""].join("\n");
+    expect(await ask("cfo@finance")).toEqual({ outcome: "not-answerable" });
+    expect(sent).toHaveLength(0);
+  });
+
+  it("a requested card says so when one for the same prompt is already with the human", async () => {
+    const watch = makeStuckPromptWatch({ runningSessions: () => ["cfo@finance"], capture: async () => claude, notify: async () => ({ skipped: "recent" as const }) });
+    expect(await watch.requestCard("cfo@finance", { by: "advisor-lead@kernel", reason: "r" })).toEqual({ outcome: "already-posted" });
+  });
+
   it("an answer is typed only while the same prompt is up", async () => {
     const keys: string[] = [];
     let pane = claude;

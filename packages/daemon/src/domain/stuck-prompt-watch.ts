@@ -29,7 +29,16 @@ export interface StuckPrompt {
   choices?: PromptChoices;
   /** What the prompt asks about (its dialog text: the command, its description), credentials masked. */
   dialog?: string;
+  /** A seat asked for this card before the prompt had waited five minutes, and why. */
+  requestedBy?: string;
+  requestReason?: string;
 }
+
+export type NotifyResult = { qitemId: string } | { skipped: "recent" | "no-human" };
+
+export type PromptCardResult =
+  | { outcome: "posted"; qitemId: string }
+  | { outcome: "already-posted" | "no-human" | "not-a-seat" | "unreadable" | "no-prompt" | "not-answerable" };
 
 /** The most dialog text a notice shows; a longer one is cut, and a cut prompt gets no buttons. */
 export const PROMPT_DIALOG_CAP = 1500;
@@ -80,7 +89,7 @@ export function readPrompt(pane: string): { reason: string; key: string; promptL
 export interface StuckPromptWatchDeps {
   runningSessions: () => string[];
   capture: (session: string) => Promise<string | null>;
-  notify: (prompt: StuckPrompt) => Promise<void>;
+  notify: (prompt: StuckPrompt) => Promise<NotifyResult | void>;
   now?: () => number;
   afterMs?: number;
 }
@@ -129,6 +138,8 @@ export interface StuckPromptWatch {
   tick: () => Promise<void>;
   start: (intervalMs?: number) => void;
   stop: () => void;
+  /** Post the Approve/Deny card for the seat's prompt now, only when its plain Yes and No are in full view. */
+  requestCard: (session: string, request: { by: string; reason: string }) => Promise<PromptCardResult>;
 }
 
 export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWatch {
@@ -137,6 +148,7 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
   const open = new Map<string, { key: string; since: number; notifiedAt?: number }>();
   let timer: ReturnType<typeof setInterval> | undefined;
   let ticking = false;
+  const episodeIdOf = (session: string, key: string) => createHash("sha256").update(`${session}|${key}`).digest("hex").slice(0, 20);
   const watch: StuckPromptWatch = {
     start(intervalMs = 60_000) {
       timer ??= setInterval(() => {
@@ -160,10 +172,25 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
         if (!episode || episode.key !== key) { open.set(session, { key, since: now() }); continue; }
         if (episode.notifiedAt === undefined ? now() - episode.since < afterMs : now() - episode.notifiedAt < REMIND_AFTER_MS) continue;
         episode.notifiedAt = now();
-        const episodeId = createHash("sha256").update(`${session}|${key}`).digest("hex").slice(0, 20);
-        await deps.notify({ session, reason: prompt.reason, promptLine, attach: `tmux attach -t ${session}`, episodeId, key, dialog: prompt.dialog,
+        await deps.notify({ session, reason: prompt.reason, promptLine, attach: `tmux attach -t ${session}`, episodeId: episodeIdOf(session, key), key, dialog: prompt.dialog,
           ...(prompt.choices ? { choices: prompt.choices } : {}), waitingMinutes: Math.floor((now() - episode.since) / 60_000) });
       }
+    },
+    async requestCard(session, request) {
+      if (!deps.runningSessions().includes(session)) return { outcome: "not-a-seat" };
+      const pane = await deps.capture(session).catch(() => null);
+      if (pane === null) return { outcome: "unreadable" };
+      const prompt = readPrompt(pane);
+      if (!prompt) return { outcome: "no-prompt" };
+      if (!prompt.choices) return { outcome: "not-answerable" };
+      const episode = open.get(session);
+      const since = episode?.key === prompt.key ? episode.since : now();
+      open.set(session, { key: prompt.key, since, notifiedAt: now() });
+      const result = await deps.notify({ session, reason: prompt.reason, promptLine: prompt.promptLine, attach: `tmux attach -t ${session}`,
+        episodeId: episodeIdOf(session, prompt.key), key: prompt.key, dialog: prompt.dialog, choices: prompt.choices,
+        waitingMinutes: Math.floor((now() - since) / 60_000), requestedBy: request.by, requestReason: maskSecrets(request.reason) });
+      if (result && "qitemId" in result) return { outcome: "posted", qitemId: result.qitemId };
+      return { outcome: result?.skipped === "no-human" ? "no-human" : "already-posted" };
     },
   };
   return watch;

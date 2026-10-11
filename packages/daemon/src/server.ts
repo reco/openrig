@@ -64,6 +64,7 @@ import type { ClaudeCompactionEnforcer } from "./domain/claude-compaction-enforc
 import { activityRoutes } from "./routes/activity.js";
 import { askRoutes } from "./routes/ask.js";
 import { wakeResolveRoutes } from "./routes/wake-resolve.js";
+import { promptCardRoutes } from "./routes/prompt-card.js";
 import type { AskService } from "./domain/ask-service.js";
 import type { WakeResolveService } from "./domain/wake-resolve-service.js";
 import { specReviewRoutes } from "./routes/spec-review.js";
@@ -557,6 +558,7 @@ export function createApp(deps: AppDeps): Hono {
     c.set("sessionTransport" as never, deps.sessionTransport);
     c.set("askService" as never, deps.askService);
     c.set("wakeResolveService" as never, deps.wakeResolveService);
+    c.set("stuckPromptWatch" as never, deps.stuckPromptWatch);
     c.set("chatRepo" as never, deps.chatRepo);
     c.set("streamStore" as never, deps.streamStore);
     c.set("queueRepo" as never, deps.queueRepo);
@@ -768,6 +770,7 @@ export function createApp(deps: AppDeps): Hono {
   app.route("/api/activity", activityRoutes);
   app.route("/api/ask", askRoutes);
   app.route("/api/wake-resolve", wakeResolveRoutes);
+  app.route("/api/prompt-card", promptCardRoutes);
   app.route("/api/specs/review", specReviewRoutes());
   app.route("/api/specs/library", specLibraryRoutes());
   app.route("/api/plugins", pluginsRoutes());
