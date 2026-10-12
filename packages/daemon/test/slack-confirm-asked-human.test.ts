@@ -161,7 +161,8 @@ describe("Confirm in explicit-answers mode", () => {
     };
     let screen = pane;
     const keys: string[] = [];
-    const deps = { capture: async () => screen, sendKey: async (_s: string, k: string) => { keys.push(k); }, inMode: async () => false };
+    const forgotten: string[] = [];
+    const deps = { capture: async () => screen, sendKey: async (_s: string, k: string) => { keys.push(k); }, inMode: async () => false, onSent: (s: string) => { forgotten.push(s); } };
 
     const first = await notice();
     await vi.waitFor(() => expect(posts.some((p) => p.text && JSON.stringify(p.blocks).includes(`or-opt:allow`) && String(p.text).includes("Do you want to proceed?"))).toBe(true));
@@ -174,6 +175,7 @@ describe("Confirm in explicit-answers mode", () => {
     await actOnPromptAnswers(repo, deps);
     expect(keys).toEqual(["1"]);
     expect(repo.list({ limit: 100 }).find((q) => q.replyTo === first.qitemId && q.summary === "Approved in the terminal")).toBeDefined();
+    expect(forgotten).toEqual(["cfo@finance"]);
 
     // A second card for the same prompt (the hourly reminder), clicked before the screen redraws: no second key.
     const reminder = await notice();

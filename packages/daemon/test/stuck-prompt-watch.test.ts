@@ -178,6 +178,28 @@ describe("stuck-prompt watch", () => {
     expect(sent.map((p) => p.since)).toEqual([0, 45_000]);
   });
 
+  it("the same prompt asked again before the next scan, after its answer was typed, is a new episode with its own card", async () => {
+    let t = 0;
+    const sent: StuckPrompt[] = [];
+    const watch = makeStuckPromptWatch({ runningSessions: () => ["advisor-lead@kernel"], capture: async () => claude, notify: async (p) => { sent.push(p); }, now: () => t });
+    await watch.tick(); t = 15_000; await watch.tick();
+    t = 20_000; watch.forget("advisor-lead@kernel");
+    t = 30_000; await watch.tick(); t = 45_000; await watch.tick();
+    expect(sent.map((p) => p.since)).toEqual([0, 30_000]);
+  });
+
+  it("a requested card that fails leaves the prompt to the next scans", async () => {
+    let t = 0;
+    let fail = true;
+    const sent: StuckPrompt[] = [];
+    const watch = makeStuckPromptWatch({ runningSessions: () => ["cfo@finance"], capture: async () => claude, now: () => t,
+      notify: async (p) => { if (fail) throw new Error("db busy"); sent.push(p); } });
+    await expect(watch.requestCard("cfo@finance", { by: "advisor-lead@kernel", reason: "r" })).rejects.toThrow("db busy");
+    fail = false;
+    await watch.tick(); t = 15_000; await watch.tick();
+    expect(sent).toHaveLength(1);
+  });
+
   it("a notice that fails is logged and posted on the next scan, and the other seats are still scanned", async () => {
     let t = 0;
     let fail = true;

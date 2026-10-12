@@ -2198,6 +2198,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         void actOnPromptAnswers(queueRepoInstance, {
           capture: (session) => tmuxAdapter.capturePaneContent(session, STUCK_PROMPT_CAPTURE_LINES),
           inMode: (session) => tmuxAdapter.isPaneInMode(session),
+          onSent: (session) => deps.stuckPromptWatch?.forget(session),
           sendKey: async (session, key) => { const r = await tmuxAdapter.sendKeys(session, [key]); if (!r.ok) throw new Error(r.message ?? "send failed"); },
         }).catch((e) => console.log(`[stuck-prompt] answer pass failed: ${(e as Error).message}`)).finally(() => { answering = false; });
       }, 3_000).unref();

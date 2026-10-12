@@ -158,6 +158,8 @@ export interface StuckPromptWatch {
   stop: () => void;
   /** Post the Approve/Deny card for the seat's prompt now, only when its plain Yes and No are in full view. */
   requestCard: (session: string, request: { by: string; reason: string }) => Promise<PromptCardResult>;
+  /** An answer was typed into the seat: whatever prompt it shows next, even the same one, is a new episode. */
+  forget: (session: string) => void;
 }
 
 export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWatch {
@@ -214,13 +216,16 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
       if (!prompt.choices) return { outcome: "not-answerable" };
       const episode = open.get(session);
       const since = episode?.key === prompt.key ? episode.since : now();
+      const previous = open.get(session);
       open.set(session, { key: prompt.key, since, notifiedAt: now() });
       const result = await deps.notify({ session, reason: prompt.reason, promptLine: prompt.promptLine, attach: `tmux attach -t ${session}`,
         episodeId: episodeIdOf(session, prompt.key), since, key: prompt.key, dialog: prompt.dialog, choices: prompt.choices,
-        waitingMinutes: Math.floor((now() - since) / 60_000), requestedBy: request.by, requestReason: maskSecrets(request.reason).slice(0, 300) });
+        waitingMinutes: Math.floor((now() - since) / 60_000), requestedBy: request.by, requestReason: maskSecrets(request.reason).slice(0, 300) })
+        .catch((e: Error) => { if (previous) open.set(session, previous); else open.delete(session); throw e; });
       if (result && "qitemId" in result) return { outcome: "posted", qitemId: result.qitemId };
       return { outcome: result?.skipped === "no-human" ? "no-human" : "already-posted" };
     },
+    forget(session) { open.delete(session); },
   };
   return watch;
 }
@@ -230,6 +235,7 @@ export interface AnswerDeps {
   sendKey: (session: string, key: string) => Promise<void>;
   /** The pane is in copy-mode or a chooser: a key would not reach the program. */
   inMode: (session: string) => Promise<boolean>;
+  onSent?: (session: string) => void;
 }
 
 /** Type the chosen option's key, read off the screen now, only while the pane still shows the
@@ -317,7 +323,7 @@ export async function actOnPromptAnswers(repo: QueueRepository, deps: AnswerDeps
     const since = Number(tagValue(row.tags, "stuck-prompt-since") ?? 0);
     const result = (answeredAt.get(`${session}|${expected}`) ?? -1) >= since ? { outcome: "moved-on" as const }
       : await answerPrompt(deps, session, expected, choice).catch((e: Error) => ({ outcome: `failed: ${e.message}` as const, key: undefined }));
-    if (result.outcome === "sent") answeredAt.set(`${session}|${expected}`, now);
+    if (result.outcome === "sent") { answeredAt.set(`${session}|${expected}`, now); deps.onSent?.(session); }
     repo.update({ qitemId: qitem_id, actorSession: "daemon@kernel", transitionNote: `stuck-prompt answer: ${choice}${result.key ? ` key=${result.key}` : ""} ${result.outcome}` });
     await repo.create({
       sourceSession: row.sourceSession, destinationSession: row.destinationSession, humanIntent: "update", replyTo: qitem_id, nudge: false,
