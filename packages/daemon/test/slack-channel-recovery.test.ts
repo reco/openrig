@@ -6,6 +6,7 @@ import { QueueRepository } from "../src/domain/queue-repository.js";
 import { makeQueuePorts } from "../src/domain/gateway/slack/queue-access.js";
 import { InboundRouter, handleEnvelope, type InboundDeps, type SlackEvent } from "../src/domain/gateway/slack/inbound.js";
 import { ChannelRecovery } from "../src/domain/gateway/slack/channel-recovery.js";
+import { ThreadSeatMap } from "../src/domain/gateway/slack/thread-seat-map.js";
 import { ChannelCoverageStore, SeenStore, DeadLetterStore, InboundReceiptStore, slackMicros, type StateFsOps } from "../src/domain/gateway/slack/state-store.js";
 import { startSocketInbound, type WsLike } from "../src/domain/gateway/slack/socket-inbound.js";
 import type { FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
@@ -246,6 +247,27 @@ it("recovers replies posted in followed threads while the socket was down, exact
   expect(f.repo.list({ limit: 100 })).toHaveLength(2);
 });
 
+it("a fast pass reads top-level history and only the hot threads; the full pass still reads the rest, each reply once", async () => {
+  const f = fixture();
+  let now = 1_000_000;
+  const r = new ChannelRecovery({ token: "fixture-token", channel: "C1", stateDir: "/s", store: f.store, router: f.router, fetchImpl: f.fetchImpl, now: () => now, threadRoots: () => ["900.000001", "901.000001"], hotRoots: () => ["901.000001"] });
+  r.initialize(); closes.push(() => r.stop());
+  now = 1_006_000; await r.run();
+  expect(r.status().coverage?.threads?.roots["900.000001"]).toBe("1001.000000");
+  f.replies.set("900.000001", [event("1010.000001", { thread_ts: "900.000001", text: "reply in a quiet thread" })]);
+  f.replies.set("901.000001", [event("1010.000002", { thread_ts: "901.000001", text: "reply in a hot thread" })]);
+  f.history.push(event("1010.000003", { text: "a new top-level message" }));
+  now = 1_016_000; await r.runFast();
+  const bodies = () => f.repo.list({ limit: 100 }).map((x) => x.body).join("\n");
+  expect(bodies()).toContain("reply in a hot thread");
+  expect(bodies()).toContain("a new top-level message");
+  expect(bodies()).not.toContain("reply in a quiet thread");
+  expect(r.status().coverage?.threads?.roots["900.000001"]).toBe("1001.000000");
+  now = 1_020_000; await r.run();
+  expect(bodies()).toContain("reply in a quiet thread");
+  expect(f.repo.list({ limit: 100 })).toHaveLength(3);
+});
+
 it("follows a thread's reply pages before advancing coverage", async () => {
   const f = fixture(); const r = f.recovery("fixture-token", "C1", () => ["900.000001"]);
   f.respond((u) => {
@@ -402,4 +424,21 @@ it("when a pass cannot reach every followed thread, a thread that failed once st
   for (let pass = 0; pass < 12 && t.f.repo.list({ limit: 500 }).length < 40; pass++) { t.at(1_010_000 + pass * 20_000); await r.run(); }
   for (const root of roots) expect(t.bodies()).toContain(`reply in ${root};`);
   expect(r.status().threads?.degraded).toEqual({});
+});
+
+it("the hot threads are open roots posted, or whose conversation changed, in the window", async () => {
+  const f = fixture();
+  const map = new ThreadSeatMap(f.db);
+  const nowS = Date.now() / 1000;
+  const active = await f.repo.create({ sourceSession: "owner@test", destinationSession: "human-fixture@external", body: "old thread, recent answer", nudge: false });
+  const stale = await f.repo.create({ sourceSession: "owner@test", destinationSession: "human-fixture@external", body: "old thread, quiet", nudge: false });
+  f.db.prepare("UPDATE queue_items SET ts_updated = ? WHERE qitem_id = ?").run(new Date(Date.now() - 48 * 3600_000).toISOString(), stale.qitemId);
+  const root = (s: number) => (nowS - s).toFixed(6);
+  map.open({ threadTs: root(3600), channel: "C1", human: "h", seat: "s", conversationId: "qitem-none" });
+  map.open({ threadTs: root(86400), channel: "C1", human: "h", seat: "s", conversationId: active.qitemId });
+  map.open({ threadTs: root(90000), channel: "C1", human: "h", seat: "s", conversationId: stale.qitemId });
+  map.open({ threadTs: root(1800), channel: "C2", human: "h", seat: "s", conversationId: "qitem-other-channel" });
+  map.open({ threadTs: root(600), channel: "C1", human: "h", seat: "s", conversationId: "qitem-closed" });
+  map.close(root(600));
+  expect(map.listActiveRootsInChannel("C1", new Date(Date.now() - 6 * 3600_000).toISOString()).sort()).toEqual([root(86400), root(3600)].sort());
 });

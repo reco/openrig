@@ -70,6 +70,8 @@ export interface SlackWireOpts {
   registry?: RegistrySurface;
   /** Phase 1 request sweep cadence and PR/issue state source (tests inject both). */
   requestSweepIntervalMs?: number;
+  /** How often top-level history and the recently active threads are read for missed messages. */
+  fastRecoveryIntervalMs?: number;
   linkState?: (link: RequestLink) => Promise<LinkState>;
   resolveHumanReply?: (input: { qitemId: string; actorSession: string; decision: string }) => Promise<"resolved" | "already-resolved" | "not-applicable">;
 }
@@ -1014,9 +1016,16 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     });
     stops.push(() => unsubscribe?.());
     const followedThreads = (channel: string) => () => threadMap.listOpenRootsInChannel(channel, new Date(Date.now() - 7 * 24 * 3600_000).toISOString());
-    recovery = new ChannelRecovery({ channel: cfg.channel, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl, threadRoots: cfg.channel ? followedThreads(cfg.channel) : undefined });
-    extraRecoveries = cfg.extraChannels.map((c) => new ChannelRecovery({ channel: c.id, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl, threadRoots: followedThreads(c.id) }));
+    const activeThreads = (channel: string) => () => threadMap.listActiveRootsInChannel(channel, new Date(Date.now() - 6 * 3600_000).toISOString());
+    recovery = new ChannelRecovery({ channel: cfg.channel, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl, threadRoots: cfg.channel ? followedThreads(cfg.channel) : undefined, hotRoots: cfg.channel ? activeThreads(cfg.channel) : undefined });
+    extraRecoveries = cfg.extraChannels.map((c) => new ChannelRecovery({ channel: c.id, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl, threadRoots: followedThreads(c.id), hotRoots: activeThreads(c.id) }));
     const recoveries = [recovery, ...extraRecoveries];
+    let fastTimer: ReturnType<typeof setInterval> | undefined;
+    starts.push(() => {
+      fastTimer = setInterval(() => { for (const r of recoveries) void r.runFast(); }, opts.fastRecoveryIntervalMs ?? 45_000);
+      fastTimer.unref?.();
+    });
+    stops.push(() => clearInterval(fastTimer));
     starts.push(() => {
       for (const r of recoveries) r.initialize(); // persist the once-only floor before any live events
       inboundHandle = startSocketInbound(app!, router, {

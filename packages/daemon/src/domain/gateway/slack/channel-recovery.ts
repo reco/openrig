@@ -15,6 +15,8 @@ interface RecoveryOptions {
   now?: () => number;
   /** Roots of the threads OpenRig follows in this channel (their replies are recovered too). */
   threadRoots?: () => string[];
+  /** Followed roots with recent activity: the only threads a fast pass reads. */
+  hotRoots?: () => string[];
 }
 
 /** Slack says the root is gone: nothing more to read there. */
@@ -70,10 +72,15 @@ export class ChannelRecovery {
 
   stop(): void { this.stopped = true; this.state = "stopped"; }
 
-  run(): Promise<void> {
+  run(): Promise<void> { return this.start(false); }
+
+  /** Top-level history and the hot threads only; the full pass still reads every followed thread. */
+  runFast(): Promise<void> { return this.start(true); }
+
+  private start(fast: boolean): Promise<void> {
     if (this.pass) return this.pass;
     if (this.stopped || !this.coverage || !this.opts.token || !this.opts.channel) return Promise.resolve();
-    const pass = this.scan().catch(() => {
+    const pass = this.scan(fast).catch(() => {
       if (!this.stopped) { this.state = "incomplete"; this.reason = "storage-or-routing-failed"; }
     });
     this.pass = pass;
@@ -87,19 +94,19 @@ export class ChannelRecovery {
     this.coverage = next; // publish only after the atomic write succeeds
   }
 
-  private async scan(): Promise<void> {
+  private async scan(fast: boolean): Promise<void> {
     const deadline = this.now() + 15_000;
     this.lastScanAt = new Date(this.now()).toISOString();
     // Reply tracking starts where top-level coverage stands now, before this pass advances it.
     if (this.opts.threadRoots && !this.coverage!.threads) this.save({ ...this.coverage!, threads: { since: this.coverage!.coveredThrough, roots: {} } });
     await this.scanHistory(deadline);
-    if (!this.stopped && this.opts.threadRoots) await this.sweepThreads(deadline);
+    if (!this.stopped && this.opts.threadRoots) await this.sweepThreads(deadline, fast ? new Set(this.opts.hotRoots?.() ?? []) : undefined);
   }
 
   /** Replies in each followed thread, from that thread's own watermark to the settled upper bound.
    *  A thread that fails keeps its watermark (retried next pass) while the others advance; top-level
    *  coverage is independent. Progress is saved after every thread, so a restart resumes. */
-  private async sweepThreads(deadline: number): Promise<void> {
+  private async sweepThreads(deadline: number, only?: Set<string>): Promise<void> {
     const upper = slackTimestamp(BigInt(Math.max(0, this.now() - 5000)) * 1000n);
     const base = this.coverage!.threads!;
     if (base.nextRetryAt && base.nextRetryAt > this.now()) return;
@@ -112,7 +119,7 @@ export class ChannelRecovery {
     // Least recently visited first, a failed read counting as a visit: every root gets its
     // turn, so neither healthy nor failing threads can be starved when a pass cannot reach them all.
     const turn = (root: string) => { const tried = this.attempted.get(root) ?? 0n; return tried > behind(root) ? tried : behind(root); };
-    const todo = followed.filter((root) => !deleted.has(root) && slackMicros(root) !== null && behind(root) < slackMicros(upper)!)
+    const todo = followed.filter((root) => (!only || only.has(root)) && !deleted.has(root) && slackMicros(root) !== null && behind(root) < slackMicros(upper)!)
       .sort((a, b) => (turn(a) < turn(b) ? -1 : turn(a) > turn(b) ? 1 : 0));
     const persist = (extra: Partial<typeof base> = {}) =>
       this.save({ ...this.coverage!, threads: { since: base.since, roots, deleted: [...deleted].filter((r) => followed.includes(r)), degraded, ...extra } });
