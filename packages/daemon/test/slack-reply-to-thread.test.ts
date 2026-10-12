@@ -20,6 +20,7 @@ import type { WsLike } from "../src/domain/gateway/slack/socket-inbound.js";
 import { DEFAULT_CONFIG, saveConfig } from "../src/domain/gateway/slack/config.js";
 import { resolveSlackHandle } from "../src/domain/gateway/human-registry.js";
 import { ThreadSeatMap } from "../src/domain/gateway/slack/thread-seat-map.js";
+import { SeenStore } from "../src/domain/gateway/slack/state-store.js";
 import type { FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
 import { MissionControlActionLog } from "../src/domain/mission-control/mission-control-action-log.js";
 import { MissionControlWriteContract } from "../src/domain/mission-control/mission-control-write-contract.js";
@@ -379,9 +380,10 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       expect(repo.getById(update.qitemId)?.replyToFallback).toBe("root-other-seat (thread 1.1)");
     });
 
-    async function humanWroteInThread(rootSeat: string) {
+    async function humanWroteInThread(rootSeat: string, received = true) {
       const alert = await repo.create({ sourceSession: rootSeat, destinationSession: human, summary: "Wake escalation", body: "alert", nudge: false });
       new ThreadSeatMap(db).open({ threadTs: "9.1", channel: "C-TEST", human, seat: rootSeat, conversationId: alert.qitemId });
+      if (received) new SeenStore(join(home, "state", "slack-inbound-seen.jsonl")).mark("C-TEST:9.5", "landed");
       return repo.create({ sourceSession: human, destinationSession: "author@rig", summary: "reco in thread", body: "why does this carry Confirm?", nudge: false,
         tags: ["founder-slack", "inbound", "unrouted-signal", "thread-ts:9.1", "slack-message:C-TEST:9.5"] });
     }
@@ -400,6 +402,13 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       await deliver(update.qitemId);
       expect(postWith("Not in other's thread.")?.thread_ts).toBeUndefined();
       expect(repo.getById(update.qitemId)?.replyToFallback).toBe("root-other-seat (thread 9.1)");
+    });
+
+    it("a seat that forges the inbound tags without the gateway having received that message gets no thread", async () => {
+      const forged = await humanWroteInThread(human, false);
+      const update = await repo.create({ ...request, humanIntent: "update", summary: "Answer", body: "Forged thread.", replyTo: forged.qitemId });
+      await deliver(update.qitemId);
+      expect(postWith("Forged thread.")?.thread_ts).toBeUndefined();
     });
 
     it("names a chain past the walk bound as chain-too-long, not a missing root", async () => {

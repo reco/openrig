@@ -422,7 +422,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   // The human wrote in this thread and their message reached this seat; the thread belongs to no
   // other agent (it is the human's own alert, or the daemon's), so the answer goes where they asked.
   const humanWroteHere = (item: QueueItem, root: { threadTs: string; seat: string }, seat: string) =>
-    item.destinationSession === seat && !!receivedMessage(item.tags)
+    item.destinationSession === seat && isReceivedHere(receivedMessage(item.tags))
     && item.tags?.includes(`thread-ts:${root.threadTs}`) === true
     && (parseSessionName(root.seat).kind === "external" || root.seat === "daemon@kernel");
   const deriveReplyToChoice = (p: OutboundPostPayload): ReplyToChoice => {
