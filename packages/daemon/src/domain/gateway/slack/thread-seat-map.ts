@@ -116,7 +116,7 @@ export class ThreadSeatMap {
   }
 
   /** Open roots in one channel posted, or whose conversation row changed, since an instant (fast recovery). */
-  listActiveRootsInChannel(channel: string, sinceIso: string, limit = 25): string[] {
+  listActiveRootsInChannel(channel: string, sinceIso: string, limit = 10): string[] {
     return (this.db.prepare(`SELECT m.thread_ts FROM thread_seat_map m LEFT JOIN queue_items q ON q.qitem_id = m.conversation_id
         WHERE m.channel = ? AND m.state = 'open' AND (CAST(m.thread_ts AS REAL) >= ? OR q.ts_updated >= ?)
         ORDER BY COALESCE(q.ts_updated, '') DESC, CAST(m.thread_ts AS REAL) DESC LIMIT ?`)

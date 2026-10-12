@@ -268,6 +268,19 @@ it("a fast pass reads top-level history and only the hot threads; the full pass 
   expect(f.repo.list({ limit: 100 })).toHaveLength(3);
 });
 
+it("a full pass asked for while a fast pass runs still reads every followed thread", async () => {
+  const f = fixture();
+  let now = 1_000_000;
+  const r = new ChannelRecovery({ token: "fixture-token", channel: "C1", stateDir: "/s", store: f.store, router: f.router, fetchImpl: f.fetchImpl, now: () => now, threadRoots: () => ["900.000001", "901.000001"], hotRoots: () => ["901.000001"] });
+  r.initialize(); closes.push(() => r.stop());
+  now = 1_006_000; await r.run();
+  f.replies.set("900.000001", [event("1010.000001", { thread_ts: "900.000001", text: "reply in a quiet thread" })]);
+  now = 1_016_000;
+  const fast = r.runFast();
+  await r.run(); await fast;
+  expect(f.repo.list({ limit: 100 }).map((x) => x.body).join("\n")).toContain("reply in a quiet thread");
+});
+
 it("follows a thread's reply pages before advancing coverage", async () => {
   const f = fixture(); const r = f.recovery("fixture-token", "C1", () => ["900.000001"]);
   f.respond((u) => {

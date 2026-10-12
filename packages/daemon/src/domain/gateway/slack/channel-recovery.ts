@@ -33,6 +33,7 @@ export class ChannelRecovery {
   private readonly now: () => number;
   private coverage?: ChannelCoverage;
   private pass?: Promise<void>;
+  private passIsFast = false;
   private stopped = false;
   /** Per root, the settled bound of its last failed read this process: a failed root waits its turn too. */
   private readonly attempted = new Map<string, bigint>();
@@ -78,12 +79,13 @@ export class ChannelRecovery {
   runFast(): Promise<void> { return this.start(true); }
 
   private start(fast: boolean): Promise<void> {
-    if (this.pass) return this.pass;
+    if (this.pass) return this.passIsFast && !fast ? this.pass.then(() => this.start(false)) : this.pass;
     if (this.stopped || !this.coverage || !this.opts.token || !this.opts.channel) return Promise.resolve();
     const pass = this.scan(fast).catch(() => {
       if (!this.stopped) { this.state = "incomplete"; this.reason = "storage-or-routing-failed"; }
     });
     this.pass = pass;
+    this.passIsFast = fast;
     void pass.finally(() => { if (this.pass === pass) this.pass = undefined; });
     return pass;
   }
