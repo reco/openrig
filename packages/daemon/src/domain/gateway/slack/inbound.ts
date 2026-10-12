@@ -119,11 +119,17 @@ export interface InboundFilePort { transfer(files: unknown[], eventTs: string, e
 
 const EXPLICIT_ANSWER = /^\s*answer:\s*([\s\S]*?)\s*$/i;
 const EXPLICIT_CANCEL = /^\s*cancel\s*(?::\s*([\s\S]*?))?\s*$/i;
+const SHORT_REPLY = /^\s*(yes|ok|okay|done|approve|approved|no|deny|denied)\s*[.!]*\s*$/i;
 
 /** The decision text of an explicit `answer:` reply, or null when the text is not one. */
 export function explicitAnswer(text: string | undefined): string | null {
   const answer = EXPLICIT_ANSWER.exec(text ?? "")?.[1];
   return answer ? answer : null;
+}
+
+/** A one-word answer ("yes", "ok", "done", "approve", "no", "deny"), lowercased, or null. */
+export function shortReply(text: string | undefined): string | null {
+  return SHORT_REPLY.exec(text ?? "")?.[1]?.toLowerCase() ?? null;
 }
 
 export function shouldIngest(ev: SlackEvent): boolean {
@@ -158,7 +164,7 @@ export interface InboundDeps {
   resolveRoute?: (ev: SlackEvent) => { destination: string; tags?: string[]; correlationQitemId?: string };
   /** Continue an exact human gate through the existing Mission Control resolve primitive. */
   resolveHumanReply?: (input: { qitemId: string; actorSession: string; decision: string }) => Promise<"resolved" | "already-resolved" | "not-applicable">;
-  /** Phase 1: only an explicit `answer:` reply resolves; other typed replies are conversation.
+  /** Phase 1: only an explicit `answer:` reply or a one-word answer resolves; other typed replies are conversation.
    *  Absent or false keeps the #96 contract (any typed reply answers). */
   explicitAnswersOnly?: boolean;
   /** #193 — record a clicked answer on the decision the clicked message belongs to. */
@@ -243,7 +249,7 @@ export class InboundRouter {
   /** What a reply on a decision's thread decides: the resolve text, or null for conversation. */
   private replyDecision(ev: SlackEvent, correlationQitemId: string | undefined): string | null {
     if (!correlationQitemId) return null;
-    if (this.deps.explicitAnswersOnly) return explicitAnswer(ev.text);
+    if (this.deps.explicitAnswersOnly) return explicitAnswer(ev.text) ?? shortReply(ev.text);
     return String(ev.text ?? "").trim() || "[file reply]";
   }
 

@@ -1,5 +1,5 @@
 // Phase 1 reply semantics: a typed reply in a decision's thread is conversation. It reaches the
-// owning seat and resolves nothing. Only an explicit `answer:` reply resolves, exactly once.
+// owning seat and resolves nothing. Only an explicit `answer:` reply or a one-word answer resolves, exactly once.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -174,11 +174,22 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
     });
 
     it("prose that sounds like approval still resolves nothing", async () => {
-      await say("yes", "2001.1");
       await say("approved, ship it", "2002.1");
+      await say("yes, but only the schema one", "2002.2");
       expect(repo.getById(decisionId)?.state).toBe("pending");
       expect(resolutions()).toEqual([]);
     });
+
+    it("a one-word answer resolves the decision with that word and reaches the seat as its answer", async () => {
+      await say(" Yes! ", "2001.1");
+      expect(repo.getById(decisionId)?.state).toBe("done");
+      expect(resolutions()).toHaveLength(1);
+      expect(decisions).toEqual(["yes"]);
+      const answer = toSeat().find((q) => q.body.includes("Yes!"));
+      expect(answer?.tags).toEqual(expect.arrayContaining([`reply-to:${decisionId}`, "human-answer"]));
+      expect(answer?.body).not.toContain("does not resolve");
+    });
+
 
     it("an `answer:` reply resolves the decision with the text after the prefix, exactly once across replays", async () => {
       await say("Answer:  ship the schema migration only ", "2003.1");
@@ -239,7 +250,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(blocks).toContain(`or-confirm:${offer.qitemId}`);
       expect(String(posts.at(-1)?.text)).toContain(`My reading:* ${reading}`);
 
-      await say("yes", "2020.1");
+      await say("sounds about right", "2020.1");
       expect(repo.getById(decisionId)?.state).toBe("pending");
 
       expect(await click(`or-confirm:${offer.qitemId}`, "or-confirm", offer.messageTs)).toMatchObject({ status: "accepted" });
