@@ -1324,7 +1324,7 @@ export class RestoreOrchestrator {
   private activityHookEntries(rigId: string, node: SnapshotData["nodes"][number], saved: import("./types.js").PersistedProjectionEntry[], warnings?: string[]): import("./types.js").PersistedProjectionEntry[] {
     const entries = saved.filter(e => e.category === "runtime_resource" && e.resourceType === CLAUDE_ACTIVITY_HOOKS_RESOURCE_TYPE);
     if (entries.length > 0) return entries;
-    const variant = this.specsDir ? builtInKernelVariant(this.db, rigId) : null;
+    const variant = this.specsDir ? builtInKernelVariant(this.db, rigId, this.specsDir) : null;
     if (!variant) {
       if (node.agentRef?.startsWith("local:")) warnings?.push(`Restore activity hooks: ${node.logicalId}'s current spec could not be resolved (no rig root); its saved selection, without activity hooks, was kept.`);
       return entries;

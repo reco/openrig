@@ -24,17 +24,19 @@ describe("built-in kernel provenance", () => {
 
   it("names the shipped variant of a kernel rig its completed bootstrap run created, by id or (older runs) by creation window", () => {
     for (const variant of ["rig.yaml", "rig-claude-only.yaml", "rig-codex-only.yaml"]) {
-      expect(builtInKernelVariant(rigWithRun("kernel", { sourceRef: shipped(variant), linked: "id" }), "r1")).toBe(variant);
+      expect(builtInKernelVariant(rigWithRun("kernel", { sourceRef: shipped(variant), linked: "id" }), "r1", shippedSpecs)).toBe(variant);
     }
-    expect(builtInKernelVariant(rigWithRun("kernel", { sourceRef: shipped("rig.yaml"), linked: "window" }), "r1")).toBe("rig.yaml");
+    expect(builtInKernelVariant(rigWithRun("kernel", { sourceRef: shipped("rig.yaml"), linked: "window" }), "r1", shippedSpecs)).toBe("rig.yaml");
   });
 
   it("a rig merely named kernel (a user spec, an unrelated or failed run) is not the built-in kernel", () => {
-    expect(builtInKernelVariant(rigWithRun("kernel", { sourceRef: "/Users/x/my-rigs/kernel/rig.yaml", linked: "id" }), "r1")).toBeNull();
-    expect(builtInKernelVariant(rigWithRun("kernel", { sourceRef: shipped("rig.yaml"), linked: "outside" }), "r1")).toBeNull();
-    expect(builtInKernelVariant(rigWithRun("kernel", { sourceRef: shipped("rig.yaml"), linked: "id", status: "failed" }), "r1")).toBeNull();
-    expect(builtInKernelVariant(rigWithRun("finance", { sourceRef: shipped("rig.yaml"), linked: "id" }), "r1")).toBeNull();
-    expect(builtInKernelVariant(rigWithRun("kernel", { sourceRef: shipped("rig-experimental.yaml"), linked: "id" }), "r1")).toBeNull();
+    expect(builtInKernelVariant(rigWithRun("kernel", { sourceRef: "/Users/x/my-rigs/kernel/rig.yaml", linked: "id" }), "r1", shippedSpecs)).toBeNull();
+    expect(builtInKernelVariant(rigWithRun("kernel", { sourceRef: shipped("rig.yaml"), linked: "outside" }), "r1", shippedSpecs)).toBeNull();
+    expect(builtInKernelVariant(rigWithRun("kernel", { sourceRef: shipped("rig.yaml"), linked: "id", status: "failed" }), "r1", shippedSpecs)).toBeNull();
+    expect(builtInKernelVariant(rigWithRun("finance", { sourceRef: shipped("rig.yaml"), linked: "id" }), "r1", shippedSpecs)).toBeNull();
+    expect(builtInKernelVariant(rigWithRun("kernel", { sourceRef: shipped("rig-experimental.yaml"), linked: "id" }), "r1", shippedSpecs)).toBeNull();
+    expect(builtInKernelVariant(rigWithRun("kernel", { sourceRef: "/Users/x/dev/openrig-fork/packages/daemon/specs/rigs/launch/kernel/rig.yaml", linked: "id" }), "r1", shippedSpecs)).toBeNull();
+    expect(builtInKernelVariant(rigWithRun("kernel", { sourceRef: `${shippedSpecs}/rigs/launch/kernel/rig.yaml`, linked: "id" }), "r1", shippedSpecs)).toBe("rig.yaml");
   });
 });
 

@@ -187,9 +187,10 @@ export function createRestoreCheckService(
     },
     currentActivityHookSelection: (node) => {
       const row = node.nodeId ? rigRepo.db.prepare("SELECT agent_ref, profile, runtime FROM nodes WHERE id = ?").get(node.nodeId) as { agent_ref: string | null; profile: string | null; runtime: string | null } | undefined : undefined;
-      const variant = builtInKernelVariant(rigRepo.db, node.rigId);
+      const specsDir = resolve(import.meta.dirname, "../../specs");
+      const variant = builtInKernelVariant(rigRepo.db, node.rigId, specsDir);
       if (variant && row) {
-        return currentKernelActivityHookSelection({ specsDir: resolve(import.meta.dirname, "../../specs"), variant, logicalId: node.logicalId,
+        return currentKernelActivityHookSelection({ specsDir, variant, logicalId: node.logicalId,
           agentRef: row.agent_ref, profile: row.profile, runtime: row.runtime, fsOps: { exists: existsSync, readFile: (path) => readFileSync(path, "utf-8") } });
       }
       return row?.agent_ref?.startsWith("local:") ? "unknown" : null;
