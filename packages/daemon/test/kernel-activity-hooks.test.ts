@@ -27,6 +27,7 @@ describe("built-in kernel provenance", () => {
       expect(builtInKernelVariant(rigWithRun("kernel", { sourceRef: shipped(variant), linked: "id" }), "r1", shippedSpecs)).toBe(variant);
     }
     expect(builtInKernelVariant(rigWithRun("kernel", { sourceRef: shipped("rig.yaml"), linked: "window" }), "r1", shippedSpecs)).toBe("rig.yaml");
+    expect(builtInKernelVariant(rigWithRun("kernel", { sourceRef: shipped("rig.yaml"), linked: "id", status: "partial" }), "r1", shippedSpecs)).toBe("rig.yaml");
   });
 
   it("a rig merely named kernel (a user spec, an unrelated or failed run) is not the built-in kernel", () => {

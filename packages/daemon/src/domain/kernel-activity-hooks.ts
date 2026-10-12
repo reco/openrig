@@ -26,22 +26,22 @@ function shippedKernelVariant(sourceRef: string, specsDir: string): string | nul
 const instant = (text: string) => Date.parse(/[TZ]/.test(text) ? text : `${text.replace(" ", "T")}Z`);
 
 /** The shipped kernel variant (file name) this rig was booted from, or null when the rig did not come
- *  from the built-in kernel boot: its completed bootstrap run names a shipped kernel spec and created
+ *  from the built-in kernel boot: its completed (or partial) bootstrap run names a shipped kernel spec and created
  *  this rig (by id, or for runs that predate the recorded id, by the rig being created during the run). */
 export function builtInKernelVariant(db: Database.Database, rigId: string, specsDir: string): string | null {
   const rig = db.prepare("SELECT name, created_at FROM rigs WHERE id = ?").get(rigId) as { name: string; created_at: string } | undefined;
   if (rig?.name !== "kernel") return null;
   const created = instant(rig.created_at);
-  const runs = db.prepare("SELECT source_ref, rig_id, created_at, applied_at FROM bootstrap_runs WHERE status = 'completed' AND source_kind = 'rig_spec'")
+  const runs = db.prepare("SELECT source_ref, rig_id, created_at, applied_at FROM bootstrap_runs WHERE status IN ('completed', 'partial') AND source_kind = 'rig_spec'")
     .all() as Array<{ source_ref: string; rig_id: string | null; created_at: string; applied_at: string | null }>;
   const run = runs.find((r) => shippedKernelVariant(r.source_ref, specsDir) && (r.rig_id === rigId
     || (r.rig_id === null && !!r.applied_at && instant(r.created_at) <= created && created <= instant(r.applied_at))));
   return run ? shippedKernelVariant(run.source_ref, specsDir) : null;
 }
 
-/** The rig spec file this rig was brought up from, as its completed bootstrap run recorded it (by rig id). */
+/** The rig spec file this rig was brought up from, as its completed (or partial) bootstrap run recorded it (by rig id). */
 export function recordedRigSpecPath(db: Database.Database, rigId: string): string | null {
-  const run = db.prepare("SELECT source_ref FROM bootstrap_runs WHERE rig_id = ? AND status = 'completed' AND source_kind = 'rig_spec' ORDER BY created_at DESC, id DESC LIMIT 1")
+  const run = db.prepare("SELECT source_ref FROM bootstrap_runs WHERE rig_id = ? AND status IN ('completed', 'partial') AND source_kind = 'rig_spec' ORDER BY created_at DESC, id DESC LIMIT 1")
     .get(rigId) as { source_ref: string } | undefined;
   return run?.source_ref ?? null;
 }
