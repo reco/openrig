@@ -542,7 +542,9 @@ export class ClaimService {
       projectionDrift.push(`cwd unverified: node declares "${nodeRow.cwd}"; the live pane's cwd is not provable without injecting input`);
     }
 
-    const survivingGeneration = await this.survivingOccupantGeneration(nodeRow.id, sessionName);
+    // Typing protection refuses this reconcile below; it reads nothing more from the seat first.
+    const protectedSeat = guard ? ((pref) => pref.desired || pref.effective)(guard.preference(nodeRow.id)) : false;
+    const survivingGeneration = protectedSeat ? null : await this.survivingOccupantGeneration(nodeRow.id, sessionName);
 
     // 4. The DB portion of bind, reconcile-shaped: supersede stale session
     // rows for THIS node, upsert the binding to the live session, register a
