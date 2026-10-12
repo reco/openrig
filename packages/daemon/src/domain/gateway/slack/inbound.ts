@@ -32,9 +32,10 @@ export interface SlackEvent {
   thread_ts?: string;
   channel?: string;
   files?: unknown[];
-  /** reaction_added: the emoji name and the message it was added to. */
+  /** #899 — a `reaction_added` event: the emoji name, the message it was added to, and when. */
   reaction?: string;
   item?: { type?: string; channel?: string; ts?: string };
+  event_ts?: string;
   /** Internal history provenance, retained across dead-letter retry. */
   recoveredAfterGap?: boolean;
 }
@@ -60,6 +61,8 @@ export type ReactionTarget =
   | { kind: "answer"; decisionQitemId: string; threadTs: string; text: string };
 
 export const CHECK_REACTION = "white_check_mark";
+/** The fork's reaction handling left these to upstream's reaction row for the asking seat. */
+const UNCLAIMED_REACTION = new Set(["not-a-check-on-a-message", "not-a-decision-message", "not-our-request", "not-the-current-decision"]);
 /** The received Slack message's identity on its inbound row, written by the gateway only. */
 export const SLACK_MESSAGE_TAG = "slack-message:";
 
@@ -69,6 +72,27 @@ export function inboundQitemIdFor(channel: string | undefined, ts: string | unde
 }
 
 export type RecordHumanAnswer = (input: { qitemId: string; actorSession: string; questionId: string; optionId: string }) => RecordHumanAnswerResult;
+
+/** What a person reads in the thread when OpenRig refuses a click or can't record it. Plain words: what happened, and
+ *  who may answer or what to do instead. The same clicks are refused as before; they just aren't silent. */
+export const CLICK_REPLIES = {
+  unregistered: "This click wasn't recorded: only the person this decision was sent to can answer it, and your Slack account isn't registered with this OpenRig.",
+  unmapped: "This click wasn't recorded: OpenRig can't find the decision this message belongs to. Reply in this thread in words instead.",
+  closed: "This decision is no longer waiting for answers, so this click wasn't recorded.",
+  onRecord: "Your answer is recorded, and this decision is no longer waiting for answers.",
+  someoneElse: "This click wasn't recorded: this decision was sent to someone else, and only they can answer it.",
+  stale: "This click wasn't recorded: the button no longer matches this decision's questions. Reply in this thread in words instead.",
+  unavailable: "This click wasn't recorded: OpenRig couldn't record a button answer here. Reply in this thread in words instead.",
+  notClosed: "Your answers were recorded and sent to the agent that asked, but the decision itself didn't close.",
+} as const;
+
+/** The reply for a click recordHumanAnswer didn't record, by its reason. */
+export function clickNotRecordedReply(reason: string): string {
+  if (reason.startsWith("state-")) return CLICK_REPLIES.closed;
+  if (reason === "not-the-asked-human") return CLICK_REPLIES.someoneElse;
+  if (reason === "unknown-option" || reason === "no-questions") return CLICK_REPLIES.stale;
+  return CLICK_REPLIES.unavailable;
+}
 
 /** The root message a click was made on: buttons live on the decision's root post, whose ts is
  *  the thread map's key (a click inside a thread would carry that thread's root instead). */
@@ -94,15 +118,25 @@ export type InboundDisposition = "accepted" | "ignored" | "refused" | "dead-lett
  *  definition of the ingest decision; `shouldIngest` is a thin wrapper over it so the branch logic
  *  has one origin and the log can never drift from the behaviour it describes.
  *  ("files" left the union at OPR.0.5.6.2: file-bearing events are now work, not noise.) */
-export type IngestReason = "type" | "bot_id" | "subtype" | "no-user" | "empty-text";
+export type IngestReason = "type" | "bot_id" | "subtype" | "no-user" | "empty-text" | "reaction-target";
 
 export function ingestDecision(ev: SlackEvent): { ingest: true } | { ingest: false; reason: IngestReason } {
   const hasFiles = Array.isArray(ev.files) && ev.files.length > 0;
   if (!ev.type || !ADMITTED_EVENT_TYPES.includes(ev.type)) return { ingest: false, reason: "type" };
   if (ev.bot_id) return { ingest: false, reason: "bot_id" }; // never ingest our own / any bot post
-  // OPR.0.5.6.2: `file_share` WITH files is the human-upload shape and is admitted;
-  // every other subtype (edits, joins, …) stays rejected exactly as before.
-  if (ev.subtype && !(ev.subtype === "file_share" && hasFiles)) return { ingest: false, reason: "subtype" };
+  if (ev.type === "reaction_added") {
+    // #899 — a reaction has no text; it is admitted when a person added it to a message, the
+    // only target that can be an ask. Reactions to files or file comments stay ignored.
+    if (!ev.user) return { ingest: false, reason: "no-user" };
+    if (ev.item?.type !== "message" || !ev.item.ts || !ev.reaction) return { ingest: false, reason: "reaction-target" };
+    return { ingest: true };
+  }
+  // OPR.0.5.6.2: `file_share` WITH files is the human-upload shape and is admitted.
+  // #899: a thread reply sent with "Also send to #channel" arrives as `thread_broadcast`
+  // and still carries its thread_ts, so it is admitted and routes like any thread reply.
+  // Every other subtype (edits, joins, …) stays rejected exactly as before.
+  const isThreadBroadcast = ev.subtype === "thread_broadcast" && !!ev.thread_ts && ev.thread_ts !== ev.ts;
+  if (ev.subtype && !(ev.subtype === "file_share" && hasFiles) && !isThreadBroadcast) return { ingest: false, reason: "subtype" };
   if (!ev.user) return { ingest: false, reason: "no-user" };
   // A pure file drop has no caption: empty text is admissible iff files ride along.
   if ((!ev.text || !ev.text.trim()) && !hasFiles) return { ingest: false, reason: "empty-text" };
@@ -200,8 +234,8 @@ export interface InboundDeps {
   /** #193 — clicks whose continuation (reply row + resolve) failed; retried with the event
    *  dead-letters. Absent → a failed click is only logged. */
   actionDeadLetter?: DeadLetterStore<SlackBlockActions>;
-  /** #193 — tell the human in the decision's thread what a click did. Best-effort. */
-  acknowledgeAnswer?: (input: { channel?: string; threadTs: string; text: string }) => Promise<void>;
+  /** #193 — tell the human in the decision's thread what a click did. Best-effort; false when the post failed. */
+  acknowledgeAnswer?: (input: { channel?: string; threadTs: string; text: string }) => Promise<boolean | void>;
   /** OPR.0.5.6.2 — inbound file transfer. Absent with a file-bearing event →
    *  every file is a NAMED failure on the row ("transfer unavailable"), never
    *  a silent drop of message or file. */
@@ -213,6 +247,7 @@ export interface InboundDeps {
 export class InboundRouter {
   private readonly inflight = new Set<string>(); // same-channel message identity double-dispatch guard
   private readonly confirmChains = new Map<string, Promise<unknown>>(); // one Confirm at a time per decision
+  private readonly replyingTo = new Set<string>(); // click replies being posted now
   private retryPass: Promise<{ retried: number; landed: number }> | undefined;
   constructor(private readonly deps: InboundDeps) {}
 
@@ -353,6 +388,7 @@ export class InboundRouter {
           summary,
           body,
           ...(addressed ? {} : { nudge: false }),
+          ...(route.correlationQitemId ? { inReplyTo: route.correlationQitemId } : {}),
         });
       } catch (e) {
         this.deps.log?.(`qitem create failed ts=${ts}: ${(e as Error).message}`);
@@ -431,35 +467,62 @@ export class InboundRouter {
     return r;
   }
 
+  /** The key a live click's one thread reply is recorded under: Slack can redeliver an envelope we already handled, and
+   *  the person must not read a second reply, such as "already closed" after "All answered". The click's user and
+   *  action_ts identify it; a click without an action_ts can't be told from its redelivery, so it replies as before. */
+  private clickReplyKey(payload: SlackBlockActions): string | undefined {
+    const actionTs = payload.actions?.[0]?.action_ts;
+    return actionTs ? `click-reply:${payload.user?.id ?? "-"}:${actionTs}` : undefined;
+  }
+
   private async attemptAction(payload: SlackBlockActions, live: boolean): Promise<{ status: InboundDisposition; reason?: string }> {
     const action = payload.actions?.[0];
     const offerQitemId = parseConfirmAction(action?.block_id, action?.action_id);
     if (offerQitemId) return this.attemptConfirm(payload, offerQitemId, live);
     const picked = parseQuestionAction(action?.block_id, action?.action_id);
     if (!picked) return { status: "ignored", reason: "not-a-question-button" };
+    const rootTs = clickedRootTs(payload);
+    // A thread reply about this click: once per live click; the dead-letter retry (live false) only confirms success.
+    // A posted reply is recorded in the durable seen store, so a redelivery or a restart doesn't repeat it; one being
+    // posted is held in memory, so a redelivery arriving meanwhile is skipped. A reply that failed to post isn't
+    // recorded, so a later redelivery can still tell the person.
+    const acknowledge = async (text: string) => {
+      if (!rootTs || !this.deps.acknowledgeAnswer) return; // nothing can post (no bot token): record no reply either
+      const key = live ? this.clickReplyKey(payload) : undefined;
+      if (key && (this.replyingTo.has(key) || this.deps.seen.load().has(key))) return;
+      if (key) this.replyingTo.add(key);
+      try {
+        const posted = await this.deps.acknowledgeAnswer?.({ channel: payload.channel?.id, threadTs: rootTs, text });
+        if (key && posted !== false) this.deps.seen.mark(key, "click-reply");
+      } catch (e) {
+        this.deps.log?.(`click reply failed thread=${rootTs}: ${(e as Error).message}`);
+      } finally {
+        if (key) this.replyingTo.delete(key);
+      }
+    };
     const who = this.deps.resolveSender(payload.user?.id ?? "", payload.channel?.id);
     if (!who.admitted) {
       this.deps.log?.(`click REFUSED — unregistered sender ${payload.user?.id}: ${who.teaching}`);
+      if (live) await acknowledge(CLICK_REPLIES.unregistered);
       return { status: "refused", reason: "unregistered" };
     }
     if (who.requester) return { status: "refused", reason: "requester-cannot-answer" };
-    const rootTs = clickedRootTs(payload);
     const route = rootTs ? this.deps.resolveRoute?.({ type: "message", thread_ts: rootTs, channel: payload.channel?.id }) : undefined;
     // Buttons on a decision posted inside another item's thread answer that decision, not the thread's item.
     const clickedTs = payload.container?.message_ts ?? payload.message?.ts;
     const qitemId = (clickedTs ? this.deps.postedQitem?.(clickedTs) : null) ?? route?.correlationQitemId;
-    if (!rootTs || !route || !qitemId) return { status: "ignored", reason: "unmapped-message" };
+    if (!rootTs || !route || !qitemId) {
+      if (live) await acknowledge(CLICK_REPLIES.unmapped);
+      return { status: "ignored", reason: "unmapped-message" };
+    }
     const recorded = this.deps.recordHumanAnswer?.({ qitemId, actorSession: who.source, ...picked });
     if (!recorded || recorded.status !== "recorded") {
-      return { status: "ignored", reason: recorded?.reason ?? "answers-unavailable" };
+      const reason = recorded?.reason ?? "answers-unavailable";
+      // A closed decision holding this person's clicked answer: typically Slack's redelivery of the click that closed
+      // it, after that click's own confirmation failed to post. It was recorded, so say that.
+      if (live) await acknowledge(recorded?.answerOnRecord ? CLICK_REPLIES.onRecord : clickNotRecordedReply(reason));
+      return { status: "ignored", reason };
     }
-    const acknowledge = async (text: string) => {
-      try {
-        await this.deps.acknowledgeAnswer?.({ channel: payload.channel?.id, threadTs: rootTs, text });
-      } catch (e) {
-        this.deps.log?.(`answer acknowledgement failed qitem=${qitemId}: ${(e as Error).message}`);
-      }
-    };
     const lines = formatHumanAnswers(recorded.questions, recorded.answers);
     if (!recorded.complete) {
       this.deps.log?.(`answer recorded qitem=${qitemId} question=${picked.questionId}`);
@@ -499,6 +562,7 @@ export class InboundRouter {
       // The reply row reached the seat, but the decision did not close: say so on the log and
       // the receipt instead of reporting success. Retrying cannot change this outcome.
       this.deps.log?.(`answers complete but resolve not applicable qitem=${qitemId}`);
+      if (live) await acknowledge(CLICK_REPLIES.notClosed);
       return { status: "refused", reason: "resolve-not-applicable" };
     }
     this.deps.log?.(`answers complete qitem=${qitemId} -> ${route.destination}`);
@@ -602,13 +666,14 @@ export class InboundRouter {
     if (channel) this.deps.onMembershipChanged?.(channel);
   }
 
-  async routeReaction(ev: SlackEvent): Promise<{ status: InboundDisposition; reason?: string }> {
-    const r = await this.attemptReaction(ev, true);
-    if (r.status === "handler-failed") this.deps.deadLetter.append(ev, 1);
-    return r;
+  /** A reaction the fork gives a meaning to (a ✅ that answers, 👍/👎 feedback) is handled here; any
+   *  other reaction on an ask reaches the asking seat as upstream's reaction row. */
+  private async attemptAnyReaction(ev: SlackEvent, live: boolean): Promise<{ status: InboundDisposition; reason?: string }> {
+    const r = await this.attemptAnswerReaction(ev, live);
+    return r.status === "ignored" && UNCLAIMED_REACTION.has(r.reason ?? "") ? this.attemptReaction(ev) : r;
   }
 
-  private async attemptReaction(ev: SlackEvent, live: boolean): Promise<{ status: InboundDisposition; reason?: string }> {
+  private async attemptAnswerReaction(ev: SlackEvent, live: boolean): Promise<{ status: InboundDisposition; reason?: string }> {
     const channel = ev.item?.channel;
     const messageTs = ev.item?.ts;
     const name = (ev.reaction ?? "").split("::")[0] ?? "";
@@ -679,6 +744,78 @@ export class InboundRouter {
   }
 
   /**
+   * #899 — a reaction on an ask. The ask is the root message the thread map is keyed on, so the
+   * lookup that routes a typed reply names the asking seat; a reaction on a message OpenRig posted
+   * into a thread for an ask (a long ask's part, or an ask posted as a reply) names that ask's own
+   * seat. The row carries the fact (who, which
+   * emoji, which ask) and leaves its meaning to that seat: a reaction neither answers nor closes
+   * the ask. A reaction on any other message is logged and ignored. The row id derives from the
+   * reaction event, so a redelivery or a retry finds the same row; a failed create is
+   * dead-lettered and retried like a message.
+   */
+  async routeReaction(ev: SlackEvent, attempts = 0): Promise<{ status: InboundDisposition; reason?: string }> {
+    const r = await this.attemptAnyReaction(ev, true);
+    if (r.status !== "handler-failed") return r;
+    this.deps.deadLetter.append(ev, attempts + 1);
+    this.deps.log?.(`dead-lettered reaction on ts=${ev.item?.ts} (attempt ${attempts + 1})`);
+    return { status: "dead-lettered", reason: r.reason };
+  }
+
+  private async attemptReaction(ev: SlackEvent): Promise<{ status: InboundDisposition; reason?: string }> {
+    const eventId = `reaction:${ev.item?.channel ?? "-"}:${ev.item?.ts ?? "-"}:${ev.user ?? "-"}:${ev.reaction ?? "-"}:${ev.event_ts ?? "-"}`;
+    if (this.deps.seen.load().has(eventId)) return { status: "ignored", reason: "dup" };
+    if (this.inflight.has(eventId)) return { status: "ignored", reason: "inflight" };
+    const who = this.deps.resolveSender(ev.user ?? "");
+    if (!who.admitted) {
+      this.deps.log?.(`reaction REFUSED — unregistered sender ${ev.user}: ${who.teaching}`);
+      return { status: "refused", reason: "unregistered" };
+    }
+    let route: ReturnType<NonNullable<InboundDeps["resolveRoute"]>> | undefined;
+    try {
+      route = this.deps.resolveRoute?.({ type: "reaction_added", thread_ts: ev.item?.ts, channel: ev.item?.channel });
+    } catch (e) {
+      // The event is already acknowledged and Slack won't resend it: keep it for the retry pass.
+      this.deps.log?.(`reaction route lookup failed for ts=${ev.item?.ts}: ${(e as Error).message}`);
+      return { status: "handler-failed", reason: "route_failed" };
+    }
+    // A mapped thread names its ask; the unrouted fallback names none.
+    const ask = route?.correlationQitemId ?? route?.tags?.find((tag) => tag.startsWith("reply-to:"))?.slice("reply-to:".length);
+    if (!route || !ask) {
+      this.deps.log?.(`reaction ignored: ts=${ev.item?.ts} is not an ask's message`);
+      return { status: "ignored", reason: "not-an-ask" };
+    }
+    this.inflight.add(eventId);
+    try {
+      await this.deps.queue.createQitem({
+        qitemId: `qitem-slack-reaction-${createHash("sha256").update(eventId).digest("hex").slice(0, 20)}`,
+        source: who.source,
+        destination: route.destination,
+        priority: "routine",
+        tags: [...route.tags ?? ["founder-slack", "inbound"], "human-reaction"],
+        summary: `Founder via Slack: reacted :${ev.reaction}: to ${ask}`,
+        body: [
+          `${who.source} reacted :${ev.reaction}: to your ask ${ask} in Slack.`,
+          "",
+          "A reaction doesn't answer or close the ask. Decide what it means: an answer, an acknowledgement, or neither.",
+          "",
+          "---",
+          `Source: slack channel=${ev.item?.channel} user=${ev.user} message_ts=${ev.item?.ts} event_ts=${ev.event_ts}`,
+          `In reply to: ${ask}`,
+          "Routed by openrig slack-inbound (reaction).",
+        ].join("\n"),
+      });
+      this.deps.seen.mark(eventId, "landed");
+    } catch (e) {
+      this.deps.log?.(`reaction create failed for ${ask}: ${(e as Error).message}`);
+      return { status: "handler-failed", reason: "create_failed" };
+    } finally {
+      this.inflight.delete(eventId);
+    }
+    this.deps.log?.(`reaction :${ev.reaction}: on ${ask} -> ${route.destination}`);
+    return { status: "accepted", reason: "reaction" };
+  }
+
+  /**
    * INTERRUPTION-SAFE retry (item 8): read the durable set NON-destructively,
    * attempt each, then ATOMICALLY replace the file with only the still-failing
    * entries. The original file stays intact until the atomic replace, so a crash
@@ -707,9 +844,11 @@ export class InboundRouter {
     const seen = this.deps.seen.load();
     for (const e of entries) {
       if (e.ev.type === "reaction_added") {
-        const reacted = await this.attemptReaction(e.ev, false);
-        if (reacted.status === "accepted") landed++;
-        else if (reacted.status === "handler-failed") stillFailing.push({ ev: e.ev, at: e.at, attempts: e.attempts + 1 });
+        // #899 — a reaction has no message ts of its own; it retries through its own path.
+        const r = await this.attemptAnyReaction(e.ev, false);
+        if (r.status === "accepted") landed++;
+        else if (r.status === "handler-failed") stillFailing.push({ ev: e.ev, at: e.at, attempts: e.attempts + 1 });
+        else if (r.reason === "inflight") stillFailing.push(e);
         continue;
       }
       if (e.ev.ts && seen.has(this.inboundEventId(e.ev))) continue; // already landed → recovered, drop from set
@@ -785,6 +924,7 @@ export async function handleEnvelope(
     }
     return { status: "ignored", reason: decision.reason };
   }
+  if (ev.type === "reaction_added") return router.routeReaction(ev);
   const routed = await router.route(ev);
   return { status: routed.disposition, reason: routed.reason };
 }

@@ -101,6 +101,13 @@ describe("shipped Slack app manifest — mutation controls", () => {
     expect(admits("file_shared")).toBe(false);
     expect(buildSlackAppManifest().events).not.toContain("file_shared");
   });
+
+  it("subscribes to reactions through an optional feature scope, so verify does not require it (#899)", () => {
+    expect(buildSlackAppManifest().events).toContain("reaction_added");
+    expect(FEATURE_SCOPES.map((f) => f.scope)).toContain("reactions:read");
+    expect(BASELINE_REQUIRED_SCOPES).not.toContain("reactions:read");
+    expect(DEFAULT_CONFIG.requiredScopes).not.toContain("reactions:read");
+  });
 });
 
 describe("GET /slack/manifest (read-only route)", () => {

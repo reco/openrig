@@ -56,6 +56,8 @@ export interface CreateQitemInput {
   priority?: string;
   tags?: string[];
   nudge?: boolean;
+  /** #822 — the item whose OpenRig thread this reply was typed in (the route's correlation). */
+  inReplyTo?: string;
 }
 
 /** What the inbound router needs: land a durable qitem, get its id (or throw). */
@@ -118,13 +120,20 @@ export async function seedBacklogAsHistory(opts: {
   queue: OutboundQueuePort;
   seen: import("./state-store.js").SeenStore;
   filter: AlertFilterOpts;
+  /** The durable dispatch buffer, read only to say what the restart will replay: earlier posts that
+   *  failed or never finished. An alert whose row has since closed is dropped; the rest post. */
+  buffer?: Pick<import("../dispatch-buffer.js").DispatchBuffer, "pending">;
   log?: (msg: string) => void;
 }): Promise<{ seeded: number; onlineStatus: string }> {
   const alerts = await opts.queue.listHumanAlerts(opts.filter);
   const already = opts.seen.load();
   const toSeed = alerts.map((a) => a.notificationKey ?? a.qitemId).filter((id) => !already.has(id));
   const seeded = opts.seen.seed(toSeed, "seeded-at-enable");
-  const onlineStatus = `slack outbound ENABLED at enable-time: ${seeded} pre-existing alert(s) seeded as history (not reposted); only alerts created after this point will deliver.`;
+  const retained = (opts.buffer?.pending() ?? []).filter((d) => d.op === "post_message").length;
+  const retainedNote = retained > 0
+    ? ` ${retained} earlier undelivered post(s) wait in the replay buffer: an alert whose row has since closed is dropped; the rest post (open rows' alerts, decision-resolved notices, digests).`
+    : "";
+  const onlineStatus = `slack outbound ENABLED at enable-time: ${seeded} pre-existing alert(s) seeded as history (not reposted); only alerts created after this point will deliver.${retainedNote}`;
   opts.log?.(onlineStatus);
   return { seeded, onlineStatus };
 }
@@ -146,6 +155,7 @@ export function makeQueuePorts(
         priority: (input.priority ?? "routine") as never,
         tags: input.tags ?? ["founder-slack", "inbound"],
         ...(input.nudge === false ? { nudge: false } : {}),
+        inboundReplyTo: input.inReplyTo ?? null,
       });
       return (created as unknown as { qitemId: string }).qitemId;
     },

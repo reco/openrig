@@ -13,7 +13,7 @@ export const FEATURE_SCOPES: ReadonlyArray<{ scope: string; usedBy: string }> = 
   { scope: "files:read", usedBy: "inbound attachments: authenticated url_private download (slack-subsystem inbound file port)" },
   { scope: "files:write", usedBy: "outbound attachments: files.getUploadURLExternal / files.completeUploadExternal (slack-api)" },
   { scope: "app_mentions:read", usedBy: "the app_mention event the inbound path admits (ADMITTED_EVENT_TYPES)" },
-  { scope: "reactions:read", usedBy: "a ✅ resolving a decision: the reaction_added event (REACTION_EVENT_TYPES)" },
+  { scope: "reactions:read", usedBy: "the reaction_added event: a ✅ resolving a decision, 👍/👎 feedback, and any other reaction on an ask reaching the asking seat (REACTION_EVENT_TYPES)" },
   { scope: "reactions:write", usedBy: "the 👀 the app adds to each human message it received (reactions.add)" },
   { scope: "groups:history", usedBy: "a private channel: message.groups events, history recovery and reconcile reads (conversations.history/replies)" },
   { scope: "users:read", usedBy: "addressed-only rule: telling humans from bots among a channel's members (users.info)" },
@@ -21,7 +21,7 @@ export const FEATURE_SCOPES: ReadonlyArray<{ scope: string; usedBy: string }> = 
 ];
 
 /** The Slack event payload types the inbound path admits (the `type` gate of ingestDecision). */
-export const ADMITTED_EVENT_TYPES: readonly string[] = ["message", "app_mention"];
+export const ADMITTED_EVENT_TYPES: readonly string[] = ["message", "app_mention", "reaction_added"];
 
 /** Event payload types routed to the reaction handler instead of the message gate. */
 export const REACTION_EVENT_TYPES: readonly string[] = ["reaction_added"];

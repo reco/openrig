@@ -74,7 +74,7 @@ interface NodeInventoryRead {
     needsInput?: { count?: number; reason?: string | null } | null;
     decidedBy?: string | null;
   } | null;
-  identityVerdict?: { verdict?: string } | null;
+  identityVerdict?: { verdict?: string; reason?: string | null } | null;
   canonicalSessionName: string | null;
   tmuxAttachCommand?: string | null;
   cwd?: string | null;
@@ -214,7 +214,7 @@ function toAgentRow(node: NodeInventoryRead): AgentRow {
   const ctx = node.contextUsage;
   const known = ctx?.availability === "known";
   const identityDownranked = node.identityVerdict?.verdict === "mismatch"
-    || node.identityVerdict?.verdict === "pane_missing";
+    || (node.identityVerdict?.verdict === "pane_missing" && node.identityVerdict?.reason !== "session_missing");
   return {
     nodeId: node.nodeId,
     name: node.logicalId,
@@ -247,8 +247,10 @@ function toAgentRow(node: NodeInventoryRead): AgentRow {
     },
     // Mirror the maintained web projection: lifecycle truth drives actions,
     // while session/terminal activity drives the visible status label.
-    status: node.startupStatus === "failed"
-      ? "failed"
+    status: node.identityVerdict?.reason === "session_missing" && node.sessionStatus === "detached" && node.lifecycleState !== "attention_required"
+      ? "detached"
+      : node.startupStatus === "failed"
+        ? "failed"
       : node.lifecycleState === "attention_required" || identityDownranked || node.startupStatus === "attention_required"
         ? "attention_required"
         // S19: the SERVED taxonomy display decides first (the daemon's one bridge);
@@ -348,7 +350,7 @@ function agentSpecTruth(raw?: string): { runtime?: string; skills: string[] } {
  * avoids re-reading every spec every refresh; the key rolls when the library
  * entry's updatedAt changes. Owned by the caller (instance-scoped, no module state). */
 export type SpecReviewCache = Map<string, SpecLibraryReviewRead>;
-export type HydrateViewContext = Pick<ViewState, "project" | "section" | "viewTab" | "drill" | "file" | "externalUrl" | "terminalView" | "attentionOpen">;
+export type HydrateViewContext = Pick<ViewState, "project" | "section" | "viewTab" | "drill" | "file" | "externalUrl" | "terminalView" | "attentionOpen" | "pendingDrill">;
 
 export async function hydrateSnapshot(
   client: DaemonClient,
@@ -449,6 +451,8 @@ export async function hydrateSnapshot(
   const broadReads = !readingOnly && !focusedTopology && !wantsConnections;
   const healthRequested = broadReads || viewContext?.viewTab === "health";
   const wantsGraph = wantsTopologyScope && (!viewContext || viewContext.viewTab === "graph");
+  // A pending pod/agent address needs every rig's seats to resolve.
+  const pendingInventory = viewContext?.pendingDrill?.resource === "pod" || viewContext?.pendingDrill?.resource === "agent";
 
   const [instanceHealth, healthProjection, agg, summaries, library, review, streamItems, attention, blocked, inProgress, pending, recentlyFinished, scopesRead, executionRead, sliceDetailRead, connectionsRead] = await Promise.all([
     safe<InstanceHealthRead>("health", () => client.health()),
@@ -525,7 +529,7 @@ export async function hydrateSnapshot(
   const seatActivity: SeatActivitySummary[] = [];
   for (const rig of summaries ?? []) {
     const readInventory = wantsConnections ? connectionsRead?.configuration?.inboundDestination?.split("@")[1] === rig.name
-      : !focusedTopology || topologyLeaf?.kind === "host" || currentRigName === rig.name;
+      : !focusedTopology || topologyLeaf?.kind === "host" || currentRigName === rig.name || pendingInventory;
     const nodes = readInventory ? await safe<NodeInventoryRead[]>(`nodes(${rig.name})`, () => client.rigNodes(rig.id)) : null;
     for (const node of nodes ?? []) {
       if (node.nodeKind !== "agent" || !node.canonicalSessionName) continue;

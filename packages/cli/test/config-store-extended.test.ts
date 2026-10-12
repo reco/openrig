@@ -186,6 +186,7 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
       "queue.wake_retry_cap",
       "queue.wake_unconfirmed_window_minutes",
       "queue.wake_swap_grace_seconds",
+      "queue.wake_human_rung",
     ];
     expect([...VALID_KEYS]).toEqual(expected);
   });
@@ -199,6 +200,11 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
 
     process.env["OPENRIG_CONTEXT_ROOT"] = join(tmpDir, "context-library");
     expect(store.resolve().context.root).toBe(join(tmpDir, "context-library"));
+  });
+
+  it("defaults the advisor session to the kernel's advisor seat", () => {
+    const store = new ConfigStore(configPath);
+    expect(store.resolveWithSource("agents.advisor_session")).toMatchObject({ value: "advisor-lead@kernel", source: "default" });
   });
 
   it("resolves context.system_world with visible default, file, and env provenance", () => {

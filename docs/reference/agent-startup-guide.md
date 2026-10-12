@@ -1,7 +1,7 @@
 # Agent Startup Guide
 
 Last validated: 2026-10-05, against main `9b88b118`
-Applies to: OpenRig 0.6.6
+Applies to: OpenRig 0.6.8
 
 This guide teaches you how to think about what goes into an agent's startup experience — what files to write, where to put them, and how the layering model delivers them. It is an authoring guide, not a schema reference. For field-level details, see `rig-spec.md` and `agent-spec.md`.
 
@@ -291,7 +291,7 @@ run after the harness is ready: `after_files` (the default) after the post-launc
 | `send_text` delivery after ready | **Supported** | Reliable. Requires harness to be ready. |
 | Hooks | **Through plugins** | Declare a plugin under `resources.plugins[]`; `resources.hooks` is refused. |
 | Runtime resource projection | **Supported for recognized fragments** | `claude_settings_fragment`, `claude_mcp_fragment`, and `codex_config_fragment` are applied to provider config. Unknown types are copied to runtime extension directories. |
-| Permission configuration | **Native settings plus managed launch flags** | OpenRig launches Claude with `acceptEdits` and Codex with `workspace-write` unless an explicit supported selection changes them; the `kernel` rig's seats get a wider operational default ([rig spec, "At launch"](rig-spec.md)). It does not add a global Claude `Bash(rig:*)` allowance. Use [the first-user permission guide](getting-started.md#opt-in-permissive-operation) for opt-in and custom choices. |
+| Permission configuration | **Native settings plus managed launch flags** | OpenRig launches Claude with `acceptEdits` and Codex with `workspace-write` unless an explicit supported selection changes them; a seat with no policy, selection or named Codex profile also gets the per-launch [team default](rig-spec.md#team-launch-defaults), and the `kernel` rig's seats get a wider operational default ([rig spec, "At launch"](rig-spec.md)). Neither is written to a settings file. Use [the first-user permission guide](getting-started.md#opt-in-permissive-operation) for opt-in and custom choices. |
 | MCP installation | **Supported for Claude fragments** | A selected `claude_mcp_fragment` is merged into the project's `.mcp.json`. Claude asks to approve new servers found there; that prompt stops startup as `mcp_gate` until someone answers it and runs `rig seat continue`. Otherwise use `/mcp` or `claude mcp add`, or describe the servers in startup files for the agent to configure. |
 | System dependency installation | **Not deterministic** | Describe in startup files; agent handles via shell commands. |
 | Recurring tasks / wake timers | **Runtime-dependent** | Claude Code supports recurring tasks via the `/loop` command. Codex does not have a confirmed equivalent. Orchestrators should include `/loop` instructions in startup for Claude Code agents. |
@@ -325,6 +325,9 @@ OpenRig performs best-effort deterministic runtime configuration for managed ses
   Purpose: apply selected `claude_mcp_fragment` resources for Claude in that project.
 - Codex global config: `$CODEX_HOME/config.toml`, or `~/.codex/config.toml` when unset
   Purpose: pre-trust managed workspaces and apply selected `codex_config_fragment` resources. Codex currently has no equivalent project-local MCP config path for global profile settings.
+- Global skill folders: `~/.claude/skills` and `~/.agents/skills`
+  Purpose: daemon startup seeds the `openrig-skills` and `refocusing` skills and the person-facing `rigs` skill. Each
+  upgrade refreshes the `rigs` skill; a copy installed another way is left as it is.
 
 Two important caveats:
 - these writes are best-effort and should still be paired with startup guidance so the local agent can verify and repair them if needed
@@ -393,6 +396,8 @@ remain shared.
   timeout, error or unrecognized answer adds nothing. Named profiles and full
   bypass are not read. The read may write Codex's own state files in
   `CODEX_HOME`, read its login and fetch managed policy, as a Codex start does.
+- Managed launches pass `-c check_for_update_on_startup=false`, so Codex skips its startup update check; your Codex
+  config is not changed.
 - Can self-install dependencies from instructions but timer/recurring behavior is not reliably available
 
 **Pi and OMP:**

@@ -139,17 +139,32 @@ The `--summary` is the one heading (without one, the body starts the message);
 the body never adds or repeats a bold heading, and bold is only for item labels. Only `&`, `<` and `>` are escaped, so this
 formatting arrives intact.
 
+To answer a reply the human typed inside one of your threads, `--reply-to` the
+row their reply landed as. The update posts in that thread unless one of the
+cases above applies, and `--verify` reports it the same way. A message the
+human started at the top level of the channel has no thread yet, so the answer
+posts as a new message.
+
 A **decision** with a few clear choices can carry `--human-questions-file <path>`:
 a JSON array of 1–4 questions, each
 `{"id", "question", "options": [{"id", "label", "recommended"?}]}` with 2–4
 options (labels up to 75 characters, at most one recommended). Slack shows each
 question as a row of buttons. Each click records that answer on the item, and
 the decision resolves once every question has one. You then receive one reply
-row listing the answers, and the item's `humanAnswers` holds the option ids. The
-human may instead answer in the thread (any reply with `explicitAnswersOnly`
+row listing the answers. In `humanAnswers`, clicked answers are option-id strings.
+The human may instead answer in the thread (any reply with `explicitAnswersOnly`
 off, an `answer:` reply with it on), so read the reply rather than assuming an
-option was picked. Keep the
-brief complete: the questions add buttons, they do not replace the explanation.
+option was picked. A whole typed reply that answers is an object:
+`{kind: "typed-reply", text: "…", placement: "first-unanswered", unansweredCount: N}`.
+It is placed automatically under the first unanswered question; the person did
+not select that question. `N` counts the other question slots still empty in
+`humanAnswers` after that placement.
+Earlier button answers stay intact. Read `text` as the person's words, never as
+an option id even if the strings match. The typed reply still closes the decision
+with the other questions unanswered; `done` is not approval. If every button
+answer was already recorded, that final answer set stays intact and the typed
+reply remains in its correlated reply row. Keep the brief complete: the questions
+add buttons, they do not replace the explanation.
 
 If an existing agent-owned row must wait for a **decision**, block it on the **new live qitem ID**
 (`rig queue block <work-id> --on <human-qitem-id> ...`), not on the human address.

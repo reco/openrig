@@ -169,6 +169,7 @@ describe("SettingsStore (User Settings v0)", () => {
       "queue.wake_retry_cap",
       "queue.wake_unconfirmed_window_minutes",
       "queue.wake_swap_grace_seconds",
+      "queue.wake_human_rung",
     ]);
   });
 
@@ -189,6 +190,11 @@ describe("SettingsStore (User Settings v0)", () => {
     writeFileSync(configPath, "{}\n");
     process.env["OPENRIG_CONTEXT_PACKS_ROOT"] = "/legacy-env";
     expect(() => store.resolveOne("context.root")).toThrow(/OPENRIG_CONTEXT_PACKS_ROOT.*OPENRIG_CONTEXT_ROOT/i);
+  });
+
+  it("defaults the advisor session to the kernel's advisor seat", () => {
+    const store = new SettingsStore(configPath);
+    expect(store.resolveOne("agents.advisor_session")).toMatchObject({ value: "advisor-lead@kernel", source: "default" });
   });
 
   it("resolves mutable 95/99 context-pressure thresholds and rejects invalid order", () => {

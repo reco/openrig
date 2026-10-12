@@ -165,11 +165,14 @@ export class GatewaySubsystem {
     return this.wireHandle.dispatcher.dispatch(op, entityBindingRef, payload, opts);
   }
 
-  /** Snapshot only: no dispatch-buffer scan, network or recovery work. */
+  /** Phase 1 — the human sweep (rig queue sweep): a plan, or applied with apply. */
   sweepHuman(input: { destination: string; before: string; apply: boolean; actorSession: string }): Promise<{ entries: HumanSweepEntry[]; applying: boolean }> | null {
     return this.state === "active" && this.wireHandle?.sweepHuman ? this.wireHandle.sweepHuman(input) : null;
   }
 
+  /** Snapshot only: no dispatch-buffer scan, network or recovery work. The connector's
+   *  status reads the inbound dead-letter files for the backlog count — a bounded,
+   *  non-destructive read, no retry or recovery pass. */
   connectorStatus(): Record<string, unknown> {
     return { state: this.state, connector: this.wireHandle?.status?.() ?? null };
   }
