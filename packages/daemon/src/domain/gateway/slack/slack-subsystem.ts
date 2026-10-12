@@ -892,6 +892,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         return opts.resolveHumanReply!(input);
       }),
       explicitAnswersOnly: cfg.explicitAnswersOnly,
+      hasQuestions: (qitemId) => (opts.queueRepo.getById(qitemId)?.humanQuestions?.length ?? 0) > 0,
       // #193 — a button click records its answer on the decision the clicked root belongs to;
       // a failed hand-back is retried with the event dead-letters, and each click is confirmed
       // in the decision's thread (a bot post, so inbound never ingests it).

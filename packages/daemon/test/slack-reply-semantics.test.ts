@@ -97,9 +97,9 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
 
   const finals = (envelopeId: string) => new InboundReceiptStore(join(home, "state", "slack-inbound-receipts.jsonl")).readAll()
     .filter((r) => r.envelopeId === envelopeId && r.status !== "received");
-  async function sayAs(user: string, text: string, ts: string, envelopeId = `e-${ts}`): Promise<void> {
+  async function sayAs(user: string, text: string, ts: string, envelopeId = `e-${ts}`, threadTs = "1.1"): Promise<void> {
     const before = finals(envelopeId).length;
-    socket.onmessage?.({ data: JSON.stringify({ envelope_id: envelopeId, type: "events_api", payload: { event: { type: "message", user, text, ts, thread_ts: "1.1", channel: "C-TEST" } } }) });
+    socket.onmessage?.({ data: JSON.stringify({ envelope_id: envelopeId, type: "events_api", payload: { event: { type: "message", user, text, ts, thread_ts: threadTs, channel: "C-TEST" } } }) });
     await vi.waitFor(() => expect(finals(envelopeId).length).toBe(before + 1));
   }
   const say = (text: string, ts: string, envelopeId?: string) => sayAs("UFOUNDER", text, ts, envelopeId);
@@ -171,6 +171,15 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(toSeat()).toHaveLength(1);
       expect(toSeat()[0]?.body).toContain("Which migration, the schema one or the data one?");
       expect(toSeat()[0]?.tags).toEqual(expect.arrayContaining([`reply-to:${decisionId}`, "conversation"]));
+    });
+
+    it("a one-word reply leaves a decision with questions to its buttons", async () => {
+      const asked = await repo.create({ ...request, summary: "Which day?", body: "Pick one.", humanIntent: "decision",
+        humanQuestions: [{ id: "day", question: "Launch day?", options: [{ id: "mon", label: "Mon" }, { id: "tue", label: "Tue" }] }] });
+      await deliver(asked.qitemId);
+      await sayAs("UFOUNDER", "ok", "2040.1", undefined, `${posts.length}.1`);
+      expect(repo.getById(asked.qitemId)?.state).toBe("pending");
+      expect(decisions).toEqual([]);
     });
 
     it("prose that sounds like approval still resolves nothing", async () => {

@@ -167,6 +167,8 @@ export interface InboundDeps {
   /** Phase 1: only an explicit `answer:` reply or a one-word answer resolves; other typed replies are conversation.
    *  Absent or false keeps the #96 contract (any typed reply answers). */
   explicitAnswersOnly?: boolean;
+  /** A decision with structured questions is answered by its buttons, never by a one-word reply. */
+  hasQuestions?: (qitemId: string) => boolean;
   /** #193 — record a clicked answer on the decision the clicked message belongs to. */
   recordHumanAnswer?: RecordHumanAnswer;
   /** Phase 1 — look up a clicked Confirm offer. */
@@ -249,7 +251,7 @@ export class InboundRouter {
   /** What a reply on a decision's thread decides: the resolve text, or null for conversation. */
   private replyDecision(ev: SlackEvent, correlationQitemId: string | undefined): string | null {
     if (!correlationQitemId) return null;
-    if (this.deps.explicitAnswersOnly) return explicitAnswer(ev.text) ?? shortReply(ev.text);
+    if (this.deps.explicitAnswersOnly) return explicitAnswer(ev.text) ?? (this.deps.hasQuestions?.(correlationQitemId) ? null : shortReply(ev.text));
     return String(ev.text ?? "").trim() || "[file reply]";
   }
 
