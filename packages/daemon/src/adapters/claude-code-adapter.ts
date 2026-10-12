@@ -40,6 +40,8 @@ export interface ClaudeAdapterFsOps {
 }
 
 const SHELL_COMMANDS = new Set(["bash", "fish", "nu", "sh", "tmux", "zsh"]);
+/** A resume whose exact process is alive but not yet drawn gets this many more 200 ms looks (30 s). */
+const SLOW_RESUME_POLLS = 150;
 
 // Real Claude Code binary needs 1-3s to write the new fork session-name
 // file under ~/.claude/sessions/. Poll instead of single-shot lookup.
@@ -494,6 +496,12 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       // The shell is the pane's foreground while the exact --resume process may still be starting
       // beneath it (a slow login shell, many plugins): that is not a return to the shell.
       if (await this.resumeProcessRunning(binding)) {
+        for (let wait = 0; wait < SLOW_RESUME_POLLS && await this.resumeProcessRunning(binding); wait++) {
+          await this.sleep(200);
+          const command = await this.tmux.getPaneCommand(tmuxSession);
+          const content = (await this.tmux.capturePaneContent(tmuxSession, 40)) ?? "";
+          if ((await this.assessManagedProbe(binding, command, content)).status === "resumed") return { ok: true };
+        }
         return {
           ok: false,
           error: "Claude resume still starting: the exact --resume process is running in the pane; launch retained",

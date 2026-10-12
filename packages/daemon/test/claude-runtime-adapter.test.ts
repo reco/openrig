@@ -601,6 +601,21 @@ describe("Claude Code runtime adapter", () => {
       .toEqual({ ok: false, error: "Claude resume failed: pane returned to shell instead of entering Claude", recovery: "retry_fresh" });
   });
 
+  it("a slow resume whose exact process stays alive is ready once Claude draws its prompt", async () => {
+    const tmux = mockTmux();
+    let looks = 0;
+    (tmux.getPaneCommand as ReturnType<typeof vi.fn>).mockImplementation(async () => (looks++ < 25 ? "zsh" : "claude"));
+    (tmux.capturePaneContent as ReturnType<typeof vi.fn>).mockImplementation(async () => (looks < 25 ? "user@example.test %" : "Claude Code v2.1.296\n❯ "));
+    (tmux as unknown as { getPanePid: unknown }).getPanePid = vi.fn(async () => 100);
+    const startedAt = "Mon Oct 12 23:07:42 2026";
+    const adapter = new ClaudeCodeAdapter({ tmux, fsOps: mockFs(), sleep: async () => {}, listProcesses: async () => [
+      { pid: 100, ppid: 1, command: "-zsh", pgid: 100, tpgid: 200, executableName: "zsh", startedAt },
+      { pid: 200, ppid: 100, command: "zsh -c launch", pgid: 200, tpgid: 200, executableName: "zsh", startedAt },
+      { pid: 201, ppid: 200, command: "claude --resume abc-123 --name dev-impl@test-rig", pgid: 200, tpgid: 200, executableName: "claude", startedAt },
+    ] });
+    expect(await adapter.launchHarness(makeBinding(), { name: "dev-impl@test-rig", resumeToken: "abc-123" })).toMatchObject({ ok: true });
+  });
+
   it("launchHarness auto-accepts Claude workspace trust prompt only when explicitly configured", async () => {
     const tmux = mockTmux();
     (tmux.getPaneCommand as ReturnType<typeof vi.fn>).mockResolvedValue("claude");
