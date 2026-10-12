@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { answerPrompt, makeStuckPromptWatch, promptBlock, promptChoices, readPrompt, type StuckPrompt } from "../src/domain/stuck-prompt-watch.js";
+import { answerPrompt, makeStuckPromptWatch, promptBlock, promptCardBody, promptChoices, readPrompt, type StuckPrompt } from "../src/domain/stuck-prompt-watch.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -218,3 +218,21 @@ describe("stuck-prompt watch", () => {
   });
 });
 
+
+describe("prompt card text", () => {
+  const prompt: StuckPrompt = { session: "dev@rig", reason: "permission_prompt", promptLine: "Do you want to proceed?", attach: "tmux attach -t dev@rig", waitingMinutes: 6, episodeId: "e", key: "k",
+    choices: { allow: { key: "1", label: "Yes" }, deny: { key: "3", label: "No" } } };
+
+  it("a requested card ends with the requester's reason on its own line, right above the buttons", () => {
+    const body = promptCardBody({ ...prompt, requestedBy: "advisor-lead@kernel", requestReason: "read-only git status\n in the worktree" });
+    expect(body.split("\n").at(-1)).toBe("*Why advisor-lead@kernel asks:* read-only git status in the worktree");
+    expect(body).toContain('Approve selects "Yes" in the terminal, Deny selects "No"');
+    expect(body).not.toContain("Waiting for");
+  });
+
+  it("a card the watch posts says how long the prompt has waited and carries no reason", () => {
+    const body = promptCardBody(prompt);
+    expect(body).toContain("Waiting for 6 minutes. Attach: `tmux attach -t dev@rig`");
+    expect(body).not.toContain("asks:");
+  });
+});

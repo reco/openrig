@@ -49,6 +49,15 @@ export function promptBlock(p: { dialog?: string; promptLine: string }): string 
   return p.dialog ? `${fence}\n${p.dialog.split(fence).join("` ` `")}\n${fence}` : p.promptLine;
 }
 
+/** A prompt card's text: the prompt, what the buttons do, how to attach, and a requester's reason
+ *  on its own last line, right above the buttons. */
+export function promptCardBody(p: StuckPrompt): string {
+  const buttons = p.choices ? `Approve selects "${p.choices.allow.label}" in the terminal, Deny selects "${p.choices.deny.label}", only while this prompt is still up. ` : "";
+  const waiting = p.requestedBy ? "" : `Waiting for ${p.waitingMinutes} minutes. `;
+  const reason = p.requestedBy ? `\n\n*Why ${p.requestedBy} asks:* ${String(p.requestReason ?? "").replace(/\s+/g, " ").trim()}` : "";
+  return `${promptBlock(p)}\n\n${buttons}${waiting}Attach: \`${p.attach}\`${reason}`;
+}
+
 export interface PromptChoices { allow: { key: string; label: string }; deny: { key: string; label: string } }
 
 const CHOICE_LINE = /^\s*[❯›]?\s*(\d)\.\s+(.+?)\s*$/;
