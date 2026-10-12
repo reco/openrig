@@ -696,7 +696,8 @@ export class InboundRouter {
       const r = target.kind === "confirm"
         ? await this.confirm(who.source, target.offerQitemId, target.threadTs, channel, live, messageTs)
         : await this.answerByReaction(who.source, target, channel, key, messageTs);
-      if (r.status !== "handler-failed") this.deps.seen.mark(key, r.status);
+      // A reaction left to upstream's reaction row is not handled here: its own retry must still reach that path.
+      if (r.status !== "handler-failed" && !UNCLAIMED_REACTION.has(r.reason ?? "")) this.deps.seen.mark(key, r.status);
       return r;
     } finally {
       this.inflight.delete(key);
@@ -711,7 +712,7 @@ export class InboundRouter {
     this.inflight.add(key);
     try {
       const r = await this.deps.recordFeedback?.({ channel, messageTs, actorSession: who.source, reaction, key });
-      this.deps.seen.mark(key, r ?? "not-applicable");
+      if (r === "recorded") this.deps.seen.mark(key, r);
       return r === "recorded" ? { status: "accepted", reason: `feedback-${reaction}` } : { status: "ignored", reason: "not-our-request" };
     } catch (e) {
       this.deps.log?.(`feedback not recorded ts=${messageTs}: ${(e as Error).message}`);

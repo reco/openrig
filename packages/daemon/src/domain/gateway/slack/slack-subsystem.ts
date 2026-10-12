@@ -488,6 +488,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       const humanMessage = receivedMessage(item.tags);
       if (humanMessage && !item.tags?.some((t) => t.startsWith("reply-to:"))) {
         if (!isConfiguredChannel(humanMessage.channel) && !isReceivedHere(humanMessage)) return { kind: "fallback", reason: "root-other-channel", threadTs: humanMessage.ts };
+        if (cfg.channelMap?.length && humanMessage.channel !== channel) return { kind: "fallback", reason: "root-other-channel", threadTs: humanMessage.ts };
         const root = { threadTs: humanMessage.ts, channel: humanMessage.channel, human: item.sourceSession, seat: p.sourceSession ?? "", conversationId: item.qitemId };
         threadMap.open(root);
         opts.queueRepo.update({ qitemId: item.qitemId, actorSession: "daemon@kernel", transitionNote: formatPostedStamp({ ...root, messageTs: humanMessage.ts }) });

@@ -708,7 +708,7 @@ export function subsystemSlackDeliver(opts: SubsystemSlackDeliveryOpts): Subsyst
         // channel re-resolved after a remap; without a record, resolution as before.
         resolveChannel: index === 0
           ? opts.resolveChannel
-          : (part) => firstAttemptChannel(opts, opts.attempted.load(), partId(0)) ?? opts.resolveChannel?.(part) ?? opts.channel,
+          : (part, threadTs) => firstAttemptChannel(opts, opts.attempted.load(), partId(0)) ?? opts.resolveChannel?.(part, threadTs) ?? opts.channel,
         onPostedRoot: index === 0 ? opts.onPostedRoot : undefined,
         onPosted: (_part, messageTs, threadTs) => {
           if (index !== 0) return;
