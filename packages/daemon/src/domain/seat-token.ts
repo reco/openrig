@@ -28,6 +28,18 @@ export function seatTokenMatches(expected: string, presented: string | null | un
   return timingSafeEqual(Buffer.from(expected), Buffer.from(presented));
 }
 
+/** The token proves the seat's live occupant: the current generation's, or the latest launch's when
+ *  only adopts followed it and the seat's live session still carries that launch generation (the same
+ *  surviving process, adopted under a new generation). */
+export function seatTokenProvesOccupant(input: {
+  secret: string; nodeId: string; sessionName: string; presented: string | null | undefined;
+  current: string | undefined; launched: string | undefined; liveSessionGeneration: string | undefined;
+}): boolean {
+  const matches = (generation: string) => seatTokenMatches(seatToken(input.secret, input.nodeId, input.sessionName, generation), input.presented);
+  if (input.current && matches(input.current)) return true;
+  return !!input.launched && input.liveSessionGeneration === input.launched && matches(input.launched);
+}
+
 /** OPENRIG_SEAT_TOKEN for a launch, when the instance home and generation are known. */
 export function seatTokenEnv(home: string | undefined, nodeId: string, sessionName: string | undefined, generation: string | null | undefined): { OPENRIG_SEAT_TOKEN?: string } {
   if (!home || !sessionName || !generation) return {};

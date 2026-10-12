@@ -28,7 +28,7 @@ export interface ApprovalServiceDeps {
   /** The human who may answer: the registered approver's address, or null. */
   approver: () => string | null;
   /** True only when the token is the named seat's own (bound to its node, name and generation). */
-  verifySeat: (sessionName: string, seatToken: string | null) => boolean;
+  verifySeat: (sessionName: string, seatToken: string | null) => boolean | Promise<boolean>;
   /** The seat's working directory, shown on the card. */
   cwdOf?: (sessionName: string) => string | null;
   /** Read at each check, so a config change applies to open requests too. */
@@ -39,7 +39,7 @@ export interface ApprovalServiceDeps {
 }
 
 export interface ApprovalService {
-  verify: (sessionName: string, seatToken: string | null) => boolean;
+  verify: (sessionName: string, seatToken: string | null) => Promise<boolean>;
   start: (input: ApprovalRequest) => Promise<string | null>;
   /** Only the seat that asked may wait on its request. */
   wait: (requestId: string, sessionName: string, sliceMs: number) => Promise<ApprovalWait>;
@@ -133,7 +133,7 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
     deps.queueRepo.update({ qitemId: requestId, actorSession: "daemon@kernel", state: "canceled", transitionNote: `approval expired: ${why}` });
   };
   const service: ApprovalService = {
-    verify: (sessionName, seatToken) => deps.verifySeat(sessionName, seatToken),
+    verify: async (sessionName, seatToken) => deps.verifySeat(sessionName, seatToken),
     async start(input) {
       if (!deps.optedIn().includes(input.sessionName)) return null;
       const human = deps.approver();

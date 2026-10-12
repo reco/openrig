@@ -1343,7 +1343,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     activityHookToken: resolvedActivityHookToken,
     approvalService: await (async () => {
       const { makeApprovalService } = await import("./domain/approvals.js");
-      const { ensureSeatTokenSecret, seatToken, seatTokenMatches } = await import("./domain/seat-token.js");
+      const { ensureSeatTokenSecret, seatTokenProvesOccupant } = await import("./domain/seat-token.js");
       const { loadConfig: loadSlackConfig } = await import("./domain/gateway/slack/config.js");
       const { loadHumanRegistry } = await import("./domain/gateway/human-registry.js");
       const service = makeApprovalService({
@@ -1351,11 +1351,12 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         optedIn: () => { try { return loadSlackConfig(OPENRIG_HOME).approvalSeats; } catch { return []; } },
         timeoutMs: () => { try { return loadSlackConfig(OPENRIG_HOME).approvalTimeoutSeconds * 1000; } catch { return 1_800_000; } },
         approver: () => { const r = loadHumanRegistry(OPENRIG_HOME); return r.ok ? r.entities.find((e) => e.role !== "requester")?.address ?? null : null; },
-        verifySeat: (sessionName, presented) => {
+        verifySeat: async (sessionName, presented) => {
           const row = db.prepare("SELECT node_id FROM sessions WHERE session_name = ? ORDER BY id DESC LIMIT 1").get(sessionName) as { node_id: string } | undefined;
           if (!row) return false;
-          const secret = ensureSeatTokenSecret(OPENRIG_HOME);
-          return sessionRegistry.liveOccupantGenerations(row.node_id).some((generation) => seatTokenMatches(seatToken(secret, row.node_id, sessionName, generation), presented));
+          const [current, launched] = sessionRegistry.liveOccupantGenerations(row.node_id);
+          const liveSessionGeneration = launched ? await tmuxAdapter.getSessionEnv(sessionName, "OPENRIG_OCCUPANT_GENERATION").catch(() => undefined) : undefined;
+          return seatTokenProvesOccupant({ secret: ensureSeatTokenSecret(OPENRIG_HOME), nodeId: row.node_id, sessionName, presented, current, launched, liveSessionGeneration });
         },
         cwdOf: (sessionName) => (db.prepare("SELECT n.cwd AS cwd FROM nodes n JOIN sessions s ON s.node_id = n.id WHERE s.session_name = ? ORDER BY s.id DESC LIMIT 1").get(sessionName) as { cwd: string | null } | undefined)?.cwd ?? null,
         log: (m) => console.log(`[approvals] ${m}`),

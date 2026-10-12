@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { activityRoutes } from "../src/routes/activity.js";
-import { ensureSeatTokenSecret, seatToken, seatTokenEnv, seatTokenMatches } from "../src/domain/seat-token.js";
+import { ensureSeatTokenSecret, seatToken, seatTokenEnv, seatTokenMatches, seatTokenProvesOccupant } from "../src/domain/seat-token.js";
 
 const homes: string[] = [];
 afterEach(() => { for (const h of homes.splice(0)) rmSync(h, { recursive: true, force: true }); });
@@ -54,5 +54,21 @@ describe("tmux launch errors", () => {
     expect(r).toMatchObject({ ok: false, code: "duplicate_session" });
     expect(JSON.stringify(r)).not.toContain("abc123secret");
     expect(JSON.stringify(r)).not.toContain("hooksecret");
+  });
+
+  it("an adopted surviving process keeps proving itself with its launch token only while its live session carries that launch", () => {
+    const secret = "s".repeat(64);
+    const tokenFor = (generation: string) => seatToken(secret, "node-1", "advisor-lead@kernel", generation);
+    const check = (presented: string | null, live: { current?: string; launched?: string; liveSessionGeneration?: string }) =>
+      seatTokenProvesOccupant({ secret, nodeId: "node-1", sessionName: "advisor-lead@kernel", presented, current: live.current, launched: live.launched, liveSessionGeneration: live.liveSessionGeneration });
+    expect(check(tokenFor("gen10"), { current: "gen10" })).toBe(true);
+    expect(check(tokenFor("gen9"), { current: "gen10", launched: "gen9", liveSessionGeneration: "gen9" })).toBe(true);
+    expect(check(tokenFor("gen9"), { current: "gen10", launched: "gen9" })).toBe(false);
+    expect(check(tokenFor("gen9"), { current: "gen10", launched: "gen9", liveSessionGeneration: "gen11" })).toBe(false);
+    expect(check(tokenFor("gen9"), { current: "gen10" })).toBe(false);
+    expect(check(tokenFor("gen8"), { current: "gen10", launched: "gen9", liveSessionGeneration: "gen8" })).toBe(false);
+    expect(check("f".repeat(64), { current: "gen10", launched: "gen9", liveSessionGeneration: "gen9" })).toBe(false);
+    expect(check(null, { current: "gen10", launched: "gen9", liveSessionGeneration: "gen9" })).toBe(false);
+    expect(check(seatToken(secret, "node-1", "other@rig", "gen9"), { current: "gen10", launched: "gen9", liveSessionGeneration: "gen9" })).toBe(false);
   });
 });

@@ -263,9 +263,9 @@ export class SessionRegistry {
     return row ? this.rowToTenure(row) : null;
   }
 
-  /** The generations whose process may still be the node's occupant: the current one, and when only
-   *  adopts followed the latest launch, handover or fresh start, that launch's generation too (an adopt
-   *  that minted a new generation for the same surviving process). A later launch or handover ends it. */
+  /** [current] or, when only adopts followed the latest launch, handover or fresh start, [current, that
+   *  launch's generation]: the process an adopt may have re-registered. A caller accepts the second only
+   *  with proof the live session still carries it; a later launch or handover ends it. */
   liveOccupantGenerations(nodeId: string): string[] {
     let rows: Array<{ generation_uuid: string; kind: string }>;
     try {
