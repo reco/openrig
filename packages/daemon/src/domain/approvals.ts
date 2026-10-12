@@ -17,6 +17,8 @@ export interface ApprovalRequest {
   sessionName: string;
   toolName: string;
   toolInput: unknown;
+  /** A subagent's tool call blocks its seat too; the card names the subagent. */
+  agentType?: string | null;
 }
 
 export interface ApprovalServiceDeps {
@@ -69,6 +71,34 @@ function approvalReason(toolInput: unknown): string | null {
   return maskSecrets(target ? `*Network access to ${target}*` : `Reason: ${description.trim()}`).replace(/`/g, "'");
 }
 
+function openApprovals(repo: QueueRepository): Array<{ qitemId: string; session: string }> {
+  return (repo.db.prepare(`SELECT qitem_id, source_session FROM queue_items WHERE state = 'pending' AND tags LIKE '%"approval-request"%'
+      AND (human_answers IS NULL OR human_answers = '{}')`).all() as Array<{ qitem_id: string; source_session: string }>)
+    .map((r) => ({ qitemId: r.qitem_id, session: r.source_session }));
+}
+
+/** The seat's PermissionRequest hook is waiting on an unanswered Slack request. */
+export function seatHasOpenApproval(repo: QueueRepository, session: string): boolean {
+  return openApprovals(repo).some((a) => a.session === session);
+}
+
+/** The terminal dialog shows while the hook waits, and an answer typed there leaves the hook running.
+ *  A request whose seat was seen at a prompt, and whose readable pane now shows none, was answered
+ *  in the terminal: it expires, so its card loses its buttons and the hook stops waiting. */
+export function retireApprovalsAnsweredInTerminal(repo: QueueRepository, shown: Map<string, string | null>, seenAtPrompt: Set<string>): string[] {
+  const open = openApprovals(repo);
+  for (const id of [...seenAtPrompt]) if (!open.some((a) => a.qitemId === id)) seenAtPrompt.delete(id);
+  const retired: string[] = [];
+  for (const a of open) {
+    if (!shown.has(a.session)) continue;
+    if (shown.get(a.session) !== null) { seenAtPrompt.add(a.qitemId); continue; }
+    if (!seenAtPrompt.delete(a.qitemId)) continue;
+    repo.update({ qitemId: a.qitemId, actorSession: "daemon@kernel", state: "canceled", transitionNote: "approval expired: answered in the terminal" });
+    retired.push(a.qitemId);
+  }
+  return retired;
+}
+
 export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService {
   const log = deps.log ?? (() => {});
   const timeoutMs = deps.timeoutMs ?? (() => APPROVAL_TIMEOUT_MS);
@@ -92,7 +122,8 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
       if (!human) return null;
       const cwd = deps.cwdOf?.(input.sessionName);
       const reason = approvalReason(input.toolInput);
-      const body = `${cwd ? `In \`${cwd.replace(/`/g, "")}\`\n` : ""}${reason ? `${reason}\n` : ""}\`\`\`\n${approvalText(input.toolName, input.toolInput)}\n\`\`\``;
+      const subagent = input.agentType ? `Asked by its ${input.agentType.replace(/[`*_~<>]/g, "")} subagent\n` : "";
+      const body = `${cwd ? `In \`${cwd.replace(/`/g, "")}\`\n` : ""}${subagent}${reason ? `${reason}\n` : ""}\`\`\`\n${approvalText(input.toolName, input.toolInput)}\n\`\`\``;
       if (escapeSlackText(redactSecrets(body)).length > SLACK_SECTION_CAP) {
         log(`approval for ${input.sessionName} not sent: the ${input.toolName} input is too long to show in full`);
         return null;

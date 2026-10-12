@@ -22,10 +22,18 @@ function decisionOutput(decision) {
     : { behavior: "deny", message: "Denied by the human in Slack." } } });
 }
 
-async function askUntilAnswered(post, first, deadline) {
+// Once the request exists, a failed call (a daemon restart) is retried: the request and its card survive it.
+async function askUntilAnswered(post, first, deadline, retryMs = 2_000) {
   let body = first;
   while (Date.now() < deadline) {
-    const reply = await post(body);
+    let reply;
+    try {
+      reply = await post(body);
+    } catch (e) {
+      if (!body.requestId) throw e;
+      await new Promise((r) => setTimeout(r, retryMs));
+      continue;
+    }
     if (reply.decision === "allow" || reply.decision === "deny") return reply.decision;
     if (!reply.pending || !reply.requestId) return null;
     body = { sessionName: first.sessionName, seatToken: first.seatToken, requestId: reply.requestId };
@@ -49,7 +57,7 @@ async function main(env = process.env) {
   })).json();
   try {
     const seatToken = env.OPENRIG_SEAT_TOKEN || null;
-    const out = decisionOutput(await askUntilAnswered(post, { sessionName, seatToken, toolName, toolInput: payload.tool_input ?? null }, Date.now() + WAIT_MS));
+    const out = decisionOutput(await askUntilAnswered(post, { sessionName, seatToken, toolName, toolInput: payload.tool_input ?? null, agentType: payload.agent_type ?? null }, Date.now() + WAIT_MS));
     if (out) process.stdout.write(out);
   } catch {
     // no decision: the prompt shows in the terminal

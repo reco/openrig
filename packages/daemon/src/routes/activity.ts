@@ -483,7 +483,7 @@ activityRoutes.post("/approvals", async (c) => {
   if (!approvals.verify(sessionName, stringOrNull(body.seatToken))) return c.json({ ok: false, code: "seat_token_mismatch", decision: null, pending: false }, 403);
   const requestId = stringOrNull(body.requestId) ?? await (async () => {
     const toolName = stringOrNull(body.toolName);
-    return toolName ? approvals.start({ sessionName, toolName, toolInput: body.toolInput }) : null;
+    return toolName ? approvals.start({ sessionName, toolName, toolInput: body.toolInput, agentType: stringOrNull(body.agentType) }) : null;
   })();
   if (!requestId) return c.json({ ok: true, decision: null, pending: false });
   const outcome = await approvals.wait(requestId, sessionName, 60_000);

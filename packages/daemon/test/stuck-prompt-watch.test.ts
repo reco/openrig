@@ -167,6 +167,18 @@ describe("stuck-prompt watch", () => {
     expect(sent[1]!.key).not.toBe(sent[0]!.key);
   });
 
+  it("a prompt the seat's hook holds in Slack gets no second card; when the hook's request closes, the card follows on the next scan", async () => {
+    let t = 0;
+    let held = true;
+    const sent: StuckPrompt[] = [];
+    const watch = makeStuckPromptWatch({ runningSessions: () => ["advisor-lead@kernel"], capture: async () => claude, notify: async (p) => { sent.push(p); }, now: () => t, heldByHook: () => held });
+    await watch.tick(); t = 15_000; await watch.tick(); t = 600_000; await watch.tick();
+    expect(sent).toHaveLength(0);
+    expect(await watch.requestCard("advisor-lead@kernel", { by: "operator-agent@kernel", reason: "r" })).toEqual({ outcome: "already-posted" });
+    held = false; t = 615_000; await watch.tick();
+    expect(sent).toHaveLength(1);
+  });
+
   it("the same prompt shown again after the seat moved on is a new episode with its own start", async () => {
     let t = 0;
     let pane = claude;

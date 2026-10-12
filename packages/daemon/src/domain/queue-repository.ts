@@ -3164,12 +3164,12 @@ export class QueueRepository {
       if (!question?.options.some((o) => o.id === input.optionId)) return { status: "not-applicable" as const, reason: "unknown-option" };
       const recorded = item.humanAnswers ?? {};
       if (unansweredQuestions(item.humanQuestions, recorded).length === 0) {
-        return { status: "recorded" as const, answers: recorded, complete: true, questions: item.humanQuestions };
+        return { status: "recorded" as const, answers: recorded, complete: true, questions: item.humanQuestions, tags: item.tags ?? [] };
       }
       const answers: HumanAnswers = { ...(item.humanAnswers ?? {}), [input.questionId]: input.optionId };
       this.db.prepare("UPDATE queue_items SET human_answers = ? WHERE qitem_id = ?").run(JSON.stringify(answers), input.qitemId);
       const complete = unansweredQuestions(item.humanQuestions, answers).length === 0;
-      return { status: "recorded" as const, answers, complete, questions: item.humanQuestions };
+      return { status: "recorded" as const, answers, complete, questions: item.humanQuestions, tags: item.tags ?? [] };
     })();
   }
 

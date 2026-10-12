@@ -175,6 +175,8 @@ describe("Confirm in explicit-answers mode", () => {
     await actOnPromptAnswers(repo, deps);
     expect(keys).toEqual(["1"]);
     expect(repo.list({ limit: 100 }).find((q) => q.replyTo === first.qitemId && q.summary === "Approved in the terminal")).toBeDefined();
+    // The daemon took the click: no row wakes the seat while it sits at the prompt.
+    expect(repo.list({ limit: 100 }).filter((q) => q.qitemId.startsWith("qitem-slack-answers-"))).toEqual([]);
     expect(forgotten).toEqual(["cfo@finance"]);
 
     // A second card for the same prompt (the hourly reminder), clicked before the screen redraws: no second key.

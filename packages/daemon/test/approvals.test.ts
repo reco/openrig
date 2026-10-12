@@ -7,14 +7,14 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
-import { makeApprovalService } from "../src/domain/approvals.js";
+import { makeApprovalService, retireApprovalsAnsweredInTerminal, seatHasOpenApproval } from "../src/domain/approvals.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/domain/gateway/slack/config.js";
 
 const require = createRequire(import.meta.url);
-const hook = require("../assets/plugins/openrig-core/hooks/scripts/approval-request.cjs") as { decisionOutput: (d: unknown) => string | null; askUntilAnswered: (post: (body: unknown) => Promise<Record<string, unknown>>, first: unknown, deadline: number) => Promise<string | null> };
+const hook = require("../assets/plugins/openrig-core/hooks/scripts/approval-request.cjs") as { decisionOutput: (d: unknown) => string | null; askUntilAnswered: (post: (body: unknown) => Promise<Record<string, unknown>>, first: unknown, deadline: number, retryMs?: number) => Promise<string | null> };
 const person = (entityId: string, handle: string) => ({ entityId, class: "human" as const, displayName: entityId, address: `${entityId}@external`, connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:X", role: "primary" as const, handle }], prefs: { deliveryClass: "A" as const } });
 const registry = { ok: true as const, entities: [person("reco", "U1"), { ...person("lee", "U2"), role: "requester" as const }] };
 
@@ -114,6 +114,50 @@ describe("Slack approvals", () => {
     deadlineMs = 60_000;
     expect(await s.wait(asking, "psa-dev@psa", 1)).toBe("expired");
     expect(repo.transitionLog.listForQitem(asking).some((t) => t.transitionNote === "approval expired: no answer in time")).toBe(true);
+  });
+
+  it("a subagent's request names the subagent on the card", async () => {
+    const id = (await service().start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "touch x" }, agentType: "general-purpose" }))!;
+    expect(repo.getById(id)!.body).toContain("Asked by its general-purpose subagent");
+  });
+
+  it("an open request holds the seat for the hook; once answered or closed the watcher may post again", async () => {
+    const id = (await service().start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "touch x" } }))!;
+    expect(seatHasOpenApproval(repo, "psa-dev@psa")).toBe(true);
+    expect(seatHasOpenApproval(repo, "other@rig")).toBe(false);
+    click(id, "reco@external", "allow");
+    expect(seatHasOpenApproval(repo, "psa-dev@psa")).toBe(false);
+  });
+
+  it("a request answered in the terminal expires once its seat was seen at the prompt and now shows none", async () => {
+    const s = service();
+    const id = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "touch x" } }))!;
+    const seen = new Set<string>();
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), seen)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map(), seen)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", "k1"]]), seen)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map(), seen)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), seen)).toEqual([id]);
+    expect(repo.getById(id)!.state).toBe("canceled");
+    expect(await s.wait(id, "psa-dev@psa", 20)).toBe("expired");
+    expect(seen.size).toBe(0);
+  });
+
+  it("a request answered in Slack is never expired by the terminal check", async () => {
+    const s = service();
+    const id = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "touch x" } }))!;
+    const seen = new Set<string>();
+    retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", "k1"]]), seen);
+    click(id, "reco@external", "allow");
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), seen)).toEqual([]);
+    expect(await s.wait(id, "psa-dev@psa", 20)).toBe("allow");
+  });
+
+  it("the hook keeps waiting on its request through a daemon restart, but a failed first call gives up", async () => {
+    const replies: Array<Record<string, unknown> | Error> = [{ pending: true, requestId: "q1" }, new Error("ECONNREFUSED"), new Error("ECONNREFUSED"), { decision: "allow" }];
+    const decision = await hook.askUntilAnswered(async () => { const r = replies.shift()!; if (r instanceof Error) throw r; return r; }, { sessionName: "s@r", toolName: "Bash" }, Date.now() + 5000, 1);
+    expect(decision).toBe("allow");
+    await expect(hook.askUntilAnswered(async () => { throw new Error("ECONNREFUSED"); }, { sessionName: "s@r", toolName: "Bash" }, Date.now() + 5000, 1)).rejects.toThrow("ECONNREFUSED");
   });
 
   it("approvalTimeoutSeconds defaults to thirty minutes and stays within an hour", () => {

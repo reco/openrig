@@ -2151,6 +2151,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       const { hasRecentPromptCard, makeStuckPromptWatch, promptCardBody, retireStalePromptNotices, supersedePromptNotices } = await import("./domain/stuck-prompt-watch.js");
       // Enough for a long command's whole dialog, so two prompts differing only near the top differ.
       const STUCK_PROMPT_CAPTURE_LINES = 120;
+      const { retireApprovalsAnsweredInTerminal, seatHasOpenApproval } = await import("./domain/approvals.js");
+      const approvalsSeenAtPrompt = new Set<string>();
       deps.stuckPromptWatch = makeStuckPromptWatch({
         runningSessions: () => (db.prepare(`
           SELECT DISTINCT s.session_name AS session_name FROM sessions s
@@ -2159,7 +2161,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
             AND s.id = (SELECT s2.id FROM sessions s2 WHERE s2.node_id = s.node_id ORDER BY s2.id DESC LIMIT 1)
         `).all() as Array<{ session_name: string }>).map((r) => r.session_name),
         capture: (session) => tmuxAdapter.capturePaneContent(session, STUCK_PROMPT_CAPTURE_LINES),
-        retire: (running, shown) => { retireStalePromptNotices(queueRepoInstance, running, shown); },
+        retire: (running, shown) => {
+          retireStalePromptNotices(queueRepoInstance, running, shown);
+          for (const id of retireApprovalsAnsweredInTerminal(queueRepoInstance, shown, approvalsSeenAtPrompt)) console.log(`[approvals] ${id} answered in the terminal; its card is closed`);
+        },
+        heldByHook: (session) => seatHasOpenApproval(queueRepoInstance, session),
         notify: async (p) => {
           const registry = loadHumanRegistryForDelivery(OPENRIG_HOME);
           const human = registry.ok ? registry.entities.find((e) => e.role !== "requester") : undefined;

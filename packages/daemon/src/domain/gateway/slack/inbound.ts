@@ -476,8 +476,11 @@ export class InboundRouter {
       return { status: "accepted", reason: "answer-recorded" };
     }
     let resolution: "resolved" | "already-resolved" | "not-applicable" | undefined;
+    // A permission card's answer is taken by the daemon (the seat's waiting hook, or the terminal
+    // answer pass), never by the seat reading a row: a wake to a seat held at that prompt is refused.
+    const takenByDaemon = recorded.tags?.some((t) => t === "approval-request" || t === "stuck-prompt") ?? false;
     try {
-      await this.deps.queue.createQitem({
+      if (!takenByDaemon) await this.deps.queue.createQitem({
         qitemId: `qitem-slack-answers-${createHash("sha256").update(qitemId).digest("hex").slice(0, 20)}`,
         source: who.source,
         destination: route.destination,

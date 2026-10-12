@@ -20,7 +20,7 @@ export type HumanAnswers = Record<string, string>;
 
 /** The outcome of recording one clicked answer (QueueRepository.recordHumanAnswer). */
 export type RecordHumanAnswerResult =
-  | { status: "recorded"; answers: HumanAnswers; complete: boolean; questions: HumanQuestion[] }
+  | { status: "recorded"; answers: HumanAnswers; complete: boolean; questions: HumanQuestion[]; tags?: string[] }
   | { status: "not-applicable"; reason: string };
 
 export const MAX_HUMAN_QUESTIONS = 4;
