@@ -163,8 +163,8 @@ describe("Slack approvals", () => {
     expect(seatHasOpenApproval(repo, "psa-dev@psa", "Tool use\nWebSearch(query: \"r2 pricing class a\")")).toBe(true);
     expect(seatHasOpenApproval(repo, "psa-dev@psa", "Which color?\n1. Red")).toBe(false);
     expect(seatHasOpenApproval(repo, "psa-dev@psa", null)).toBe(true);
-    expect(seatHasOpenApproval(repo, "ops@rig", "Edit file\n/work/a.ts")).toBe(true);
-    expect(seatHasOpenApproval(repo, "ops@rig", "Edit file\n/work/b.ts")).toBe(false);
+    expect(seatHasOpenApproval(repo, "ops@rig", "Edit file\na.ts\nDo you want to make this edit to a.ts?")).toBe(true);
+    expect(seatHasOpenApproval(repo, "ops@rig", "Edit file\nb.ts\nDo you want to make this edit to b.ts?")).toBe(false);
     expect(seatHasOpenApproval(repo, "mcp@rig", "anything")).toBe(true);
   });
 

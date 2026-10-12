@@ -87,11 +87,12 @@ function openApprovals(repo: QueueRepository): OpenApproval[] {
 
 const flat = (text: string) => text.replace(/[\s│┃╭╮╰╯─━]+/g, "");
 
-/** What the runtime's dialog shows of a request: a command's first line, else the file, URL or query
+/** What the runtime's dialog shows of a request: a command's first line, else the file's name, URL or query
  *  of a tool input; null for an input whose dialog text cannot be predicted. */
 function dialogMark(text: string): string | null {
   if (!text.startsWith("{")) return text ? flat(text.split("\n")[0]!).slice(0, 60) : null;
-  const field = /"(?:file_path|notebook_path|url|query)"\s*:\s*"([^"]{1,200})"/.exec(text)?.[1];
+  const path = /"(?:file_path|notebook_path)"\s*:\s*"([^"]{1,300})"/.exec(text)?.[1];
+  const field = path ? path.split("/").pop() : /"(?:url|query)"\s*:\s*"([^"]{1,200})"/.exec(text)?.[1];
   return field ? flat(field).slice(0, 60) : null;
 }
 
