@@ -480,7 +480,10 @@ activityRoutes.post("/approvals", async (c) => {
   const sessionName = stringOrNull(body.sessionName);
   if (!sessionName) return c.json({ ok: false, code: "missing_fields" }, 400);
   // The shared hook token only proves a local caller; the seat token proves which seat it is.
-  if (!approvals.verify(sessionName, stringOrNull(body.seatToken))) return c.json({ ok: false, code: "seat_token_mismatch", decision: null, pending: false }, 403);
+  if (!approvals.verify(sessionName, stringOrNull(body.seatToken))) {
+    console.log(`[approvals] refused ${sessionName}: seat token ${stringOrNull(body.seatToken) ? "does not match its current occupant generation" : "missing"}; its prompt stays in the terminal`);
+    return c.json({ ok: false, code: "seat_token_mismatch", decision: null, pending: false }, 403);
+  }
   const requestId = stringOrNull(body.requestId) ?? await (async () => {
     const toolName = stringOrNull(body.toolName);
     return toolName ? approvals.start({ sessionName, toolName, toolInput: body.toolInput, agentType: stringOrNull(body.agentType) }) : null;

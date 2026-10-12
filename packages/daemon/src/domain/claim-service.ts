@@ -415,6 +415,22 @@ export class ClaimService {
    * no migration. Honest split: projectionDrift (unproven topology metadata)
    * is reported separately; continuity is always "unverified".
    */
+  /** The live session's process is this node's current occupant when its launch environment names this
+   *  node, this session and the current generation: adopting it continues that generation (no new one),
+   *  so the process's own seat token keeps proving who it is. Anything else (no launch env, another node,
+   *  an older or unknown generation) adopts under a fresh generation. */
+  private async survivingOccupantGeneration(nodeId: string, sessionName: string): Promise<string | null> {
+    if (!this.tmuxAdapter) return null;
+    try {
+      const [node, session, generation] = await Promise.all(["OPENRIG_NODE_ID", "OPENRIG_SESSION_NAME", "OPENRIG_OCCUPANT_GENERATION"]
+        .map((key) => this.tmuxAdapter!.getSessionEnv(sessionName, key)));
+      if (node !== nodeId || session !== sessionName || !generation) return null;
+      return generation === this.sessionRegistry.currentOccupantTenure(nodeId)?.generationUuid ? generation : null;
+    } catch {
+      return null;
+    }
+  }
+
   async reconcileSession(opts: ReconcileSessionOptions): Promise<ReconcileSessionOutcome> {
     const sessionName = opts.sessionName.trim();
     if (!sessionName) {
@@ -526,6 +542,8 @@ export class ClaimService {
       projectionDrift.push(`cwd unverified: node declares "${nodeRow.cwd}"; the live pane's cwd is not provable without injecting input`);
     }
 
+    const survivingGeneration = await this.survivingOccupantGeneration(nodeRow.id, sessionName);
+
     // 4. The DB portion of bind, reconcile-shaped: supersede stale session
     // rows for THIS node, upsert the binding to the live session, register a
     // fresh claimed-session row (status running), emit node.reconciled — one tx.
@@ -540,7 +558,7 @@ export class ClaimService {
           this.sessionRegistry.markSuperseded(row.id);
         }
         this.persistPaneBinding(nodeRow!.id, sessionName, paneObservation);
-        const session = this.sessionRegistry.registerClaimedSession(nodeRow!.id, sessionName);
+        const session = this.sessionRegistry.registerClaimedSession(nodeRow!.id, sessionName, "adopt", survivingGeneration);
         sessionId = session.id;
         persistedEvent = this.eventBus.persistWithinTransaction({
           type: "node.reconciled",

@@ -152,6 +152,7 @@ export class SessionRegistry {
     reservedGeneration?: string | null,
   ): void {
     try {
+      if (reservedGeneration && this.currentOccupantTenure(nodeId)?.generationUuid === reservedGeneration) return;
       this.mintOccupantTenure(nodeId, kind, null, reservedGeneration);
     } catch (e) {
       if (!SessionRegistry.tenureMintWarned) {
@@ -260,6 +261,23 @@ export class SessionRegistry {
       .prepare("SELECT * FROM occupant_tenures WHERE node_id = ? ORDER BY generation_ordinal DESC LIMIT 1")
       .get(nodeId) as OccupantTenureRow | undefined;
     return row ? this.rowToTenure(row) : null;
+  }
+
+  /** The generations whose process may still be the node's occupant: the current one, and when only
+   *  adopts followed the latest launch, handover or fresh start, that launch's generation too (an adopt
+   *  that minted a new generation for the same surviving process). A later launch or handover ends it. */
+  liveOccupantGenerations(nodeId: string): string[] {
+    let rows: Array<{ generation_uuid: string; kind: string }>;
+    try {
+      rows = this.db
+        .prepare("SELECT generation_uuid, kind FROM occupant_tenures WHERE node_id = ? ORDER BY generation_ordinal DESC")
+        .all(nodeId) as Array<{ generation_uuid: string; kind: string }>;
+    } catch {
+      return [];
+    }
+    const launched = rows.findIndex((r) => r.kind !== "adopt");
+    if (rows.length === 0) return [];
+    return launched > 0 ? [rows[0]!.generation_uuid, rows[launched]!.generation_uuid] : [rows[0]!.generation_uuid];
   }
 
   /** ghost-stage (b): the LIVE occupant generation_uuid for the node currently backing a session
