@@ -105,13 +105,13 @@ export interface StuckPromptWatchDeps {
   capture: (session: string) => Promise<string | null>;
   notify: (prompt: StuckPrompt) => Promise<NotifyResult | void>;
   /** Each tick: the running seats, and the prompt key each readable one shows (null: no prompt). */
-  retire?: (running: string[], shown: Map<string, string | null>) => void;
+  retire?: (running: string[], shown: Map<string, string | null>, dialogs: Map<string, string | null>) => void;
   now?: () => number;
   afterMs?: number;
   answerableAfterMs?: number;
   log?: (msg: string) => void;
   /** The seat's own PermissionRequest hook holds an open Slack request: its card is the one. */
-  heldByHook?: (session: string) => boolean;
+  heldByHook?: (session: string, dialog: string) => boolean;
 }
 
 const OPTION_LINE = /^\s*[❯›]?\s*\d+\.\s/;
@@ -187,17 +187,19 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
       const sessions = deps.runningSessions();
       for (const gone of [...open.keys()].filter((s) => !sessions.includes(s))) open.delete(gone);
       const shown = new Map<string, string | null>();
+      const dialogs = new Map<string, string | null>();
       for (const session of sessions) {
         const pane = await deps.capture(session).catch(() => null);
         if (pane === null) continue; // an unreadable pane says nothing about the prompt; keep the episode
         const prompt = readPrompt(pane);
         shown.set(session, prompt?.key ?? null);
+        dialogs.set(session, prompt?.dialog ?? null);
         if (!prompt) { open.delete(session); continue; }
         const { key, promptLine } = prompt;
         const episode = open.get(session);
         if (!episode || episode.key !== key) { open.set(session, { key, since: now() }); continue; }
         const wait = prompt.choices ? answerableAfterMs : afterMs;
-        if (deps.heldByHook?.(session)) continue;
+        if (deps.heldByHook?.(session, prompt.dialog)) continue;
         if (episode.notifiedAt === undefined ? now() - episode.since < wait : now() - episode.notifiedAt < REMIND_AFTER_MS) continue;
         episode.notifiedAt = now();
         try {
@@ -208,7 +210,7 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
           log(`notice for ${session} failed, retrying next scan: ${(e as Error).message}`);
         }
       }
-      deps.retire?.(sessions, shown);
+      deps.retire?.(sessions, shown, dialogs);
     },
     async requestCard(session, request) {
       if (!deps.runningSessions().includes(session)) return { outcome: "not-a-seat" };
@@ -217,7 +219,7 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
       const prompt = readPrompt(pane);
       if (!prompt) return { outcome: "no-prompt" };
       if (!prompt.choices) return { outcome: "not-answerable" };
-      if (deps.heldByHook?.(session)) return { outcome: "already-posted" };
+      if (deps.heldByHook?.(session, prompt.dialog)) return { outcome: "already-posted" };
       const episode = open.get(session);
       const since = episode?.key === prompt.key ? episode.since : now();
       open.set(session, { key: prompt.key, since, notifiedAt: now() });

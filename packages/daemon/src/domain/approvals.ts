@@ -71,28 +71,42 @@ function approvalReason(toolInput: unknown): string | null {
   return maskSecrets(target ? `*Network access to ${target}*` : `Reason: ${description.trim()}`).replace(/`/g, "'");
 }
 
-function openApprovals(repo: QueueRepository): Array<{ qitemId: string; session: string }> {
-  return (repo.db.prepare(`SELECT qitem_id, source_session FROM queue_items WHERE state = 'pending' AND tags LIKE '%"approval-request"%'
-      AND (human_answers IS NULL OR human_answers = '{}')`).all() as Array<{ qitem_id: string; source_session: string }>)
-    .map((r) => ({ qitemId: r.qitem_id, session: r.source_session }));
+/** A request this new may not have its dialog drawn yet: it is never retired as answered. */
+export const APPROVAL_RETIRE_GRACE_MS = 10_000;
+
+interface OpenApproval { qitemId: string; session: string; createdAt: number; command: string | null }
+
+function openApprovals(repo: QueueRepository): OpenApproval[] {
+  return (repo.db.prepare(`SELECT qitem_id, source_session, ts_created, body FROM queue_items WHERE state = 'pending' AND tags LIKE '%"approval-request"%'
+      AND (human_answers IS NULL OR human_answers = '{}')`).all() as Array<{ qitem_id: string; source_session: string; ts_created: string; body: string | null }>)
+    .map((r) => {
+      const shown = /```\n([\s\S]*?)\n```/.exec(r.body ?? "")?.[1] ?? null;
+      return { qitemId: r.qitem_id, session: r.source_session, createdAt: Date.parse(r.ts_created), command: shown && !shown.startsWith("{") ? shown : null };
+    });
 }
 
-/** The seat's PermissionRequest hook is waiting on an unanswered Slack request. */
-export function seatHasOpenApproval(repo: QueueRepository, session: string): boolean {
-  return openApprovals(repo).some((a) => a.session === session);
+const flat = (text: string) => text.replace(/[\s│┃╭╮╰╯─━]+/g, "");
+
+/** Whether the dialog on screen is this request's: a command's text must appear in it. A tool
+ *  input shown as JSON cannot be matched, so any dialog may be its. */
+function inView(request: OpenApproval, dialog: string): boolean {
+  return request.command === null || flat(dialog).includes(flat(request.command.split("\n")[0]!).slice(0, 60));
+}
+
+/** The seat's PermissionRequest hook is waiting on an unanswered Slack request for the dialog on screen. */
+export function seatHasOpenApproval(repo: QueueRepository, session: string, dialog: string): boolean {
+  return openApprovals(repo).some((a) => a.session === session && inView(a, dialog));
 }
 
 /** The terminal dialog shows while the hook waits, and an answer typed there leaves the hook running.
- *  A request whose seat was seen at a prompt, and whose readable pane now shows none, was answered
- *  in the terminal: it expires, so its card loses its buttons and the hook stops waiting. */
-export function retireApprovalsAnsweredInTerminal(repo: QueueRepository, shown: Map<string, string | null>, seenAtPrompt: Set<string>): string[] {
-  const open = openApprovals(repo);
-  for (const id of [...seenAtPrompt]) if (!open.some((a) => a.qitemId === id)) seenAtPrompt.delete(id);
+ *  A request past its grace whose readable pane shows no prompt, or a different command's dialog, was
+ *  answered in the terminal: it expires, so its card loses its buttons and the hook stops waiting. */
+export function retireApprovalsAnsweredInTerminal(repo: QueueRepository, dialogs: Map<string, string | null>, now = Date.now()): string[] {
   const retired: string[] = [];
-  for (const a of open) {
-    if (!shown.has(a.session)) continue;
-    if (shown.get(a.session) !== null) { seenAtPrompt.add(a.qitemId); continue; }
-    if (!seenAtPrompt.delete(a.qitemId)) continue;
+  for (const a of openApprovals(repo)) {
+    if (!dialogs.has(a.session) || now - a.createdAt < APPROVAL_RETIRE_GRACE_MS) continue;
+    const dialog = dialogs.get(a.session);
+    if (dialog !== null && dialog !== undefined && inView(a, dialog)) continue;
     repo.update({ qitemId: a.qitemId, actorSession: "daemon@kernel", state: "canceled", transitionNote: "approval expired: answered in the terminal" });
     retired.push(a.qitemId);
   }

@@ -121,35 +121,45 @@ describe("Slack approvals", () => {
     expect(repo.getById(id)!.body).toContain("Asked by its general-purpose subagent");
   });
 
-  it("an open request holds the seat for the hook; once answered or closed the watcher may post again", async () => {
+  const bashDialog = (command: string) => `Bash command\n${command}\nDo you want to proceed?`;
+
+  it("an open request holds the seat only for its own dialog; once answered the watcher may post again", async () => {
     const id = (await service().start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "touch x" } }))!;
-    expect(seatHasOpenApproval(repo, "psa-dev@psa")).toBe(true);
-    expect(seatHasOpenApproval(repo, "other@rig")).toBe(false);
+    expect(seatHasOpenApproval(repo, "psa-dev@psa", bashDialog("touch x"))).toBe(true);
+    expect(seatHasOpenApproval(repo, "psa-dev@psa", bashDialog("rm -rf build"))).toBe(false);
+    expect(seatHasOpenApproval(repo, "psa-dev@psa", "Which color?\n1. Red\n2. Blue")).toBe(false);
+    expect(seatHasOpenApproval(repo, "other@rig", bashDialog("touch x"))).toBe(false);
     click(id, "reco@external", "allow");
-    expect(seatHasOpenApproval(repo, "psa-dev@psa")).toBe(false);
+    expect(seatHasOpenApproval(repo, "psa-dev@psa", bashDialog("touch x"))).toBe(false);
   });
 
-  it("a request answered in the terminal expires once its seat was seen at the prompt and now shows none", async () => {
+  it("a request answered in the terminal expires once past its grace, without any earlier sighting", async () => {
     const s = service();
     const id = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "touch x" } }))!;
-    const seen = new Set<string>();
-    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), seen)).toEqual([]);
-    expect(retireApprovalsAnsweredInTerminal(repo, new Map(), seen)).toEqual([]);
-    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", "k1"]]), seen)).toEqual([]);
-    expect(retireApprovalsAnsweredInTerminal(repo, new Map(), seen)).toEqual([]);
-    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), seen)).toEqual([id]);
+    const later = Date.now() + 11_000;
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]))).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map(), later)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", bashDialog("touch x")]]), later)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), later)).toEqual([id]);
     expect(repo.getById(id)!.state).toBe("canceled");
     expect(await s.wait(id, "psa-dev@psa", 20)).toBe("expired");
-    expect(seen.size).toBe(0);
+  });
+
+  it("with two requests open, the one whose command is no longer on screen expires and the shown one stays", async () => {
+    const s = service();
+    const a = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "touch a.txt" } }))!;
+    const b = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "touch b.txt" } }))!;
+    const web = (await s.start({ sessionName: "psa-dev@psa", toolName: "WebSearch", toolInput: { query: "r2 pricing" } }))!;
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", bashDialog("touch b.txt")]]), Date.now() + 11_000)).toEqual([a]);
+    expect(repo.getById(b)!.state).toBe("pending");
+    expect(repo.getById(web)!.state).toBe("pending");
   });
 
   it("a request answered in Slack is never expired by the terminal check", async () => {
     const s = service();
     const id = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "touch x" } }))!;
-    const seen = new Set<string>();
-    retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", "k1"]]), seen);
     click(id, "reco@external", "allow");
-    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), seen)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), Date.now() + 11_000)).toEqual([]);
     expect(await s.wait(id, "psa-dev@psa", 20)).toBe("allow");
   });
 

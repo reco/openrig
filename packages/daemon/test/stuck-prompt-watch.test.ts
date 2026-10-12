@@ -171,7 +171,7 @@ describe("stuck-prompt watch", () => {
     let t = 0;
     let held = true;
     const sent: StuckPrompt[] = [];
-    const watch = makeStuckPromptWatch({ runningSessions: () => ["advisor-lead@kernel"], capture: async () => claude, notify: async (p) => { sent.push(p); }, now: () => t, heldByHook: () => held });
+    const watch = makeStuckPromptWatch({ runningSessions: () => ["advisor-lead@kernel"], capture: async () => claude, notify: async (p) => { sent.push(p); }, now: () => t, heldByHook: (_s, dialog) => held && dialog.includes("touch digit-probe-1.txt") });
     await watch.tick(); t = 15_000; await watch.tick(); t = 600_000; await watch.tick();
     expect(sent).toHaveLength(0);
     expect(await watch.requestCard("advisor-lead@kernel", { by: "operator-agent@kernel", reason: "r" })).toEqual({ outcome: "already-posted" });
