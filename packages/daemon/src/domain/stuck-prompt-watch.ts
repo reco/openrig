@@ -202,7 +202,7 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
       open.set(session, { key: prompt.key, since, notifiedAt: now() });
       const result = await deps.notify({ session, reason: prompt.reason, promptLine: prompt.promptLine, attach: `tmux attach -t ${session}`,
         episodeId: episodeIdOf(session, prompt.key), key: prompt.key, dialog: prompt.dialog, choices: prompt.choices,
-        waitingMinutes: Math.floor((now() - since) / 60_000), requestedBy: request.by, requestReason: maskSecrets(request.reason) });
+        waitingMinutes: Math.floor((now() - since) / 60_000), requestedBy: request.by, requestReason: maskSecrets(request.reason).slice(0, 300) });
       if (result && "qitemId" in result) return { outcome: "posted", qitemId: result.qitemId };
       return { outcome: result?.skipped === "no-human" ? "no-human" : "already-posted" };
     },
