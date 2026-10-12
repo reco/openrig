@@ -111,7 +111,7 @@ export interface StuckPromptWatchDeps {
   answerableAfterMs?: number;
   log?: (msg: string) => void;
   /** The seat's own PermissionRequest hook holds an open Slack request: its card is the one. */
-  heldByHook?: (session: string, dialog: string) => boolean;
+  heldByHook?: (session: string, dialog: string | null) => boolean;
 }
 
 const OPTION_LINE = /^\s*[❯›]?\s*\d+\.\s/;
@@ -199,7 +199,7 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
         const episode = open.get(session);
         if (!episode || episode.key !== key) { open.set(session, { key, since: now() }); continue; }
         const wait = prompt.choices ? answerableAfterMs : afterMs;
-        if (deps.heldByHook?.(session, prompt.dialog)) continue;
+        if (deps.heldByHook?.(session, prompt.choices ? prompt.dialog : null)) continue;
         if (episode.notifiedAt === undefined ? now() - episode.since < wait : now() - episode.notifiedAt < REMIND_AFTER_MS) continue;
         episode.notifiedAt = now();
         try {

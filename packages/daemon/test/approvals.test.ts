@@ -145,14 +145,27 @@ describe("Slack approvals", () => {
     expect(await s.wait(id, "psa-dev@psa", 20)).toBe("expired");
   });
 
-  it("with two requests open, the one whose command is no longer on screen expires and the shown one stays", async () => {
+  it("while any dialog is up nothing is retired (it may be cut short or queued); once none shows, all past grace expire", async () => {
     const s = service();
     const a = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "touch a.txt" } }))!;
     const b = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "touch b.txt" } }))!;
-    const web = (await s.start({ sessionName: "psa-dev@psa", toolName: "WebSearch", toolInput: { query: "r2 pricing" } }))!;
-    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", bashDialog("touch b.txt")]]), Date.now() + 11_000)).toEqual([a]);
-    expect(repo.getById(b)!.state).toBe("pending");
-    expect(repo.getById(web)!.state).toBe("pending");
+    const later = Date.now() + 11_000;
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", bashDialog("touch b.txt")]]), later)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", "…cut mid heredoc\nDo you want to proceed?"]]), later)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), later).sort()).toEqual([a, b].sort());
+  });
+
+  it("a WebFetch, WebSearch or Edit request holds the seat for its own dialog only; an unreadable or unknown input holds any", async () => {
+    const s = makeApprovalService({ queueRepo: repo, optedIn: () => ["psa-dev@psa", "ops@rig", "mcp@rig"], approver: () => "reco@external", verifySeat: () => true });
+    await s.start({ sessionName: "psa-dev@psa", toolName: "WebSearch", toolInput: { query: "r2 pricing class a" } });
+    await s.start({ sessionName: "ops@rig", toolName: "Edit", toolInput: { file_path: "/work/a.ts", old_string: "x", new_string: "y" } });
+    await s.start({ sessionName: "mcp@rig", toolName: "mcp__x__y", toolInput: { id: 3 } });
+    expect(seatHasOpenApproval(repo, "psa-dev@psa", "Tool use\nWebSearch(query: \"r2 pricing class a\")")).toBe(true);
+    expect(seatHasOpenApproval(repo, "psa-dev@psa", "Which color?\n1. Red")).toBe(false);
+    expect(seatHasOpenApproval(repo, "psa-dev@psa", null)).toBe(true);
+    expect(seatHasOpenApproval(repo, "ops@rig", "Edit file\n/work/a.ts")).toBe(true);
+    expect(seatHasOpenApproval(repo, "ops@rig", "Edit file\n/work/b.ts")).toBe(false);
+    expect(seatHasOpenApproval(repo, "mcp@rig", "anything")).toBe(true);
   });
 
   it("a request answered in Slack is never expired by the terminal check", async () => {

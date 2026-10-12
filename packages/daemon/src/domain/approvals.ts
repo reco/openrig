@@ -74,39 +74,42 @@ function approvalReason(toolInput: unknown): string | null {
 /** A request this new may not have its dialog drawn yet: it is never retired as answered. */
 export const APPROVAL_RETIRE_GRACE_MS = 10_000;
 
-interface OpenApproval { qitemId: string; session: string; createdAt: number; command: string | null }
+interface OpenApproval { qitemId: string; session: string; createdAt: number; shows: string | null }
 
 function openApprovals(repo: QueueRepository): OpenApproval[] {
   return (repo.db.prepare(`SELECT qitem_id, source_session, ts_created, body FROM queue_items WHERE state = 'pending' AND tags LIKE '%"approval-request"%'
       AND (human_answers IS NULL OR human_answers = '{}')`).all() as Array<{ qitem_id: string; source_session: string; ts_created: string; body: string | null }>)
     .map((r) => {
-      const shown = /```\n([\s\S]*?)\n```/.exec(r.body ?? "")?.[1] ?? null;
-      return { qitemId: r.qitem_id, session: r.source_session, createdAt: Date.parse(r.ts_created), command: shown && !shown.startsWith("{") ? shown : null };
+      const text = /```\n([\s\S]*?)\n```/.exec(r.body ?? "")?.[1] ?? "";
+      return { qitemId: r.qitem_id, session: r.source_session, createdAt: Date.parse(r.ts_created), shows: dialogMark(text) };
     });
 }
 
 const flat = (text: string) => text.replace(/[\s│┃╭╮╰╯─━]+/g, "");
 
-/** Whether the dialog on screen is this request's: a command's text must appear in it. A tool
- *  input shown as JSON cannot be matched, so any dialog may be its. */
-function inView(request: OpenApproval, dialog: string): boolean {
-  return request.command === null || flat(dialog).includes(flat(request.command.split("\n")[0]!).slice(0, 60));
+/** What the runtime's dialog shows of a request: a command's first line, else the file, URL or query
+ *  of a tool input; null for an input whose dialog text cannot be predicted. */
+function dialogMark(text: string): string | null {
+  if (!text.startsWith("{")) return text ? flat(text.split("\n")[0]!).slice(0, 60) : null;
+  const field = /"(?:file_path|notebook_path|url|query)"\s*:\s*"([^"]{1,200})"/.exec(text)?.[1];
+  return field ? flat(field).slice(0, 60) : null;
 }
 
-/** The seat's PermissionRequest hook is waiting on an unanswered Slack request for the dialog on screen. */
-export function seatHasOpenApproval(repo: QueueRepository, session: string, dialog: string): boolean {
-  return openApprovals(repo).some((a) => a.session === session && inView(a, dialog));
+/** The seat's PermissionRequest hook is waiting on an unanswered Slack request for the dialog on
+ *  screen (null: a dialog that could not be read in full, which any open request may be). */
+export function seatHasOpenApproval(repo: QueueRepository, session: string, dialog: string | null): boolean {
+  return openApprovals(repo).some((a) => a.session === session && (dialog === null || a.shows === null || flat(dialog).includes(a.shows)));
 }
 
 /** The terminal dialog shows while the hook waits, and an answer typed there leaves the hook running.
- *  A request past its grace whose readable pane shows no prompt, or a different command's dialog, was
- *  answered in the terminal: it expires, so its card loses its buttons and the hook stops waiting. */
+ *  A request past its grace whose readable pane shows no prompt at all was answered in the terminal: it
+ *  expires, so its card loses its buttons and the hook stops waiting. While some dialog is up nothing is
+ *  retired: it may be this request's, cut short, or one queued behind it. */
 export function retireApprovalsAnsweredInTerminal(repo: QueueRepository, dialogs: Map<string, string | null>, now = Date.now()): string[] {
   const retired: string[] = [];
   for (const a of openApprovals(repo)) {
     if (!dialogs.has(a.session) || now - a.createdAt < APPROVAL_RETIRE_GRACE_MS) continue;
-    const dialog = dialogs.get(a.session);
-    if (dialog !== null && dialog !== undefined && inView(a, dialog)) continue;
+    if (dialogs.get(a.session) !== null) continue;
     repo.update({ qitemId: a.qitemId, actorSession: "daemon@kernel", state: "canceled", transitionNote: "approval expired: answered in the terminal" });
     retired.push(a.qitemId);
   }
