@@ -3,7 +3,7 @@
 // a newer one from the same seat with the same summary replaced is canceled.
 import type { QueueRepository } from "../../queue-repository.js";
 import type { ThreadSeatMap } from "./thread-seat-map.js";
-import { currentGateResolved } from "./request-lifecycle.js";
+import { currentGateResolved, isRequestToHuman } from "./request-lifecycle.js";
 
 export interface HumanSweepEntry {
   qitemId: string;
@@ -27,7 +27,7 @@ export function planHumanSweep(repo: QueueRepository, threadMap: ThreadSeatMap, 
   const canceling = new Set(entries.map((e) => e.qitemId));
   for (const root of threadMap.listOpenConversations()) {
     const item = repo.getById(root.conversationId);
-    if (root.human !== destination || !item || item.tsCreated >= before || canceling.has(item.qitemId)) continue;
+    if (root.human !== destination || !item || item.tsCreated >= before || canceling.has(item.qitemId) || !isRequestToHuman(item, root)) continue;
     const finished = FINISHED.includes(item.state);
     if (!finished && !currentGateResolved(repo, item.qitemId)) continue;
     entries.push({ qitemId: item.qitemId, summary: item.summary ?? null, tsCreated: item.tsCreated, action: "close-thread", reason: finished ? `row ${item.state}` : "answered" });
@@ -38,17 +38,15 @@ export function planHumanSweep(repo: QueueRepository, threadMap: ThreadSeatMap, 
 export async function applyHumanSweep(entries: HumanSweepEntry[], deps: {
   repo: QueueRepository;
   actorSession: string;
-  closeThread: (qitemId: string) => Promise<void>;
+  /** Close the row's open conversation quietly; `cancel` also cancels a row still waiting on the human. */
+  closeThread: (qitemId: string, cancel: boolean) => Promise<void>;
   pauseMs: number;
   log: (msg: string) => void;
 }): Promise<void> {
   for (const [i, entry] of entries.entries()) {
     try {
-      if (entry.action === "cancel") {
-        deps.repo.update({ qitemId: entry.qitemId, actorSession: deps.actorSession, state: "canceled", transitionNote: `swept: ${entry.reason}` });
-      } else {
-        await deps.closeThread(entry.qitemId);
-      }
+      if (entry.action === "cancel") deps.repo.update({ qitemId: entry.qitemId, actorSession: deps.actorSession, transitionNote: `swept: ${entry.reason}` });
+      await deps.closeThread(entry.qitemId, entry.action === "cancel");
     } catch (error) {
       deps.log(`human sweep ${entry.qitemId} failed: ${(error as Error).message}`);
     }

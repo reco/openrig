@@ -1089,17 +1089,19 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     },
     sweepHuman: async ({ destination, before, apply, actorSession }) => {
       const entries = planHumanSweep(opts.queueRepo, threadMap, destination, before);
-      if (apply && !humanSweeping) {
+      const starting = apply && !humanSweeping;
+      if (starting) {
         humanSweeping = applyHumanSweep(entries, {
           repo: opts.queueRepo, actorSession, log, pauseMs: opts.humanSweepPauseMs ?? 1500,
-          closeThread: async (qitemId) => {
+          closeThread: async (qitemId, cancel) => {
             const root = threadMap.resolveByConversation(qitemId);
-            if (root) await closeRequest(lifecycle, root, "swept", actorSession, false, false);
+            if (root?.state === "open") await closeRequest(lifecycle, root, cancel ? "swept-superseded" : "swept", actorSession, cancel, false);
+            else if (cancel) opts.queueRepo.update({ qitemId, actorSession, state: "canceled", transitionNote: "swept" });
             await syncRootDone(qitemId);
           },
         }).finally(() => { humanSweeping = undefined; });
       }
-      return { entries, applying: apply };
+      return { entries, applying: starting };
     },
     status: () => ({
       platform: "slack", configurationDigest: channelStateDigest(cfg),

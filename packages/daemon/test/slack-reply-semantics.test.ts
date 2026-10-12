@@ -246,6 +246,14 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       await deliver(older.qitemId);
       const newer = await repo.create({ ...request, summary: "Rotate the key?", humanIntent: "decision" });
       await deliver(newer.qitemId);
+      const olderRoot = new ThreadSeatMap(db).resolveByConversation(older.qitemId)!.threadTs;
+      socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-chat", type: "events_api", payload: { event: { type: "message", user: "UFOUNDER", text: "Quick question about billing", ts: "2051.1", channel: "C-TEST" } } }) });
+      await vi.waitFor(() => expect(finals("e-chat")).toHaveLength(1));
+      const chat = repo.list({ limit: 100 }).find((q) => q.body.includes("Quick question about billing"))!;
+      const reply = await repo.create({ ...request, humanIntent: "update", summary: "Billing", body: "It renews monthly.", replyTo: chat.qitemId });
+      await deliver(reply.qitemId);
+      repo.update({ qitemId: chat.qitemId, actorSession: chat.destinationSession, state: "done", closureReason: "no-follow-on", transitionNote: "answered" });
+      expect(new ThreadSeatMap(db).resolveByThread("2051.1")?.state).toBe("open");
       const before = new Date(Date.now() + 60_000).toISOString();
       const plan = await wire.sweepHuman!({ destination: human, before, apply: false, actorSession: "advisor@kernel" });
       expect(plan.entries.map((e) => [e.qitemId, e.action, e.reason])).toEqual([
@@ -257,8 +265,10 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       await wire.sweepHuman!({ destination: human, before, apply: true, actorSession: "advisor@kernel" });
       await vi.waitFor(() => expect(repo.getById(older.qitemId)?.state).toBe("canceled"));
       await vi.waitFor(() => expect(String(updates.filter((u) => u.ts === "1.1").at(-1)?.text)).toContain("Closed: finished or answered earlier."));
+      await vi.waitFor(() => expect(String(updates.filter((u) => u.ts === olderRoot).at(-1)?.text)).toContain("Closed: replaced by a newer request."));
       expect(marks.get("1.1")?.has("white_check_mark")).toBe(true);
-      expect(posts.slice(postsBefore).some((p) => String(p.text).includes("finished or answered earlier"))).toBe(false);
+      expect(posts.slice(postsBefore).some((p) => String(p.text).includes("Closed:"))).toBe(false);
+      expect(new ThreadSeatMap(db).resolveByThread("2051.1")?.state).toBe("open");
       expect(repo.getById(newer.qitemId)?.state).toBe("pending");
     });
 

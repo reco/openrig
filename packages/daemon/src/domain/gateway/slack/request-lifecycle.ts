@@ -81,6 +81,7 @@ function describeClose(reason: string): string {
   if (cleared) return `${cleared[1]}.`;
   if (reason === "canceled-by-seat") return "canceled by the asking seat.";
   if (reason === "swept") return "finished or answered earlier.";
+  if (reason === "swept-superseded") return "replaced by a newer request.";
   const human = /^canceled-by-human(?:: (.*))?$/s.exec(reason);
   if (human) return human[1] ? `canceled (${human[1]})` : "canceled.";
   return reason;
