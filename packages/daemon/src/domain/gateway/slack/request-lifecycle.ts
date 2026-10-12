@@ -80,14 +80,15 @@ function describeClose(reason: string): string {
   const cleared = /^prompt-cleared: (.*)$/s.exec(reason);
   if (cleared) return `${cleared[1]}.`;
   if (reason === "canceled-by-seat") return "canceled by the asking seat.";
+  if (reason === "swept") return "finished or answered earlier.";
   const human = /^canceled-by-human(?:: (.*))?$/s.exec(reason);
   if (human) return human[1] ? `canceled (${human[1]})` : "canceled.";
   return reason;
 }
 
 /** Close a request: its thread map rows, an unanswered direct request's row, a note on the row
- *  and a closing line in the thread. `canceled` marks the row canceled instead of done. */
-export async function closeRequest(deps: RequestLifecycleDeps, root: ThreadMapping, reason: string, actorSession: string, canceled = false): Promise<void> {
+ *  and a closing line in the thread (unless `announce` is false). `canceled` marks the row canceled instead of done. */
+export async function closeRequest(deps: RequestLifecycleDeps, root: ThreadMapping, reason: string, actorSession: string, canceled = false, announce = true): Promise<void> {
   // Closing twice (a sweep that listed the thread before another close landed) says nothing new.
   if (deps.threadMap.resolveByThread(root.threadTs)?.state === "closed") return;
   const item = deps.queueRepo.getById(root.conversationId);
@@ -122,6 +123,7 @@ export async function closeRequest(deps: RequestLifecycleDeps, root: ThreadMappi
   // thread (the note used to be a separate post, which found this thread closed and became a new top-level message).
   const where = expiry ? ` Approve / Deny here no longer does anything; the prompt is waiting in the terminal: tmux attach -t ${root.seat}` : "";
   await closeCard(deps, root.conversationId, root.channel, `Closed: ${describeClose(reason)}${where}`);
+  if (!announce) return;
   const posted = await deps.postInThread(root.channel, root.threadTs, escapeSlackText(redactSecrets(`Closed: ${describeClose(reason)}${where}`)));
   if (!posted) deps.log?.(`request ${root.conversationId} closed; the closing line was not posted`);
 }

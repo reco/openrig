@@ -28,6 +28,7 @@ interface SubsystemHandle {
   restart: () => void;
   status: () => Record<string, unknown>;
   connectorStatus?: () => Record<string, unknown>;
+  sweepHuman?: (input: { destination: string; before: string; apply: boolean; actorSession: string }) => Promise<{ entries: unknown[]; applying: boolean }> | null;
 }
 
 export function gatewayRoutes(opts: {
@@ -71,6 +72,18 @@ export function gatewayRoutes(opts: {
     const botToken = resolveSecret("SLACK_BOT_TOKEN", { envFile: cfg.secretsEnvFile ?? undefined });
     const readiness = await resolveHumanDeliveryReadiness({ human, config: cfg, gatewayState, botToken });
     return c.json({ ok: true, readiness });
+  });
+
+  app.post("/human-sweep", async (c) => {
+    const body = (await c.req.json<{ destination?: string; before?: string; apply?: boolean; actor?: string }>().catch(() => ({}))) as { destination?: string; before?: string; apply?: boolean; actor?: string };
+    const actor = requireSenderIdentity(c, { verb: "queue sweep", bodyClaim: body.actor });
+    if (!actor.ok) return actor.response;
+    const before = typeof body.before === "string" && !Number.isNaN(Date.parse(body.before)) ? new Date(body.before).toISOString() : null;
+    if (!body.destination || !before) return c.json({ error: "invalid_sweep", message: "Give --destination <human address> and --before <ISO time>." }, 400);
+    const subsystem = c.get("gatewaySubsystem" as never) as SubsystemHandle | undefined;
+    const result = subsystem?.sweepHuman?.({ destination: body.destination, before, apply: body.apply === true, actorSession: actor.session });
+    if (!result) return c.json({ error: "gateway_admin_unavailable", message: "The Slack gateway is not active." }, 503);
+    return c.json({ destination: body.destination, before, ...(await result) });
   });
 
   app.post("/slack/:operation", async (c) => {

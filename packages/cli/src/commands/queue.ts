@@ -1311,6 +1311,26 @@ Examples:
     });
 
   cmd
+    .command("sweep")
+    .description("Clear a human's old Slack to-dos: close finished or answered conversations (card without buttons, done reaction, no thread post) and cancel requests a newer one replaced. Dry run unless --apply.")
+    .requiredOption("--destination <human>", "The human's address, e.g. reco@external")
+    .requiredOption("--before <ts>", "Only rows created before this ISO time")
+    .option("--apply", "Apply in the daemon's background, spaced for Slack rate limits (default: dry run)")
+    .option("--json", "JSON output for agents")
+    .action(async (opts: { destination: string; before: string; apply?: boolean; json?: boolean }) => {
+      const deps = getDeps();
+      await withClient(deps, async (client) => {
+        const res = await client.post<{ entries?: Array<{ qitemId: string; action: string; reason: string; summary: string | null }>; applying?: boolean }>(
+          "/api/gateway/human-sweep", { destination: opts.destination, before: opts.before, apply: opts.apply === true });
+        if (opts.json || res.status >= 400 || !res.data.entries) return printResult(opts.json ?? false, res.data, res.status);
+        const entries = res.data.entries;
+        for (const e of entries) console.log(`${e.action === "cancel" ? "cancel" : "close "} ${e.qitemId}  ${e.reason}  ${(e.summary ?? "").slice(0, 70)}`);
+        const closes = entries.filter((e) => e.action === "close-thread").length;
+        console.log(`${closes} conversations to close, ${entries.length - closes} requests to cancel${res.data.applying ? "; applying in the daemon now" : " (dry run; add --apply)"}`);
+      });
+    });
+
+  cmd
     .command("undelivered")
     .description("List PENDING qitems whose create-path nudge FAILED (delivery never reached the destination; current rig, bounded, body-free by default)")
     .option("--rig <name>", "Scope to a specific rig (default: current rig from OPENRIG_SESSION_NAME)")

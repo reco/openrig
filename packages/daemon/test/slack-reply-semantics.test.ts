@@ -75,6 +75,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       inboundMaxConnects: 1,
       inboundRetryIntervalMs: 50,
       requestSweepIntervalMs: 50,
+      humanSweepPauseMs: 0,
       linkState: async () => "merged",
       fetchImpl: async (url, init) => {
         if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
@@ -237,6 +238,28 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
     it("a decision handed off away from the human shows the done reaction on its top-level message", async () => {
       await repo.handoff({ qitemId: decisionId, fromSession: human, toSession: "author@rig", transitionNote: "not mine to decide", nudge: false });
       await vi.waitFor(() => expect(marks.get("1.1")?.has("white_check_mark")).toBe(true));
+    });
+
+    it("a human sweep closes answered conversations quietly with the done reaction and cancels a replaced request; dry run changes nothing", async () => {
+      await say("answer: ship it", "2050.1");
+      const older = await repo.create({ ...request, summary: "Rotate the key?", humanIntent: "decision" });
+      await deliver(older.qitemId);
+      const newer = await repo.create({ ...request, summary: "Rotate the key?", humanIntent: "decision" });
+      await deliver(newer.qitemId);
+      const before = new Date(Date.now() + 60_000).toISOString();
+      const plan = await wire.sweepHuman!({ destination: human, before, apply: false, actorSession: "advisor@kernel" });
+      expect(plan.entries.map((e) => [e.qitemId, e.action, e.reason])).toEqual([
+        [decisionId, "close-thread", "row done"],
+        [older.qitemId, "cancel", `superseded by ${newer.qitemId}`],
+      ]);
+      expect(repo.getById(older.qitemId)?.state).toBe("pending");
+      const postsBefore = posts.length;
+      await wire.sweepHuman!({ destination: human, before, apply: true, actorSession: "advisor@kernel" });
+      await vi.waitFor(() => expect(repo.getById(older.qitemId)?.state).toBe("canceled"));
+      await vi.waitFor(() => expect(String(updates.filter((u) => u.ts === "1.1").at(-1)?.text)).toContain("Closed: finished or answered earlier."));
+      expect(marks.get("1.1")?.has("white_check_mark")).toBe(true);
+      expect(posts.slice(postsBefore).some((p) => String(p.text).includes("finished or answered earlier"))).toBe(false);
+      expect(repo.getById(newer.qitemId)?.state).toBe("pending");
     });
 
     it("tells the seat that a conversation reply resolves nothing and how to answer in the thread", async () => {

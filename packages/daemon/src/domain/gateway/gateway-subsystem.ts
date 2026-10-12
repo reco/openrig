@@ -17,6 +17,7 @@
 import { DispatchBuffer } from "./dispatch-buffer.js";
 import { GatewayDispatcher, type DispatchResult } from "./dispatcher.js";
 import type { OutboundDecision } from "./protocol.js";
+import type { HumanSweepEntry } from "./slack/human-sweep.js";
 
 /** The in-process delivery outcome (mirrors the retired connector's DeliveryOutcome shape so
  *  the slice-11 delivery semantics carry over verbatim at cutover). */
@@ -32,6 +33,8 @@ export interface GatewayWire {
   stop(): void;
   startServices?(): void;
   status?(): Record<string, unknown>;
+  /** Plan (and with apply, start in the background) clearing a human's old Slack to-dos. */
+  sweepHuman?(input: { destination: string; before: string; apply: boolean; actorSession: string }): Promise<{ entries: HumanSweepEntry[]; applying: boolean }>;
 }
 
 export interface InProcessWireOpts {
@@ -163,6 +166,10 @@ export class GatewaySubsystem {
   }
 
   /** Snapshot only: no dispatch-buffer scan, network or recovery work. */
+  sweepHuman(input: { destination: string; before: string; apply: boolean; actorSession: string }): Promise<{ entries: HumanSweepEntry[]; applying: boolean }> | null {
+    return this.state === "active" && this.wireHandle?.sweepHuman ? this.wireHandle.sweepHuman(input) : null;
+  }
+
   connectorStatus(): Record<string, unknown> {
     return { state: this.state, connector: this.wireHandle?.status?.() ?? null };
   }

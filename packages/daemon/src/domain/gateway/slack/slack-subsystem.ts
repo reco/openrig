@@ -14,6 +14,7 @@
 
 import { unansweredQuestions } from "../../human-questions.js";
 import { ChannelRecovery } from "./channel-recovery.js";
+import { applyHumanSweep, planHumanSweep } from "./human-sweep.js";
 import { channelStateDigest } from "../channel-operations.js";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -72,6 +73,8 @@ export interface SlackWireOpts {
   requestSweepIntervalMs?: number;
   /** How often top-level history and the recently active threads are read for missed messages. */
   fastRecoveryIntervalMs?: number;
+  /** Pause between rows of an applied human sweep (Slack rate limits). */
+  humanSweepPauseMs?: number;
   linkState?: (link: RequestLink) => Promise<LinkState>;
   resolveHumanReply?: (input: { qitemId: string; actorSession: string; decision: string }) => Promise<"resolved" | "already-resolved" | "not-applicable">;
 }
@@ -1068,6 +1071,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     stops.push(() => inboundHandle?.stop());
   }
 
+  let humanSweeping: Promise<void> | undefined;
   const baseStop = wire.stop;
   const baseStartServices = wire.startServices;
   let servicesLive = false;
@@ -1082,6 +1086,20 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     stop: () => {
       for (const s of stops) { try { s(); } catch { /* best-effort */ } }
       baseStop();
+    },
+    sweepHuman: async ({ destination, before, apply, actorSession }) => {
+      const entries = planHumanSweep(opts.queueRepo, threadMap, destination, before);
+      if (apply && !humanSweeping) {
+        humanSweeping = applyHumanSweep(entries, {
+          repo: opts.queueRepo, actorSession, log, pauseMs: opts.humanSweepPauseMs ?? 1500,
+          closeThread: async (qitemId) => {
+            const root = threadMap.resolveByConversation(qitemId);
+            if (root) await closeRequest(lifecycle, root, "swept", actorSession, false, false);
+            await syncRootDone(qitemId);
+          },
+        }).finally(() => { humanSweeping = undefined; });
+      }
+      return { entries, applying: apply };
     },
     status: () => ({
       platform: "slack", configurationDigest: channelStateDigest(cfg),
