@@ -208,6 +208,7 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
         humanIntent: q.humanIntent,
         humanConfirm: q.humanConfirm,
         destinationSession: q.destinationSession ?? decision.entityBindingRef,
+        tags: q.tags,
       },
       {
         sourceLabel: opts.sourceLabel,

@@ -22,6 +22,7 @@ export interface QitemLike {
   humanIntent?: "decision" | "update" | null;
   /** Phase 1 — a reading the human confirms with one click (an update replying to a decision). */
   humanConfirm?: string | null;
+  tags?: readonly string[] | null;
 }
 
 /** M1 A5b — an outbound image attachment. A media-bearing OutboundDecision carries these;
@@ -120,6 +121,8 @@ export type ConfirmOutcome = "confirmed" | "not-used";
 const TYPED_REPLY_HINT = "Or reply in this thread with your own answer.";
 /** Phase 1: a decision that brings no buttons of its own gets this one. */
 export const DEFAULT_CONFIRM_LABEL = "Confirm";
+/** Alerts the daemon closes itself (a wake escalation, a stuck-sweep finding): nothing for the human to confirm. */
+const SELF_CLOSING_ALERT_TAGS = new Set(["wake-escalation", "stuck-sweep-finding"]);
 export const DEFAULT_CONFIRM_DECISION = "confirmed";
 
 /** Parse a clicked button back into its question and option ids; null if it is not ours. */
@@ -331,7 +334,8 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
     : closed ? (answeredAny ? buildAnsweredBlocks(q.humanQuestions, q.humanAnswers ?? {}) : null)
     : opts.answered ? buildAnsweredBlocks(q.humanQuestions, q.humanAnswers ?? {})
     : buildQuestionBlocks(q.humanQuestions, explicit ? null : TYPED_REPLY_HINT, q.humanAnswers ?? {});
-  const confirmText = q.humanConfirm ?? (explicit && q.humanIntent !== "update" && !q.humanQuestions?.length ? DEFAULT_CONFIRM_LABEL : null);
+  const selfClosingAlert = q.tags?.some((t) => SELF_CLOSING_ALERT_TAGS.has(t)) ?? false;
+  const confirmText = q.humanConfirm ?? (explicit && q.humanIntent !== "update" && !q.humanQuestions?.length && !selfClosingAlert ? DEFAULT_CONFIRM_LABEL : null);
   // A closed card keeps a Confirm that decided it (no button left), and drops one that did not.
   const confirmParts = confirmText && (!closed || opts.confirmOutcome === "confirmed") ? buildConfirmBlocks(q.qitemId, confirmText, opts.confirmOutcome, q.humanIntent !== "update") : null;
   if (opts.extraBlocks?.length) {

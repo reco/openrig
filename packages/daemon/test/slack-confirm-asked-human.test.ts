@@ -104,6 +104,16 @@ describe("Confirm in explicit-answers mode", () => {
     expect(JSON.stringify(postWith("Escalated to the operator.")!.blocks)).not.toContain("or-confirm");
   });
 
+  it("a wake escalation or stuck-sweep finding addressed to the human carries no Confirm; a plain ask still does", async () => {
+    await repo.create({ sourceSession: "lead@rig", destinationSession: "reco@external", summary: "Wake escalation: 2 baton(s) stuck", body: "escalation alert body", tags: ["wake-escalation"], nudge: false });
+    await repo.create({ sourceSession: "lead@rig", destinationSession: "reco@external", summary: "Stuck sweep: undelivered-wake", body: "finding alert body", tags: ["stuck-sweep-finding"], nudge: false });
+    await repo.create({ sourceSession: "lead@rig", destinationSession: "reco@external", summary: "Real ask", body: "plain ask body", nudge: false });
+    await vi.waitFor(() => expect(["escalation alert body", "finding alert body", "plain ask body"].every((t) => postWith(t))).toBe(true));
+    expect(JSON.stringify(postWith("escalation alert body")!.blocks)).not.toContain("or-confirm");
+    expect(JSON.stringify(postWith("finding alert body")!.blocks)).not.toContain("or-confirm");
+    expect(JSON.stringify(postWith("plain ask body")!.blocks)).toContain("or-confirm");
+  });
+
   it("a row the human addressed to themselves is never posted", async () => {
     await repo.create({ sourceSession: "reco@external", destinationSession: "reco@external", summary: "Stuck sweep: undelivered-wake", body: "self-addressed finding", nudge: false });
     await repo.create({ sourceSession: "lead@rig", destinationSession: "reco@external", summary: "Real ask", body: "a real ask", nudge: false });
