@@ -35,7 +35,7 @@ import { makeThreadRouteResolver } from "./thread-routing.js";
 import { closeRequest, isRequestToHuman, currentGateResolved, entityOf, gateOpenedAt, githubLinkState, isRequestHuman, sweepRequests, type LinkState, type RequestLifecycleDeps, type RequestLink } from "./request-lifecycle.js";
 import { startSocketInbound, type SocketInboundHandle, type WsLike } from "./socket-inbound.js";
 import { loadHumanRegistry, resolveRegisteredHumanAddress, resolveSlackHandle } from "../human-registry.js";
-import { hasLiveHumanGate, type QueueRepository } from "../../queue-repository.js";
+import { hasLiveHumanGate, type QueueItem, type QueueRepository } from "../../queue-repository.js";
 import { formatReplyToChoice, REPLY_TO_CHOICE_ACTOR, type ReplyToChoice } from "../../reply-to-choice.js";
 import { isHumanSeatSessionRef, parseSessionName } from "../../session-name.js";
 import type { FetchImpl } from "./slack-api.js";
@@ -419,6 +419,12 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     const message = receivedMessage(opts.queueRepo.getById(root.conversationId)?.tags);
     return message?.channel === root.channel && message.ts === root.threadTs && isReceivedHere(message);
   };
+  // The human wrote in this thread and their message reached this seat; the thread belongs to no
+  // other agent (it is the human's own alert, or the daemon's), so the answer goes where they asked.
+  const humanWroteHere = (item: QueueItem, root: { threadTs: string; seat: string }, seat: string) =>
+    item.destinationSession === seat && !!receivedMessage(item.tags)
+    && item.tags?.includes(`thread-ts:${root.threadTs}`) === true
+    && (parseSessionName(root.seat).kind === "external" || root.seat === "daemon@kernel");
   const deriveReplyToChoice = (p: OutboundPostPayload): ReplyToChoice => {
     let item = p.replyTo ? opts.queueRepo.getById(p.replyTo) : null;
     for (let depth = 0; item && depth < MAX_REPLY_TO_CHAIN; depth++) {
@@ -429,7 +435,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       if (root) {
         if (root.state === "closed") return { kind: "fallback", reason: "root-closed", threadTs: root.threadTs };
         if (!isConfiguredChannel(root.channel) && !isHumanStartedRoot(root)) return { kind: "fallback", reason: "root-other-channel", threadTs: root.threadTs };
-        if (root.seat !== (p.sourceSession ?? "")) return { kind: "fallback", reason: "root-other-seat", threadTs: root.threadTs };
+        if (root.seat !== (p.sourceSession ?? "") && !humanWroteHere(item, root, p.sourceSession ?? "")) return { kind: "fallback", reason: "root-other-seat", threadTs: root.threadTs };
         return { kind: "thread", threadTs: root.threadTs };
       }
       // A human-started message has no root of ours: answer in that message's own thread, in the

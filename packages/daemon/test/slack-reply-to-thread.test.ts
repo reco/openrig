@@ -379,6 +379,29 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       expect(repo.getById(update.qitemId)?.replyToFallback).toBe("root-other-seat (thread 1.1)");
     });
 
+    async function humanWroteInThread(rootSeat: string) {
+      const alert = await repo.create({ sourceSession: rootSeat, destinationSession: human, summary: "Wake escalation", body: "alert", nudge: false });
+      new ThreadSeatMap(db).open({ threadTs: "9.1", channel: "C-TEST", human, seat: rootSeat, conversationId: alert.qitemId });
+      return repo.create({ sourceSession: human, destinationSession: "author@rig", summary: "reco in thread", body: "why does this carry Confirm?", nudge: false,
+        tags: ["founder-slack", "inbound", "unrouted-signal", "thread-ts:9.1", "slack-message:C-TEST:9.5"] });
+    }
+
+    it("answers in the thread the human wrote in when that message reached this seat and the thread is the human's own alert", async () => {
+      const inbound = await humanWroteInThread(human);
+      const update = await repo.create({ ...request, humanIntent: "update", summary: "Answer", body: "Because alerts default to Confirm.", replyTo: inbound.qitemId });
+      await deliver(update.qitemId);
+      expect(postWith("Because alerts default to Confirm.")?.thread_ts).toBe("9.1");
+      expect(repo.getById(update.qitemId)?.replyToFallback).toBeNull();
+    });
+
+    it("still falls back in another agent seat's thread, even for a human message routed here", async () => {
+      const inbound = await humanWroteInThread("other@rig");
+      const update = await repo.create({ ...request, humanIntent: "update", summary: "Answer", body: "Not in other's thread.", replyTo: inbound.qitemId });
+      await deliver(update.qitemId);
+      expect(postWith("Not in other's thread.")?.thread_ts).toBeUndefined();
+      expect(repo.getById(update.qitemId)?.replyToFallback).toBe("root-other-seat (thread 9.1)");
+    });
+
     it("names a chain past the walk bound as chain-too-long, not a missing root", async () => {
       const chain = [await repo.create({ ...request, humanIntent: "update" })];
       for (let i = 1; i < 34; i++) chain.push(await repo.create({ ...request, humanIntent: "update", replyTo: chain[i - 1]!.qitemId }));
