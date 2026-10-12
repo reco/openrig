@@ -136,10 +136,6 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(JSON.stringify(updates.find((u) => u.ts === "1.1")?.blocks)).not.toContain("or-confirm");
     });
 
-    it("refuses an acknowledgement request: information needs no acknowledgement", async () => {
-      await expect(repo.create({ ...request, humanIntent: "decision", humanAck: true })).rejects.toMatchObject({ code: "invalid_human_ack" });
-    });
-
     it("the workspace's own rating emoji count as 👍/👎 when configured, skin tones ignored", async () => {
       for (const stop of stops.splice(0)) stop();
       await start(true, undefined, { feedbackReactions: { up: ["rr-thumbsup", "rr-plus1"], down: ["rr-thumbsdown", "rr-minus1"] } });

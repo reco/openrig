@@ -329,8 +329,6 @@ export interface QueueCreateInput {
   /** Phase 1 — on a decision, the approve button's call to action ("Build it"); on an update
    *  replying to a decision, the seat's reading to confirm. A click resolves with this text. */
   humanConfirm?: string | null;
-  /** Removed: refused with invalid_human_ack (information needs no acknowledgement; use update). */
-  humanAck?: boolean;
   summary?: string | null;
   /** OPR.0.4.4.19 FR-5 — optional durable-artifact pointer. Persisted when
    *  present; required at the domain layer only for human-routed items. */
@@ -1631,9 +1629,6 @@ export class QueueRepository {
       humanQuestions = parsed.questions;
     }
     if (input.humanConfirm != null) this.validateHumanConfirm(input.humanConfirm, input);
-    if (input.humanAck) {
-      throw new QueueRepositoryError("invalid_human_ack", "Acknowledgement requests were removed: information needs no acknowledgement (reading it counts; disagreement arrives as a thread reply). Use humanIntent update.");
-    }
     const id = input.qitemId ?? newQitemId();
     const ts = new Date().toISOString();
     const priority = input.priority ?? "routine";
