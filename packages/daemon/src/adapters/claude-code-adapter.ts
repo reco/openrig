@@ -495,19 +495,27 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     if (finalCommand && SHELL_COMMANDS.has(finalCommand)) {
       // The shell is the pane's foreground while the exact --resume process may still be starting
       // beneath it (a slow login shell, many plugins): that is not a return to the shell.
-      if (await this.resumeProcessRunning(binding)) {
-        for (let wait = 0; wait < SLOW_RESUME_POLLS && await this.resumeProcessRunning(binding); wait++) {
-          await this.sleep(200);
-          const command = await this.tmux.getPaneCommand(tmuxSession);
-          const content = (await this.tmux.capturePaneContent(tmuxSession, 40)) ?? "";
-          if ((await this.assessManagedProbe(binding, command, content)).status === "resumed") return { ok: true };
+      let content = finalContent;
+      for (let wait = 0; wait <= SLOW_RESUME_POLLS && await this.resumeProcessRunning(binding); wait++) {
+        if (wait === SLOW_RESUME_POLLS) {
+          return {
+            ok: false,
+            error: "Claude resume still starting: the exact --resume process is running in the pane; launch retained",
+            recovery: "attention_required",
+            evidence: content.split("\n").slice(-12).join("\n"),
+          };
         }
-        return {
-          ok: false,
-          error: "Claude resume still starting: the exact --resume process is running in the pane; launch retained",
-          recovery: "attention_required",
-          evidence: finalContent.split("\n").slice(-12).join("\n"),
-        };
+        await this.sleep(200);
+        const command = await this.tmux.getPaneCommand(tmuxSession);
+        content = (await this.tmux.capturePaneContent(tmuxSession, 40)) ?? "";
+        const probe = await this.assessManagedProbe(binding, command, content);
+        if (probe.status === "resumed") return { ok: true };
+        if (probe.code === "no_conversation_found") {
+          return { ok: false, error: "Claude resume failed: no conversation found for the requested session", recovery: "retry_fresh" };
+        }
+        if (probe.status === "attention_required") {
+          return { ok: false, error: probe.detail, recovery: "attention_required", evidence: content.split("\n").slice(-12).join("\n") };
+        }
       }
       return {
         ok: false,

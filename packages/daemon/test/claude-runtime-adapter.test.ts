@@ -616,6 +616,25 @@ describe("Claude Code runtime adapter", () => {
     expect(await adapter.launchHarness(makeBinding(), { name: "dev-impl@test-rig", resumeToken: "abc-123" })).toMatchObject({ ok: true });
   });
 
+  it("a resume process that exits during the wait is a return to the shell", async () => {
+    const startedAt = "Mon Oct 12 23:07:42 2026";
+    const shell = [
+      { pid: 100, ppid: 1, command: "-zsh", pgid: 100, tpgid: 200, executableName: "zsh", startedAt },
+      { pid: 200, ppid: 100, command: "zsh -c launch", pgid: 200, tpgid: 200, executableName: "zsh", startedAt },
+    ];
+    const claude = { pid: 201, ppid: 200, command: "claude --resume abc-123 --name dev-impl@test-rig", pgid: 200, tpgid: 200, executableName: "claude", startedAt };
+    const run = async (screenAfter: string) => {
+      const tmux = mockTmux();
+      let lists = 0;
+      (tmux.getPaneCommand as ReturnType<typeof vi.fn>).mockResolvedValue("zsh");
+      (tmux.capturePaneContent as ReturnType<typeof vi.fn>).mockImplementation(async () => (lists > 6 ? screenAfter : "user@example.test %"));
+      (tmux as unknown as { getPanePid: unknown }).getPanePid = vi.fn(async () => 100);
+      const adapter = new ClaudeCodeAdapter({ tmux, fsOps: mockFs(), sleep: async () => {}, listProcesses: async () => (lists++ < 6 ? [...shell, claude] : shell) });
+      return adapter.launchHarness(makeBinding(), { name: "dev-impl@test-rig", resumeToken: "abc-123" });
+    };
+    expect(await run("user@example.test %")).toEqual({ ok: false, error: "Claude resume failed: pane returned to shell instead of entering Claude", recovery: "retry_fresh" });
+  });
+
   it("launchHarness auto-accepts Claude workspace trust prompt only when explicitly configured", async () => {
     const tmux = mockTmux();
     (tmux.getPaneCommand as ReturnType<typeof vi.fn>).mockResolvedValue("claude");
