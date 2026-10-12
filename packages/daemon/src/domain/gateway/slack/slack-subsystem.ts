@@ -577,6 +577,26 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     void run.finally(() => { if (receiptChains.get(qitemId) === run) receiptChains.delete(qitemId); });
     return run;
   };
+  // A top-level message to a human is their to-do: it shows the done reaction once its row no
+  // longer waits on them, and loses it when the row is reopened to them.
+  const rootDone = new Map<string, boolean>(); // qitemId -> whether its root shows the done reaction
+  const rootChains = new Map<string, Promise<void>>();
+  const syncRootDone = (qitemId: string): Promise<void> => {
+    const run = (rootChains.get(qitemId) ?? Promise.resolve()).catch(() => {}).then(async () => {
+      const row = opts.queueRepo.getById(qitemId);
+      const root = threadMap.resolveByConversation(qitemId);
+      if (!bot || !row || !root) return;
+      const done = !(["pending", "in-progress", "blocked"].includes(row.state) && askedHumanOf(qitemId) !== null);
+      if (rootDone.get(qitemId) === done) return;
+      const input = { channel: root.channel, timestamp: root.threadTs, name: cfg.receipts.done };
+      const r = done ? await addReaction(bot, input, opts.fetchImpl) : await removeReaction(bot, input, opts.fetchImpl);
+      if (!r.ok) { log(`root ${done ? "done mark" : "done unmark"} failed ts=${root.threadTs}: ${r.error}`); return; }
+      rootDone.set(qitemId, done);
+    });
+    rootChains.set(qitemId, run);
+    void run.finally(() => { if (rootChains.get(qitemId) === run) rootChains.delete(qitemId); });
+    return run;
+  };
   const unmarkThread = (conversationId: string): void => {
     threadAnsweredAt.set(conversationId, new Date().toISOString());
     const rows = opts.queueRepo.db
@@ -1006,6 +1026,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       unsubscribe = opts.queueRepo.events.subscribe((event) => {
         if (event.type === "queue.claimed" || (event.type === "queue.updated" && event.fromState !== event.toState)) {
           void syncReceipt(event.qitemId);
+          void syncRootDone(event.qitemId);
         }
         if (event.type === "agent.activity") {
           const rows = opts.queueRepo.db

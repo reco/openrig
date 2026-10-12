@@ -226,6 +226,14 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(decisions).toEqual(["ship the schema migration"]);
     });
 
+    it("the decision's top-level message shows the done reaction once answered, and loses it when reopened to the human", async () => {
+      expect(marks.get("1.1")?.has("white_check_mark") ?? false).toBe(false);
+      await say("answer: ship it", "2030.1");
+      await vi.waitFor(() => expect(marks.get("1.1")?.has("white_check_mark")).toBe(true));
+      repo.update({ qitemId: decisionId, actorSession: "author@rig", state: "pending", reopen: true, transitionNote: "asking again" });
+      await vi.waitFor(() => expect(marks.get("1.1")?.has("white_check_mark")).toBe(false));
+    });
+
     it("tells the seat that a conversation reply resolves nothing and how to answer in the thread", async () => {
       await say("Which one?", "2012.1");
       expect(toSeat()[0]?.body).toContain(`--reply-to ${decisionId}`);
