@@ -234,6 +234,11 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       await vi.waitFor(() => expect(marks.get("1.1")?.has("white_check_mark")).toBe(false));
     });
 
+    it("a decision handed off away from the human shows the done reaction on its top-level message", async () => {
+      await repo.handoff({ qitemId: decisionId, fromSession: human, toSession: "author@rig", transitionNote: "not mine to decide", nudge: false });
+      await vi.waitFor(() => expect(marks.get("1.1")?.has("white_check_mark")).toBe(true));
+    });
+
     it("tells the seat that a conversation reply resolves nothing and how to answer in the thread", async () => {
       await say("Which one?", "2012.1");
       expect(toSeat()[0]?.body).toContain(`--reply-to ${decisionId}`);
