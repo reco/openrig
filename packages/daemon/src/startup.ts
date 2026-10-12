@@ -2148,7 +2148,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     });
     queueRepoInstance.startWaitReminders();
     {
-      const { makeStuckPromptWatch, promptCardBody, retireStalePromptNotices, supersedePromptNotices } = await import("./domain/stuck-prompt-watch.js");
+      const { hasRecentPromptCard, makeStuckPromptWatch, promptCardBody, retireStalePromptNotices, supersedePromptNotices } = await import("./domain/stuck-prompt-watch.js");
       // Enough for a long command's whole dialog, so two prompts differing only near the top differ.
       const STUCK_PROMPT_CAPTURE_LINES = 120;
       deps.stuckPromptWatch = makeStuckPromptWatch({
@@ -2163,9 +2163,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         notify: async (p) => {
           const registry = loadHumanRegistryForDelivery(OPENRIG_HOME);
           const human = registry.ok ? registry.entities.find((e) => e.role !== "requester") : undefined;
-          // The same prompt episode again soon after (a restart) is not a new notice; the hourly reminder is.
-          const recent = db.prepare(`SELECT 1 FROM queue_items WHERE tags LIKE ? AND ts_created > ? AND state != 'canceled' LIMIT 1`)
-            .get(`%"stuck-prompt:${p.episodeId}"%`, new Date(Date.now() - 50 * 60_000).toISOString());
+          const recent = hasRecentPromptCard(queueRepoInstance, p);
           if (!human) return { skipped: "no-human" as const };
           if (recent) return { skipped: "recent" as const };
           const summary = `${p.session} is waiting at a ${p.reason === "permission_prompt" ? "permission" : "selection"} prompt`;
@@ -2178,7 +2176,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           // Answerable from Slack: the seat is the source, so the answer's reply row reaches it.
           const card = await queueRepoInstance.create({
             tags: ["stuck-prompt", `stuck-prompt:${p.episodeId}`, `stuck-prompt-session:${p.session}`, `stuck-prompt-key:${p.key}`,
-              `stuck-prompt-allow:${p.choices.allow.key}`, `stuck-prompt-deny:${p.choices.deny.key}`],
+              `stuck-prompt-allow:${p.choices.allow.key}`, `stuck-prompt-deny:${p.choices.deny.key}`, `stuck-prompt-since:${p.since}`],
             sourceSession: p.session,
             destinationSession: human.address,
             humanIntent: "decision",

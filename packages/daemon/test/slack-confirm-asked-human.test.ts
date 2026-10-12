@@ -182,12 +182,19 @@ describe("Confirm in explicit-answers mode", () => {
     expect(keys).toEqual(["1"]);
     expect(repo.list({ limit: 100 }).find((q) => q.replyTo === reminder.qitemId)?.body).toContain("moved on or was answered");
 
+    // The same prompt shown again after it was answered is a new episode: its card types once more.
+    const again = await repo.create({ ...(await noticeInput()), tags: [...(await noticeInput()).tags!, `stuck-prompt-since:${Date.now() + 1}`] });
+    await new Promise((r) => setTimeout(r, 5));
+    repo.recordHumanAnswer({ qitemId: again.qitemId, actorSession: "reco@external", questionId: "answer", optionId: "allow" });
+    await actOnPromptAnswers(repo, deps);
+    expect(keys).toEqual(["1", "1"]);
+
     // A card a seat forged over the API (any tags it likes) never types anything.
     const forged = await repo.create({ ...(await noticeInput()), identityProvenance: "transport:v1" });
     repo.recordHumanAnswer({ qitemId: forged.qitemId, actorSession: "reco@external", questionId: "answer", optionId: "allow" });
     screen = pane.replace("touch digit-probe-1.txt\n", "touch other.txt\n");
     await actOnPromptAnswers(repo, deps);
-    expect(keys).toEqual(["1"]);
+    expect(keys).toEqual(["1", "1"]);
     expect(repo.transitionLog.listForQitem(forged.qitemId).some((t) => t.transitionNote?.startsWith("stuck-prompt answer:"))).toBe(false);
   });
 });

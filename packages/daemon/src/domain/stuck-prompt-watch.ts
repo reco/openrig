@@ -1,5 +1,6 @@
 // A seat waiting at an interactive prompt (a selection or permission question) for more than
-// five minutes gets a notice to its human per prompt episode: the seat, the prompt's question
+// five minutes, or ten seconds when its plain Yes and No can be answered from the card, gets a
+// notice to its human per prompt episode: the seat, the prompt's question
 // and the command to attach, and a reminder each hour the prompt stays. The episode is the same
 // prompt body (the question, the command it asks about and its options) seen continuously; a
 // different body, or the same one after the seat moved on, is a new episode.
@@ -12,6 +13,8 @@ import { maskSecrets } from "./credential-mask.js";
 import type { QueueRepository } from "./queue-repository.js";
 
 export const STUCK_PROMPT_AFTER_MS = 5 * 60_000;
+export const ANSWERABLE_PROMPT_AFTER_MS = 10_000;
+export const STUCK_PROMPT_SCAN_MS = 15_000;
 const REMIND_AFTER_MS = 60 * 60_000;
 const PROMPT_REASONS = new Set(["selection_prompt", "permission_prompt"]);
 
@@ -23,6 +26,8 @@ export interface StuckPrompt {
   waitingMinutes: number;
   /** Same seat and same prompt: the notifier skips one already sent recently (a restart). */
   episodeId: string;
+  /** When this episode was first seen; an answer typed after it ends the episode's cards. */
+  since: number;
   /** The prompt's fingerprint, compared again before an answer is typed. */
   key: string;
   /** The keys of its plain "Yes" and "No" options, when both are unambiguous. */
@@ -103,6 +108,8 @@ export interface StuckPromptWatchDeps {
   retire?: (running: string[], shown: Map<string, string | null>) => void;
   now?: () => number;
   afterMs?: number;
+  answerableAfterMs?: number;
+  log?: (msg: string) => void;
 }
 
 const OPTION_LINE = /^\s*[❯›]?\s*\d+\.\s/;
@@ -156,16 +163,18 @@ export interface StuckPromptWatch {
 export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWatch {
   const now = deps.now ?? Date.now;
   const afterMs = deps.afterMs ?? STUCK_PROMPT_AFTER_MS;
+  const answerableAfterMs = deps.answerableAfterMs ?? ANSWERABLE_PROMPT_AFTER_MS;
+  const log = deps.log ?? ((m: string) => console.log(`[stuck-prompt] ${m}`));
   const open = new Map<string, { key: string; since: number; notifiedAt?: number }>();
   let timer: ReturnType<typeof setInterval> | undefined;
   let ticking = false;
   const episodeIdOf = (session: string, key: string) => createHash("sha256").update(`${session}|${key}`).digest("hex").slice(0, 20);
   const watch: StuckPromptWatch = {
-    start(intervalMs = 60_000) {
+    start(intervalMs = STUCK_PROMPT_SCAN_MS) {
       timer ??= setInterval(() => {
         if (ticking) return;
         ticking = true;
-        void watch.tick().catch(() => {}).finally(() => { ticking = false; });
+        void watch.tick().catch((e: Error) => log(`tick failed: ${e.message}`)).finally(() => { ticking = false; });
       }, intervalMs);
       timer.unref?.();
     },
@@ -183,10 +192,16 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
         const { key, promptLine } = prompt;
         const episode = open.get(session);
         if (!episode || episode.key !== key) { open.set(session, { key, since: now() }); continue; }
-        if (episode.notifiedAt === undefined ? now() - episode.since < afterMs : now() - episode.notifiedAt < REMIND_AFTER_MS) continue;
+        const wait = prompt.choices ? answerableAfterMs : afterMs;
+        if (episode.notifiedAt === undefined ? now() - episode.since < wait : now() - episode.notifiedAt < REMIND_AFTER_MS) continue;
         episode.notifiedAt = now();
-        await deps.notify({ session, reason: prompt.reason, promptLine, attach: `tmux attach -t ${session}`, episodeId: episodeIdOf(session, key), key, dialog: prompt.dialog,
-          ...(prompt.choices ? { choices: prompt.choices } : {}), waitingMinutes: Math.floor((now() - episode.since) / 60_000) });
+        try {
+          await deps.notify({ session, reason: prompt.reason, promptLine, attach: `tmux attach -t ${session}`, episodeId: episodeIdOf(session, key), since: episode.since, key, dialog: prompt.dialog,
+            ...(prompt.choices ? { choices: prompt.choices } : {}), waitingMinutes: Math.floor((now() - episode.since) / 60_000) });
+        } catch (e) {
+          episode.notifiedAt = undefined;
+          log(`notice for ${session} failed, retrying next scan: ${(e as Error).message}`);
+        }
       }
       deps.retire?.(sessions, shown);
     },
@@ -201,7 +216,7 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
       const since = episode?.key === prompt.key ? episode.since : now();
       open.set(session, { key: prompt.key, since, notifiedAt: now() });
       const result = await deps.notify({ session, reason: prompt.reason, promptLine: prompt.promptLine, attach: `tmux attach -t ${session}`,
-        episodeId: episodeIdOf(session, prompt.key), key: prompt.key, dialog: prompt.dialog, choices: prompt.choices,
+        episodeId: episodeIdOf(session, prompt.key), since, key: prompt.key, dialog: prompt.dialog, choices: prompt.choices,
         waitingMinutes: Math.floor((now() - since) / 60_000), requestedBy: request.by, requestReason: maskSecrets(request.reason).slice(0, 300) });
       if (result && "qitemId" in result) return { outcome: "posted", qitemId: result.qitemId };
       return { outcome: result?.skipped === "no-human" ? "no-human" : "already-posted" };
@@ -256,6 +271,15 @@ export function retireStalePromptNotices(repo: QueueRepository, running: string[
   return stale.map((n) => n.qitemId);
 }
 
+/** A card for this seat's same prompt is with the human already (a restart), so no new one is posted:
+ *  one still open from the last 50 minutes, or a notice without buttons; the hourly reminder is new,
+ *  and so is the same prompt shown again after its card was answered. */
+export function hasRecentPromptCard(repo: QueueRepository, p: { session: string; key: string }, now = Date.now()): boolean {
+  return !!repo.db.prepare(`SELECT 1 FROM queue_items WHERE tags LIKE ? AND tags LIKE ? AND ts_created > ?
+      AND (state IN ('pending', 'in-progress', 'blocked') OR (human_intent = 'update' AND state != 'canceled')) LIMIT 1`)
+    .get(`%"stuck-prompt-session:${p.session}"%`, `%"stuck-prompt-key:${p.key}"%`, new Date(now - 50 * 60_000).toISOString());
+}
+
 /** Cancel the seat's open cards before a newer one is posted, so only the latest card has buttons. */
 export function supersedePromptNotices(repo: QueueRepository, session: string): string[] {
   const earlier = openPromptNotices(repo).filter((n) => n.session === session);
@@ -270,9 +294,14 @@ export function supersedePromptNotices(repo: QueueRepository, session: string): 
 export async function actOnPromptAnswers(repo: QueueRepository, deps: AnswerDeps, now = Date.now()): Promise<void> {
   const rows = repo.db.prepare(`SELECT qitem_id FROM queue_items WHERE ts_created > ? AND tags LIKE '%"stuck-prompt-key:%'`)
     .all(new Date(now - 2 * 3600_000).toISOString()) as Array<{ qitem_id: string }>;
-  const answeredKeys = new Set((repo.db.prepare(`SELECT q.tags AS tags FROM queue_items q JOIN queue_transitions t ON t.qitem_id = q.qitem_id
-      WHERE q.ts_created > ? AND t.transition_note LIKE 'stuck-prompt answer: % sent%'`).all(new Date(now - 2 * 3600_000).toISOString()) as Array<{ tags: string }>)
-    .map((r) => tagValue(JSON.parse(r.tags) as string[], "stuck-prompt-key")));
+  // The last time each prompt was answered: a card for that prompt's episode started before then types nothing.
+  const answeredAt = new Map<string, number>();
+  for (const r of repo.db.prepare(`SELECT q.tags AS tags, t.ts AS ts FROM queue_items q JOIN queue_transitions t ON t.qitem_id = q.qitem_id
+      WHERE q.ts_created > ? AND t.transition_note LIKE 'stuck-prompt answer: % sent%'`).all(new Date(now - 2 * 3600_000).toISOString()) as Array<{ tags: string; ts: string }>) {
+    const tags = JSON.parse(r.tags) as string[];
+    const key = `${tagValue(tags, "stuck-prompt-session")}|${tagValue(tags, "stuck-prompt-key")}`;
+    answeredAt.set(key, Math.max(answeredAt.get(key) ?? 0, Date.parse(r.ts)));
+  }
   for (const { qitem_id } of rows) {
     const row = repo.getById(qitem_id);
     const choice = row?.humanAnswers?.answer;
@@ -285,9 +314,10 @@ export async function actOnPromptAnswers(repo: QueueRepository, deps: AnswerDeps
     if (!created || created.identityProvenance !== null || !session || session !== row.sourceSession || !expected) continue;
     // Recorded before typing: a crash between the two never types the answer twice.
     repo.update({ qitemId: qitem_id, actorSession: "daemon@kernel", transitionNote: `stuck-prompt answer: ${choice} pending` });
-    const result = answeredKeys.has(expected) ? { outcome: "moved-on" as const }
+    const since = Number(tagValue(row.tags, "stuck-prompt-since") ?? 0);
+    const result = (answeredAt.get(`${session}|${expected}`) ?? -1) >= since ? { outcome: "moved-on" as const }
       : await answerPrompt(deps, session, expected, choice).catch((e: Error) => ({ outcome: `failed: ${e.message}` as const, key: undefined }));
-    if (result.outcome === "sent") answeredKeys.add(expected);
+    if (result.outcome === "sent") answeredAt.set(`${session}|${expected}`, now);
     repo.update({ qitemId: qitem_id, actorSession: "daemon@kernel", transitionNote: `stuck-prompt answer: ${choice}${result.key ? ` key=${result.key}` : ""} ${result.outcome}` });
     await repo.create({
       sourceSession: row.sourceSession, destinationSession: row.destinationSession, humanIntent: "update", replyTo: qitem_id, nudge: false,

@@ -148,6 +148,50 @@ describe("stuck-prompt watch", () => {
     expect(sent).toHaveLength(0);
   });
 
+  const webSearch = claude.replace(/ Bash command[\s\S]*?(?= Do you want to proceed\?)/, " Tool use\n\n   WebSearch(query: \"r2 pricing class a operations\")\n   Claude wants to search the web for: r2 pricing class a operations\n\n")
+    .replace(/ ❯ 1\. Yes[\s\S]*?4\. No/, " ❯ 1. Yes\n   2. Yes, and don't ask again for WebSearch\n   3. No, and tell Claude what to do differently (esc)");
+
+  it("each answerable prompt gets its own card on the second scan: a Bash dialog, then a WebSearch dialog right after", async () => {
+    let t = 0;
+    let pane = claude;
+    const sent: StuckPrompt[] = [];
+    const watch = makeStuckPromptWatch({ runningSessions: () => ["advisor-lead@kernel"], capture: async () => pane, notify: async (p) => { sent.push(p); }, now: () => t });
+    await watch.tick();
+    t = 15_000; await watch.tick();
+    expect(sent.map((p) => p.choices?.allow.key)).toEqual(["1"]);
+    pane = webSearch; t = 30_000; await watch.tick();
+    t = 45_000; await watch.tick();
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toMatchObject({ choices: { allow: { key: "1" }, deny: { key: "3" } }, since: 30_000 });
+    expect(sent[1]!.dialog).toContain("WebSearch");
+    expect(sent[1]!.key).not.toBe(sent[0]!.key);
+  });
+
+  it("the same prompt shown again after the seat moved on is a new episode with its own start", async () => {
+    let t = 0;
+    let pane = claude;
+    const sent: StuckPrompt[] = [];
+    const watch = makeStuckPromptWatch({ runningSessions: () => ["advisor-lead@kernel"], capture: async () => pane, notify: async (p) => { sent.push(p); }, now: () => t });
+    await watch.tick(); t = 15_000; await watch.tick();
+    pane = "✻ Working… (esc to interrupt)"; t = 30_000; await watch.tick();
+    pane = claude; t = 45_000; await watch.tick(); t = 60_000; await watch.tick();
+    expect(sent.map((p) => p.since)).toEqual([0, 45_000]);
+  });
+
+  it("a notice that fails is logged and posted on the next scan, and the other seats are still scanned", async () => {
+    let t = 0;
+    let fail = true;
+    const sent: string[] = [];
+    const logs: string[] = [];
+    const watch = makeStuckPromptWatch({ runningSessions: () => ["a@rig", "b@rig"], capture: async () => claude, now: () => t, log: (m) => logs.push(m),
+      notify: async (p) => { if (fail && p.session === "a@rig") throw new Error("slack down"); sent.push(p.session); } });
+    await watch.tick(); t = 15_000; await watch.tick();
+    expect(sent).toEqual(["b@rig"]);
+    expect(logs).toEqual(["notice for a@rig failed, retrying next scan: slack down"]);
+    fail = false; t = 30_000; await watch.tick();
+    expect(sent).toEqual(["b@rig", "a@rig"]);
+  });
+
   it("a requested card says so when one for the same prompt is already with the human", async () => {
     const watch = makeStuckPromptWatch({ runningSessions: () => ["cfo@finance"], capture: async () => claude, notify: async () => ({ skipped: "recent" as const }) });
     expect(await watch.requestCard("cfo@finance", { by: "advisor-lead@kernel", reason: "r" })).toEqual({ outcome: "already-posted" });

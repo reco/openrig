@@ -12,7 +12,7 @@ import { QueueRepository } from "../src/domain/queue-repository.js";
 import { buildSlackGatewayWire } from "../src/domain/gateway/slack/slack-subsystem.js";
 import { DEFAULT_CONFIG, saveConfig } from "../src/domain/gateway/slack/config.js";
 import { resolveSlackHandle } from "../src/domain/gateway/human-registry.js";
-import { retireStalePromptNotices, supersedePromptNotices } from "../src/domain/stuck-prompt-watch.js";
+import { hasRecentPromptCard, retireStalePromptNotices, supersedePromptNotices } from "../src/domain/stuck-prompt-watch.js";
 
 const founder = { entityId: "reco", class: "human" as const, displayName: "reco", address: "reco@external", connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:SLACK_BOT_TOKEN", role: "primary" as const, handle: "UFOUNDER" }], prefs: { deliveryClass: "A" as const } };
 const registry = { ok: true as const, entities: [founder] };
@@ -83,6 +83,23 @@ describe("stale stuck-prompt cards are retired", () => {
     expect(supersedePromptNotices(repo, "cfo@finance")).toEqual([first.id]);
     await closedWith(first.ts, "Closed: replaced by a newer card for this seat.");
     expect(repo.getById(other.id)?.state).toBe("pending");
+  });
+
+  it("a card still open for the seat's same prompt blocks a duplicate (a restart); an answered or replaced one does not", async () => {
+    const open = await postedCard("cfo@finance", "k1");
+    expect(hasRecentPromptCard(repo, { session: "cfo@finance", key: "k1" })).toBe(true);
+    expect(hasRecentPromptCard(repo, { session: "dev@rig", key: "k1" })).toBe(false);
+    expect(hasRecentPromptCard(repo, { session: "cfo@finance", key: "k1" }, Date.now() + 51 * 60_000)).toBe(false);
+    repo.update({ qitemId: open.id, actorSession: "reco@external", state: "done", closureReason: "no-follow-on" });
+    expect(hasRecentPromptCard(repo, { session: "cfo@finance", key: "k1" })).toBe(false);
+    const replaced = await postedCard("cfo@finance", "k1");
+    supersedePromptNotices(repo, "cfo@finance");
+    expect(repo.getById(replaced.id)?.state).toBe("canceled");
+    expect(hasRecentPromptCard(repo, { session: "cfo@finance", key: "k1" })).toBe(false);
+    await repo.create({ tags: ["stuck-prompt", "stuck-prompt-session:ops@rig", "stuck-prompt-key:k2"], sourceSession: "daemon@kernel", destinationSession: "reco@external",
+      humanIntent: "update", summary: "ops@rig is waiting at a selection prompt", body: "Which color?", nudge: false });
+    expect(hasRecentPromptCard(repo, { session: "ops@rig", key: "k2" })).toBe(true);
+    await vi.waitFor(() => expect(posts.some((p) => String(p.text).includes("Which color?"))).toBe(true));
   });
 
   it("leaves rows that are not stuck-prompt cards, and closed cards, alone", async () => {
