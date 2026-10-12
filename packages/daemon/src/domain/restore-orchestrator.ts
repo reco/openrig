@@ -1,6 +1,6 @@
 import { nonInterruptiveNotice, nonInterruptiveSummary } from "../adapters/non-interruptive.js";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { builtInKernelVariant, currentKernelActivityHookSelection } from "./kernel-activity-hooks.js";
+import { builtInKernelVariant, currentActivityHookSelection, currentKernelActivityHookSelection, recordedRigSpecPath } from "./kernel-activity-hooks.js";
 import { CLAUDE_ACTIVITY_HOOKS_RESOURCE_TYPE } from "./claude-activity-hooks.js";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
@@ -1318,23 +1318,26 @@ export class RestoreOrchestrator {
     return { nodeId: node.id, logicalId: node.logicalId, status: baseStatus };
   }
 
-  /** The saved activity-hook selection, reconciled for a built-in kernel seat with its current
-   *  definition: a seat whose saved context predates the resource gets it when its current agent spec
-   *  selects it. Every other saved resource is untouched; nothing is removed. */
+  /** The saved activity-hook selection, reconciled with the seat's current definition (the built-in
+   *  kernel's shipped spec, else the rig spec its rig up recorded): a seat whose saved context predates
+   *  the resource gets it when its current agent spec selects it. Every other saved resource is
+   *  untouched; nothing is removed. */
   private activityHookEntries(rigId: string, node: SnapshotData["nodes"][number], saved: import("./types.js").PersistedProjectionEntry[], warnings?: string[]): import("./types.js").PersistedProjectionEntry[] {
     const entries = saved.filter(e => e.category === "runtime_resource" && e.resourceType === CLAUDE_ACTIVITY_HOOKS_RESOURCE_TYPE);
     if (entries.length > 0) return entries;
     const variant = this.specsDir ? builtInKernelVariant(this.db, rigId, this.specsDir) : null;
-    if (!variant) {
+    const specPath = variant ? null : recordedRigSpecPath(this.db, rigId);
+    if (!variant && !specPath) {
       if (node.agentRef?.startsWith("local:")) warnings?.push(`Restore activity hooks: ${node.logicalId}'s current spec could not be resolved (no rig root); its saved selection, without activity hooks, was kept.`);
       return entries;
     }
-    const selection = currentKernelActivityHookSelection({ specsDir: this.specsDir!, variant, logicalId: node.logicalId, agentRef: node.agentRef ?? null,
-      profile: node.profile ?? null, runtime: node.runtime ?? null, fsOps: { readFile: (p) => readFileSync(p, "utf-8"), exists: (p) => existsSync(p) } });
+    const seat = { logicalId: node.logicalId, agentRef: node.agentRef ?? null, profile: node.profile ?? null, runtime: node.runtime ?? null,
+      fsOps: { readFile: (p: string) => readFileSync(p, "utf-8"), exists: (p: string) => existsSync(p) } };
+    const selection = variant ? currentKernelActivityHookSelection({ ...seat, specsDir: this.specsDir!, variant }) : currentActivityHookSelection({ ...seat, specPath: specPath! });
     if (selection === "selected") {
       return [{ category: "runtime_resource", effectiveId: "claude-activity-hooks", resourceType: CLAUDE_ACTIVITY_HOOKS_RESOURCE_TYPE, absolutePath: "", sourceSpec: "kernel", sourcePath: "", resourcePath: "" }];
     }
-    if (selection !== "not-selected") warnings?.push(`Restore activity hooks: ${node.logicalId}'s current kernel definition could not be read (${selection.unresolved}); its saved selection was kept.`);
+    if (selection !== "not-selected") warnings?.push(`Restore activity hooks: ${node.logicalId}'s current definition could not be read (${selection.unresolved}); its saved selection was kept.`);
     return entries;
   }
 

@@ -62,7 +62,7 @@ describe("the current kernel definition's activity-hook selection", () => {
 
   it("a seat that differs from the installed definition, or a missing variant, is unresolved", () => {
     expect(currentKernelActivityHookSelection({ specsDir: shippedSpecs, variant: "rig.yaml", ...advisor, agentRef: "local:agents/elsewhere" }))
-      .toEqual({ unresolved: "the seat differs from the installed kernel definition" });
+      .toEqual({ unresolved: "the seat differs from its current rig spec definition" });
     expect(currentKernelActivityHookSelection({ specsDir: shippedSpecs, variant: "rig-codex-only.yaml", ...advisor })).toHaveProperty("unresolved");
     expect(currentKernelActivityHookSelection({ specsDir: "/nonexistent", variant: "rig.yaml", ...advisor })).toHaveProperty("unresolved");
   });
@@ -90,6 +90,25 @@ describe("restore reconciles only the kernel seat's activity-hook entry", () => 
     expect(k.entries(node, savedWithoutHooks).entries).toEqual([expect.objectContaining({ resourceType: "claude_activity_hooks", category: "runtime_resource" })]);
     const saved = { category: "runtime_resource", resourceType: "claude_activity_hooks", effectiveId: "claude-activity-hooks" };
     expect(k.entries(node, [...savedWithoutHooks, saved]).entries).toEqual([saved]);
+  });
+
+  it("a non-kernel rig resolves its seat against the rig spec its rig up recorded: selected adds the marker, a missing spec keeps the saved selection with a warning", () => {
+    const specs = mkdtempSync(join(tmpdir(), "user-rig-specs-")); dirs.push(specs);
+    cpSync(shippedSpecs, specs, { recursive: true });
+    const db = createFullTestDb();
+    const app = createTestApp(db);
+    const rig = app.rigRepo.createRig("psa");
+    const specPath = join(specs, "rigs/launch/kernel/rig.yaml");
+    db.prepare("INSERT INTO bootstrap_runs (id, source_kind, source_ref, status, rig_id, created_at, applied_at) VALUES ('b1', 'rig_spec', ?, 'completed', ?, datetime('now'), ?)")
+      .run(specPath, rig.id, new Date().toISOString());
+    const orch = app.restoreOrchestrator as unknown as { specsDir?: string; activityHookEntries: (rigId: string, node: unknown, saved: Entries, warnings: string[]) => Entries };
+    orch.specsDir = shippedSpecs;
+    const warnings: string[] = [];
+    expect(orch.activityHookEntries(rig.id, node, savedWithoutHooks, warnings)).toEqual([expect.objectContaining({ resourceType: "claude_activity_hooks" })]);
+    expect(warnings).toEqual([]);
+    rmSync(specPath);
+    expect(orch.activityHookEntries(rig.id, node, savedWithoutHooks, warnings)).toEqual([]);
+    expect(warnings).toEqual([expect.stringContaining("is missing")]);
   });
 
   it("a rig named kernel without the built-in boot, and any local-ref seat of another rig, keep the saved selection with a warning", () => {

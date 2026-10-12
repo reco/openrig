@@ -39,22 +39,37 @@ export function builtInKernelVariant(db: Database.Database, rigId: string, specs
   return run ? shippedKernelVariant(run.source_ref, specsDir) : null;
 }
 
+/** The rig spec file this rig was brought up from, as its completed bootstrap run recorded it (by rig id). */
+export function recordedRigSpecPath(db: Database.Database, rigId: string): string | null {
+  const run = db.prepare("SELECT source_ref FROM bootstrap_runs WHERE rig_id = ? AND status = 'completed' AND source_kind = 'rig_spec' ORDER BY created_at DESC, id DESC LIMIT 1")
+    .get(rigId) as { source_ref: string } | undefined;
+  return run?.source_ref ?? null;
+}
+
 export type ActivityHookSelection = "selected" | "not-selected" | { unresolved: string };
 
+type SeatInput = { logicalId: string; agentRef: string | null; profile: string | null; runtime: string | null; fsOps: AgentResolverFsOps };
+
 /** Whether the seat's current definition in the running install's kernel spec selects Claude activity hooks. */
-export function currentKernelActivityHookSelection(input: {
-  specsDir: string; variant: string; logicalId: string; agentRef: string | null; profile: string | null; runtime: string | null; fsOps: AgentResolverFsOps;
-}): ActivityHookSelection {
+export function currentKernelActivityHookSelection(input: SeatInput & { specsDir: string; variant: string }): ActivityHookSelection {
+  const specPath = nodePath.join(input.specsDir, "rigs", "launch", "kernel", input.variant);
+  if (input.runtime === "claude-code" && !input.fsOps.exists(specPath)) return { unresolved: `the installed kernel spec ${input.variant} is missing` };
+  return currentActivityHookSelection({ ...input, specPath });
+}
+
+/** Whether the seat's current definition in this rig spec file (its local agent_refs resolve beside it)
+ *  selects Claude activity hooks. */
+export function currentActivityHookSelection(input: SeatInput & { specPath: string }): ActivityHookSelection {
   if (input.runtime !== "claude-code") return "not-selected";
-  const root = nodePath.join(input.specsDir, "rigs", "launch", "kernel");
-  const specPath = nodePath.join(root, input.variant);
-  if (!input.fsOps.exists(specPath)) return { unresolved: `the installed kernel spec ${input.variant} is missing` };
+  const specPath = input.specPath;
+  const root = nodePath.dirname(specPath);
+  if (!input.fsOps.exists(specPath)) return { unresolved: `the rig spec ${specPath} it was brought up from is missing` };
   try {
     const spec = RigSpecSchema.normalize(RigSpecCodec.parse(input.fsOps.readFile(specPath)) as Record<string, unknown>);
     const pod = spec.pods.find((p) => p.id === input.logicalId.split(".")[0]);
     const member = pod?.members.find((m) => `${pod.id}.${m.id}` === input.logicalId);
     if (!pod || !member || member.agentRef !== input.agentRef || member.runtime !== input.runtime) {
-      return { unresolved: "the seat differs from the installed kernel definition" };
+      return { unresolved: "the seat differs from its current rig spec definition" };
     }
     const resolved = resolveAgentRef(member.agentRef, root, input.fsOps);
     if (!resolved.ok) return { unresolved: `agent_ref ${member.agentRef} did not resolve` };

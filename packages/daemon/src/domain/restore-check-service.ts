@@ -196,9 +196,9 @@ export interface RestoreCheckDeps {
   getNodeInventory: (rigId: string) => NodeInventoryEntry[];
   /** Get persisted startup context for a node */
   getStartupContext: (nodeId: string) => StartupContextProbeResult;
-  /** Whether the seat's CURRENT definition selects Claude activity hooks when its saved context does not:
-   *  a built-in kernel seat's answer, "unknown" for a local agent_ref whose rig root is not known, null when
-   *  the saved selection is the only source. */
+  /** Whether the seat's CURRENT definition selects Claude activity hooks when its saved context does not
+   *  (the built-in kernel's shipped spec, else the rig spec its rig up recorded); "unknown" for a local
+   *  agent_ref whose rig root is not known, null when the saved selection is the only source. */
   currentActivityHookSelection?: (node: NodeInventoryEntry) => import("./kernel-activity-hooks.js").ActivityHookSelection | "unknown" | null;
   /** Check if a snapshot exists for a rig */
   hasSnapshot: (rigId: string) => boolean;
@@ -1044,7 +1044,7 @@ export class RestoreCheckService {
         check: `seat.${session}.hooks`, status: "yellow",
         evidence: current === "unknown"
           ? "The saved startup context selects no Claude activity hooks and the seat's current spec cannot be resolved (no rig root); whether it should have them is unknown"
-          : `The saved startup context selects no Claude activity hooks and the seat's current kernel definition could not be read: ${current.unresolved}`,
+          : `The saved startup context selects no Claude activity hooks and the seat's current definition could not be read: ${current.unresolved}`,
         remediation: "Confirm the seat's agent spec selection before trusting activity-hook readiness",
         remediationSafe: false,
       };
