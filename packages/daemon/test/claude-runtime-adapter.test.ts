@@ -580,6 +580,27 @@ describe("Claude Code runtime adapter", () => {
     });
   });
 
+  it("a shell foreground with the exact --resume process still starting beneath it retains the launch instead of calling it a return to the shell", async () => {
+    const tmux = mockTmux();
+    (tmux.getPaneCommand as ReturnType<typeof vi.fn>).mockResolvedValue("zsh");
+    (tmux.capturePaneContent as ReturnType<typeof vi.fn>).mockResolvedValue("user@example.test %");
+    (tmux as unknown as { getPanePid: unknown }).getPanePid = vi.fn(async () => 100);
+    // The login shell's job: a wrapper shell leads the foreground group (tmux reports "zsh") and runs Claude in it.
+    const startedAt = "Mon Oct 12 23:07:42 2026";
+    const rows = (command: string) => async () => [
+      { pid: 100, ppid: 1, command: "-zsh", pgid: 100, tpgid: 200, executableName: "zsh", startedAt },
+      { pid: 200, ppid: 100, command: "zsh -c launch", pgid: 200, tpgid: 200, executableName: "zsh", startedAt },
+      { pid: 201, ppid: 200, command, pgid: 200, tpgid: 200, executableName: "claude", startedAt },
+    ];
+    const starting = new ClaudeCodeAdapter({ tmux, fsOps: mockFs(), sleep: async () => {}, listProcesses: rows("claude --permission-mode acceptEdits --resume abc-123 --name dev-impl@test-rig") });
+    const result = await starting.launchHarness(makeBinding(), { name: "dev-impl@test-rig", resumeToken: "abc-123" });
+    expect(result).toMatchObject({ ok: false, recovery: "attention_required", error: expect.stringContaining("still starting") });
+
+    const other = new ClaudeCodeAdapter({ tmux, fsOps: mockFs(), sleep: async () => {}, listProcesses: rows("claude --resume some-other-session") });
+    expect(await other.launchHarness(makeBinding(), { name: "dev-impl@test-rig", resumeToken: "abc-123" }))
+      .toEqual({ ok: false, error: "Claude resume failed: pane returned to shell instead of entering Claude", recovery: "retry_fresh" });
+  });
+
   it("launchHarness auto-accepts Claude workspace trust prompt only when explicitly configured", async () => {
     const tmux = mockTmux();
     (tmux.getPaneCommand as ReturnType<typeof vi.fn>).mockResolvedValue("claude");

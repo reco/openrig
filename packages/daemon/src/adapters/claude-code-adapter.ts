@@ -13,7 +13,7 @@ import type {
 import { resolveConcreteHint } from "../domain/runtime-adapter.js";
 import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-planner.js";
 import { assessNativeResumeProbe } from "../domain/native-resume-probe.js";
-import { observeClaudePaneProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
+import { observeClaudePaneProcess, verifyClaudePaneProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
 import { mergeManagedBlock, DEFAULT_CLAUDE_MANAGED_BLOCK_FILE, type ClaudeManagedBlockFile } from "../domain/managed-blocks.js";
 import { shellQuote } from "./shell-quote.js";
 import { validateClaudeActivityHookDelivery } from "../domain/claude-activity-hooks.js";
@@ -417,6 +417,15 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     } catch { return probe; }
   }
 
+  private async resumeProcessRunning(binding: NodeBinding): Promise<boolean> {
+    const launch = this.autoLaunches.get(binding.nodeId);
+    const target = binding.tmuxPane ?? binding.tmuxSession;
+    if (!launch || !target) return false;
+    const live = await verifyClaudePaneProcess({ target, tmux: this.tmux, listProcesses: this.listProcesses, expectedToken: launch.token, selectedExecutable: launch.executable })
+      .catch(() => null);
+    return live !== null;
+  }
+
   private async verifyResumeLaunch(binding: NodeBinding): Promise<HarnessLaunchResult> {
     const tmuxSession = binding.tmuxSession!;
     const attempts = 16;
@@ -482,6 +491,16 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     }
 
     if (finalCommand && SHELL_COMMANDS.has(finalCommand)) {
+      // The shell is the pane's foreground while the exact --resume process may still be starting
+      // beneath it (a slow login shell, many plugins): that is not a return to the shell.
+      if (await this.resumeProcessRunning(binding)) {
+        return {
+          ok: false,
+          error: "Claude resume still starting: the exact --resume process is running in the pane; launch retained",
+          recovery: "attention_required",
+          evidence: finalContent.split("\n").slice(-12).join("\n"),
+        };
+      }
       return {
         ok: false,
         error: "Claude resume failed: pane returned to shell instead of entering Claude",
