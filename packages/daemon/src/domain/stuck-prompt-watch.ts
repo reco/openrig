@@ -216,12 +216,11 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
       if (!prompt.choices) return { outcome: "not-answerable" };
       const episode = open.get(session);
       const since = episode?.key === prompt.key ? episode.since : now();
-      const previous = open.get(session);
       open.set(session, { key: prompt.key, since, notifiedAt: now() });
       const result = await deps.notify({ session, reason: prompt.reason, promptLine: prompt.promptLine, attach: `tmux attach -t ${session}`,
         episodeId: episodeIdOf(session, prompt.key), since, key: prompt.key, dialog: prompt.dialog, choices: prompt.choices,
         waitingMinutes: Math.floor((now() - since) / 60_000), requestedBy: request.by, requestReason: maskSecrets(request.reason).slice(0, 300) })
-        .catch((e: Error) => { if (previous) open.set(session, previous); else open.delete(session); throw e; });
+        .catch((e: Error) => { if (episode) open.set(session, episode); else open.delete(session); throw e; });
       if (result && "qitemId" in result) return { outcome: "posted", qitemId: result.qitemId };
       return { outcome: result?.skipped === "no-human" ? "no-human" : "already-posted" };
     },
