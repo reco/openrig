@@ -1,5 +1,7 @@
 import { nonInterruptiveNotice, nonInterruptiveSummary } from "../adapters/non-interruptive.js";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { builtInKernelVariant, currentKernelActivityHookSelection } from "./kernel-activity-hooks.js";
+import { CLAUDE_ACTIVITY_HOOKS_RESOURCE_TYPE } from "./claude-activity-hooks.js";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { NativePermissionStore } from "./native-permission-store.js";
@@ -146,6 +148,8 @@ interface RestoreOrchestratorDeps {
   transcriptStore?: TranscriptStore;
   serviceOrchestrator?: import("./service-orchestrator.js").ServiceOrchestrator;
   listProcesses?: () => Promise<Array<{ pid: number; ppid: number; command: string }>>;
+  /** The running install's shipped specs dir: the built-in kernel's current definition lives there. */
+  specsDir?: string;
 }
 
 export class RestoreOrchestrator {
@@ -165,6 +169,7 @@ export class RestoreOrchestrator {
   private transcriptStore: TranscriptStore | null;
   private serviceOrchestrator: import("./service-orchestrator.js").ServiceOrchestrator | null;
   private listProcesses: (() => Promise<Array<{ pid: number; ppid: number; command: string }>>) | undefined;
+  private specsDir: string | undefined;
   private appliedLaunchStore: AppliedLaunchObservationStore;
 
   constructor(deps: RestoreOrchestratorDeps) {
@@ -205,6 +210,7 @@ export class RestoreOrchestrator {
     this.transcriptStore = deps.transcriptStore ?? null;
     this.serviceOrchestrator = deps.serviceOrchestrator ?? null;
     this.listProcesses = deps.listProcesses;
+    this.specsDir = deps.specsDir;
     this.appliedLaunchStore = new AppliedLaunchObservationStore(deps.db);
   }
 
@@ -997,8 +1003,7 @@ export class RestoreOrchestrator {
     // No current profile resolution, guidance, skills or startup replay belongs here.
     const activityAdapter = opts?.adapters?.["claude-code"];
     if (resumeRequested && resumeToken && launchResult && startupCtx?.runtime === "claude-code" && activityAdapter) {
-      const entries = startupCtx.projectionEntries.filter(e =>
-        e.category === "runtime_resource" && e.resourceType === "claude_activity_hooks");
+      const entries = this.activityHookEntries(rigId, node, startupCtx.projectionEntries, warnings);
       if (entries.length > 0) try {
         const result = await activityAdapter.project({
           runtime: "claude-code", cwd: node.cwd ?? ".",
@@ -1311,6 +1316,26 @@ export class RestoreOrchestrator {
       return this.finishJoinedResume(node, sessionName, resumeToken, launchResult?.session.id);
     }
     return { nodeId: node.id, logicalId: node.logicalId, status: baseStatus };
+  }
+
+  /** The saved activity-hook selection, reconciled for a built-in kernel seat with its current
+   *  definition: a seat whose saved context predates the resource gets it when its current agent spec
+   *  selects it. Every other saved resource is untouched; nothing is removed. */
+  private activityHookEntries(rigId: string, node: SnapshotData["nodes"][number], saved: import("./types.js").PersistedProjectionEntry[], warnings?: string[]): import("./types.js").PersistedProjectionEntry[] {
+    const entries = saved.filter(e => e.category === "runtime_resource" && e.resourceType === CLAUDE_ACTIVITY_HOOKS_RESOURCE_TYPE);
+    if (entries.length > 0) return entries;
+    const variant = this.specsDir ? builtInKernelVariant(this.db, rigId) : null;
+    if (!variant) {
+      if (node.agentRef?.startsWith("local:")) warnings?.push(`Restore activity hooks: ${node.logicalId}'s current spec could not be resolved (no rig root); its saved selection, without activity hooks, was kept.`);
+      return entries;
+    }
+    const selection = currentKernelActivityHookSelection({ specsDir: this.specsDir!, variant, logicalId: node.logicalId, agentRef: node.agentRef ?? null,
+      profile: node.profile ?? null, runtime: node.runtime ?? null, fsOps: { readFile: (p) => readFileSync(p, "utf-8"), exists: (p) => existsSync(p) } });
+    if (selection === "selected") {
+      return [{ category: "runtime_resource", effectiveId: "claude-activity-hooks", resourceType: CLAUDE_ACTIVITY_HOOKS_RESOURCE_TYPE, absolutePath: "", sourceSpec: "kernel", sourcePath: "", resourcePath: "" }];
+    }
+    if (selection !== "not-selected") warnings?.push(`Restore activity hooks: ${node.logicalId}'s current kernel definition could not be read (${selection.unresolved}); its saved selection was kept.`);
+    return entries;
   }
 
   /** A native resume is only a full success after the restored terminal is

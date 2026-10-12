@@ -648,6 +648,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     db, rigRepo, sessionRegistry, eventBus, snapshotRepo, snapshotCapture,
     checkpointStore, nodeLauncher, tmuxAdapter, claudeResume, codexResume, piResume, ompResume,
     transcriptStore, serviceOrchestrator,
+    specsDir: nodePath.resolve(nodePath.dirname(fileURLToPath(new URL(import.meta.url))), "..", "specs"),
   });
 
   // Connect to cmux at startup — degrades gracefully if absent
