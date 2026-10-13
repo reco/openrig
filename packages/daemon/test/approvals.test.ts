@@ -63,7 +63,9 @@ describe("Slack approvals", () => {
     const command = Array.from({ length: 200 }, (_, i) => `echo step ${i} of the generated migration`).join("\n");
     const id = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command } }))!;
     const row = repo.getById(id)!;
-    expect(row.humanQuestions?.[0]!.options.map((o) => o.id)).toEqual(["allow", "deny"]);
+    expect(row.humanQuestions?.[0]!.options.map((o) => o.id)).toEqual(["allow", "deny", "always_allow", "always_deny"]);
+    expect(row.body).toMatch(/matching only this exact input\.$/);
+    expect(row.tags).toContain(`always-rule:Bash(${command})`);
     expect(row.body).toContain("echo step 0 of");
     expect(row.body).toContain("echo step 199 of");
     expect(row.body).not.toContain("echo step 100 of");

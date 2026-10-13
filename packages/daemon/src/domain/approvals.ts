@@ -10,10 +10,22 @@ import type { QueueRepository } from "./queue-repository.js";
 import { maskSecrets } from "./credential-mask.js";
 import { SLACK_SECTION_CAP, escapeSlackText, redactSecrets } from "./gateway/slack/message.js";
 import { dialogExcerpt } from "./stuck-prompt-watch.js";
-import { alwaysRuleFor, ruleDecision, type ApprovalRule } from "./approval-rules.js";
+import { alwaysRuleFor, ruleDecision, type AlwaysRule, type ApprovalRule } from "./approval-rules.js";
 
 /** On a card that offers Always approve / Always deny: the exact rule it shows, saved on that click. */
 export const ALWAYS_RULE_TAG = "always-rule:";
+export const ALWAYS_EXACT_TAG = "always-exact";
+
+/** Every card's four buttons, and the tags and line that say what an Always click saves. `brief`: the card has
+ *  no room for an exact rule's full text, which is the input the card shows. */
+export function alwaysOffer(rule: AlwaysRule, seat: string, brief = false) {
+  const options = [{ id: "allow", label: "Approve" }, { id: "deny", label: "Deny" }, { id: "always_allow", label: "Always approve" }, { id: "always_deny", label: "Always deny" }];
+  if ("refused" in rule) return { options, tags: [], note: `\nAlways approve / Always deny answer like Approve / Deny but save no rule: ${rule.refused}.` };
+  const tags = [`${ALWAYS_RULE_TAG}${rule.match}`, ...(rule.exact ? [ALWAYS_EXACT_TAG] : [])];
+  if (!rule.exact) return { options, tags, note: `\nAlways approve / Always deny also save \`${rule.match}\` for ${seat}.` };
+  if (brief) return { options, tags, note: `\nAlways approve / Always deny also save a rule for ${seat} matching only this exact input.` };
+  return { options, tags, note: `\nAlways approve / Always deny also save this rule for ${seat}, matching only this exact input:\n\`\`\`\n${rule.match}\n\`\`\`` };
+}
 
 export type ApprovalDecision = "allow" | "deny";
 export type ApprovalWait = ApprovalDecision | "pending" | "expired";
@@ -152,7 +164,8 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
     // Only a card this service built may save a rule: a row created over the API carries an identity provenance.
     const created = deps.queueRepo.transitionLog.listForQitem(qitemId).find((t) => t.transitionNote === "created");
     if (!created || created.identityProvenance !== null) return null;
-    try { deps.saveRule({ effect, match, seats: seat, note: `saved from Slack for ${seat}` }); return match; }
+    const exact = tags!.includes(ALWAYS_EXACT_TAG) ? { exact: true } : {};
+    try { deps.saveRule({ effect, match, seats: seat, note: `saved from Slack for ${seat}`, ...exact }); return match; }
     catch (e) { log(`always rule ${match} not saved: ${(e as Error).message}`); return null; }
   };
   const service: ApprovalService = {
@@ -184,9 +197,10 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
         log(`approval for ${input.sessionName} not sent: the ${input.toolName} input is too long even for the card's thread`);
         return null;
       }
-      const always = alwaysRuleFor(input.toolName, input.toolInput);
-      const saves = always ? `\nAlways approve / Always deny saves \`${always}\` for ${input.sessionName}.` : "";
-      const body = (fits ? whole : `${head}\`\`\`\n${dialogExcerpt(text)}\n\`\`\`\nFull ${input.toolName} input in this card's thread.`) + saves;
+      const rule = alwaysRuleFor(input.toolName, input.toolInput);
+      const full = alwaysOffer(rule, input.sessionName);
+      const always = fits && escapeSlackText(redactSecrets(whole + full.note)).length <= SLACK_SECTION_CAP ? full : alwaysOffer(rule, input.sessionName, true);
+      const body = (fits ? whole : `${head}\`\`\`\n${dialogExcerpt(text)}\n\`\`\`\nFull ${input.toolName} input in this card's thread.`) + always.note;
       const humanDetail = fits ? undefined : `Full ${input.toolName} input:\n\`\`\`\n${text}\n\`\`\``;
       const open = deps.queueRepo.list({ tag: "approval-request", state: "pending", limit: 200 }).filter((q) => q.state === "pending" && q.sourceSession === input.sessionName && q.tags?.includes("approval-request"));
       if (open.length >= MAX_PENDING_PER_SEAT) {
@@ -202,9 +216,8 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
         summary: `Approve ${input.toolName} for ${input.sessionName}?`,
         body,
         ...(humanDetail ? { humanDetail } : {}),
-        tags: ["approval-request", ...(always ? [`${ALWAYS_RULE_TAG}${always}`] : [])],
-        humanQuestions: [{ id: QUESTION_ID, question: `Allow ${input.sessionName} to run this ${input.toolName}?`, options: [{ id: "allow", label: "Approve" }, { id: "deny", label: "Deny" },
-          ...(always ? [{ id: "always_allow", label: "Always approve" }, { id: "always_deny", label: "Always deny" }] : [])] }],
+        tags: ["approval-request", ...always.tags],
+        humanQuestions: [{ id: QUESTION_ID, question: `Allow ${input.sessionName} to run this ${input.toolName}?`, options: always.options }],
         nudge: false,
       });
       return qitemId;

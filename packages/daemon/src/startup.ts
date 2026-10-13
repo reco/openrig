@@ -2212,7 +2212,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       const { hasRecentPromptCard, makeStuckPromptWatch, promptCardBody, promptCardDetail, retireStalePromptNotices, supersedePromptNotices } = await import("./domain/stuck-prompt-watch.js");
       // Enough for a long command's whole dialog, so two prompts differing only near the top differ.
       const STUCK_PROMPT_CAPTURE_LINES = 120;
-      const { retireApprovalsAnsweredInTerminal, seatHasOpenApproval } = await import("./domain/approvals.js");
+      const { alwaysOffer, retireApprovalsAnsweredInTerminal, seatHasOpenApproval } = await import("./domain/approvals.js");
       deps.stuckPromptWatch = makeStuckPromptWatch({
         runningSessions: () => (db.prepare(`
           SELECT DISTINCT s.session_name AS session_name FROM sessions s
@@ -2240,19 +2240,17 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
             return;
           }
           // Answerable from Slack: the seat is the source, so the answer's reply row reaches it.
-          const always = p.command ? alwaysRuleFor("Bash", { command: p.command }) : null;
+          const always = alwaysOffer(p.command ? alwaysRuleFor("Bash", { command: p.command }) : { refused: "no single shell command could be read from the dialog" }, p.session);
           const card = await queueRepoInstance.create({
             tags: ["stuck-prompt", `stuck-prompt:${p.episodeId}`, `stuck-prompt-session:${p.session}`, `stuck-prompt-key:${p.key}`,
-              `stuck-prompt-allow:${p.choices.allow.key}`, `stuck-prompt-deny:${p.choices.deny.key}`, `stuck-prompt-since:${p.since}`,
-              ...(always ? [`always-rule:${always}`] : [])],
+              `stuck-prompt-allow:${p.choices.allow.key}`, `stuck-prompt-deny:${p.choices.deny.key}`, `stuck-prompt-since:${p.since}`, ...always.tags],
             sourceSession: p.session,
             destinationSession: human.address,
             humanIntent: "decision",
             summary,
-            body: promptCardBody(p) + (always ? `\nAlways approve / Always deny also saves \`${always}\` for ${p.session}.` : ""),
+            body: promptCardBody(p) + always.note,
             humanDetail: promptCardDetail(p),
-            humanQuestions: [{ id: "answer", question: `Answer ${p.session}'s prompt?`, options: [{ id: "allow", label: "Approve" }, { id: "deny", label: "Deny" },
-              ...(always ? [{ id: "always_allow", label: "Always approve" }, { id: "always_deny", label: "Always deny" }] : [])] }],
+            humanQuestions: [{ id: "answer", question: `Answer ${p.session}'s prompt?`, options: always.options }],
             nudge: false,
           });
           return { qitemId: card.qitemId };

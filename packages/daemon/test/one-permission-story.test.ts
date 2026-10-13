@@ -12,7 +12,7 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
-import { makeApprovalService } from "../src/domain/approvals.js";
+import { alwaysOffer, makeApprovalService } from "../src/domain/approvals.js";
 import { actOnPromptAnswers, promptCommand, readPrompt } from "../src/domain/stuck-prompt-watch.js";
 import {
   DEFAULT_APPROVAL_RULES, alwaysRuleFor, claudePermissionRules, codexRulesText, projectCodexRules, readApprovalRules,
@@ -81,22 +81,48 @@ describe("one permission story", () => {
     expect(ruleDecision(rules, call("search docs"))).toBeNull();
   });
 
-  it("derives the Always rule from a single plain command's fixed start, and none from anything else", () => {
-    expect(alwaysRuleFor("Bash", { command: "bash /path/sweep.sh --since 2h" })).toBe("Bash(bash /path/sweep.sh *)");
-    expect(alwaysRuleFor("Bash", { command: "git status --short" })).toBe("Bash(git status *)");
-    expect(alwaysRuleFor("Bash", { command: "gh pr view 496" })).toBe("Bash(gh pr view *)");
-    expect(alwaysRuleFor("Bash", { command: "gh pr view 496 --json state" })).toBe("Bash(gh pr view *)");
-    expect(alwaysRuleFor("Bash", { command: "git log -5" })).toBe("Bash(git log *)");
-    expect(alwaysRuleFor("Bash", { command: "bash /x.sh ts" })).toBe("Bash(bash /x.sh *)");
-    expect(alwaysRuleFor("Bash", { command: "cat notes.md" })).toBe("Bash(cat notes.md *)");
-    expect(alwaysRuleFor("Bash", { command: "gh api repos/o/r/pulls" })).toBe("Bash(gh api *)");
-    expect(alwaysRuleFor("Bash", { command: "npm run build extra more" })).toBe("Bash(npm run build *)");
+  it("derives the Always rule from a single plain command's fixed start, else the exact input; never one carrying a credential", () => {
+    const wildcard = (command: string) => alwaysRuleFor("Bash", { command });
+    expect(wildcard("bash /path/sweep.sh --since 2h")).toEqual({ match: "Bash(bash /path/sweep.sh *)", exact: false });
+    expect(wildcard("git status --short")).toEqual({ match: "Bash(git status *)", exact: false });
+    expect(wildcard("gh pr view 496")).toEqual({ match: "Bash(gh pr view *)", exact: false });
+    expect(wildcard("gh pr view 496 --json state")).toEqual({ match: "Bash(gh pr view *)", exact: false });
+    expect(wildcard("git log -5")).toEqual({ match: "Bash(git log *)", exact: false });
+    expect(wildcard("bash /x.sh ts")).toEqual({ match: "Bash(bash /x.sh *)", exact: false });
+    expect(wildcard("cat notes.md")).toEqual({ match: "Bash(cat notes.md *)", exact: false });
+    expect(wildcard("gh api repos/o/r/pulls")).toEqual({ match: "Bash(gh api *)", exact: false });
+    expect(wildcard("npm run build extra more")).toEqual({ match: "Bash(npm run build *)", exact: false });
     for (const command of ["kill 1234", "head -5 x", "rm build", "rmdir out", "kill node", "pkill node", "killall node", "mv a.txt b.txt",
-      "chmod 600 key", "chown reco x.txt", "dd if=/dev/zero of=x", "timeout 30 pytest", "find . -name x", "env FOO=1 make", "sudo apt install x", "xargs rm", "curl https://deploy:ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/x/y",
+      "chmod 600 key", "chown reco x.txt", "dd if=/dev/zero of=x", "timeout 30 pytest", "find . -name x", "env FOO=1 make", "sudo apt install x", "xargs rm",
       "ls -la src", "rm -rf build", "python3 -c 'x'", "git -C repo push origin x", "make", "ls && rm x", "echo $(id)", "cat <<EOF\nx\nEOF", "./run.sh", "FOO=1 make", "cd /tmp"]) {
-      expect(alwaysRuleFor("Bash", { command }), command).toBeNull();
+      expect(wildcard(` ${command}\n`), command).toEqual({ match: `Bash(${command})`, exact: true });
     }
-    expect(alwaysRuleFor("Edit", { file_path: "/x" })).toBeNull();
+    expect(wildcard("curl https://deploy:ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/x/y")).toEqual({ refused: "it carries a credential" });
+    expect(alwaysRuleFor("Edit", { file_path: "/x/../y" })).toEqual({ match: "Edit(/y)", exact: true });
+    expect(alwaysRuleFor("WebFetch", { url: "https://example.com/a" })).toEqual({ match: "WebFetch(https://example.com/a)", exact: true });
+  });
+
+  it("an exact rule matches only that exact input, compound or destructive, and deny still wins", () => {
+    const rules: ApprovalRule[] = [
+      { effect: "allow", match: "Bash(ls && rm -rf build/*)", exact: true }, { effect: "allow", match: "Bash(git push origin main)", exact: true },
+      { effect: "deny", match: "Bash(kill 1234)", exact: true }, { effect: "allow", match: "Bash(kill *)" }, ...DEFAULT_APPROVAL_RULES];
+    expect(ruleDecision(rules, bash(" ls && rm -rf build/* "))?.effect).toBe("allow");
+    for (const command of ["ls && rm -rf build/x", "ls && rm -rf build/* && rm -rf /", "ls &&  rm -rf build/*"]) expect(ruleDecision(rules, bash(command))?.effect, command).not.toBe("allow");
+    expect(ruleDecision(rules, bash("git push origin main"))?.effect).toBe("deny");
+    expect(ruleDecision(rules, bash("kill 1234"))?.effect).toBe("deny");
+    expect(ruleDecision(rules, bash("kill 12345"))?.effect).toBe("allow");
+    expect(ruleDecision(rules, bash("ls && rm -rf build/*", "other@rig"))?.effect).toBe("allow");
+    expect(ruleDecision([{ ...rules[0]!, seats: "cfo@finance" }], bash("ls && rm -rf build/*", "other@rig"))).toBeNull();
+    expect(ruleDecision([{ effect: "allow", match: "Edit(/y)", exact: true }], { sessionName: "dev@rig", toolName: "Edit", toolInput: { file_path: "/x/../y" } })?.effect).toBe("allow");
+    expect(ruleDecision([{ effect: "allow", match: "Edit(/y)", exact: true }], { sessionName: "dev@rig", toolName: "Edit", toolInput: { file_path: "/y/z" } })).toBeNull();
+  });
+
+  it("projects an exact rule to Claude only when Claude reads it literally", () => {
+    const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(rm build)", exact: true }, { effect: "deny", match: "Bash(kill 1234)", exact: true },
+      { effect: "allow", match: "Bash(rm -rf build/*)", exact: true }, { effect: "allow", match: "Bash(cat <<EOF\nx\nEOF)", exact: true },
+      { effect: "allow", match: "Bash(echo $(id))", exact: true }, { effect: "allow", match: "WebFetch(https://example.com/a)", exact: true }, { effect: "allow", match: "Edit(/y)", exact: true }];
+    expect(claudePermissionRules(rules, "dev@rig")).toEqual({ allow: ["Bash(rm build)", "Edit(//y)"], deny: ["Bash(kill 1234)"] });
+    expect(codexRulesText(rules)).not.toContain("kill");
   });
 
   it("saves an Always rule once, scoped to its seat, keeping every other rule", () => {
@@ -122,13 +148,33 @@ describe("one permission story", () => {
         const id = (await s.start({ sessionName: "cfo@finance", toolName: "Bash", toolInput: { command: "bash /path/sweep.sh --since 2h" } }))!;
         const row = repo.getById(id)!;
         expect(row.humanQuestions?.[0]!.options.map((o) => o.label)).toEqual(["Approve", "Deny", "Always approve", "Always deny"]);
-        expect(row.body).toContain("saves `Bash(bash /path/sweep.sh *)` for cfo@finance");
+        expect(row.body).toContain("save `Bash(bash /path/sweep.sh *)` for cfo@finance");
         repo.recordHumanAnswer({ qitemId: id, actorSession: "reco@external", questionId: "approval", optionId: option });
         expect(await s.wait(id, "cfo@finance", 50)).toBe(effect);
-        expect(saved.at(-1)).toMatchObject({ effect, match: "Bash(bash /path/sweep.sh *)", seats: "cfo@finance" });
+        expect(saved.at(-1)).toEqual({ effect, match: "Bash(bash /path/sweep.sh *)", seats: "cfo@finance", note: "saved from Slack for cfo@finance" });
       }
-      const plainOnly = (await s.start({ sessionName: "cfo@finance", toolName: "Bash", toolInput: { command: "ls && rm -rf x" } }))!;
-      expect(repo.getById(plainOnly)!.humanQuestions?.[0]!.options.map((o) => o.label)).toEqual(["Approve", "Deny"]);
+    });
+
+    it("every approval card has all four buttons: a command with no safe wildcard saves its exact self, one with a credential saves nothing and says why", async () => {
+      const saved: ApprovalRule[] = [];
+      const s = makeApprovalService({ queueRepo: repo, optedIn: () => ["cfo@finance"], approver: () => "reco@external", verifySeat: () => true, pollMs: 10, saveRule: (r) => saved.push(r) });
+      const four = ["Approve", "Deny", "Always approve", "Always deny"];
+      for (const [option, effect] of [["always_allow", "allow"], ["always_deny", "deny"]] as const) {
+        const id = (await s.start({ sessionName: "cfo@finance", toolName: "Bash", toolInput: { command: "ls && rm -rf x" } }))!;
+        const row = repo.getById(id)!;
+        expect(row.humanQuestions?.[0]!.options.map((o) => o.label)).toEqual(four);
+        expect(row.body).toContain("matching only this exact input:\n```\nBash(ls && rm -rf x)\n```");
+        repo.recordHumanAnswer({ qitemId: id, actorSession: "reco@external", questionId: "approval", optionId: option });
+        expect(await s.wait(id, "cfo@finance", 50)).toBe(effect);
+        expect(saved.at(-1)).toEqual({ effect, match: "Bash(ls && rm -rf x)", seats: "cfo@finance", note: "saved from Slack for cfo@finance", exact: true });
+      }
+      const secret = (await s.start({ sessionName: "cfo@finance", toolName: "Bash", toolInput: { command: "curl https://deploy:ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/x/y" } }))!;
+      const row = repo.getById(secret)!;
+      expect(row.humanQuestions?.[0]!.options.map((o) => o.label)).toEqual(four);
+      expect(row.body).toContain("save no rule: it carries a credential");
+      repo.recordHumanAnswer({ qitemId: secret, actorSession: "reco@external", questionId: "approval", optionId: "always_allow" });
+      expect(await s.wait(secret, "cfo@finance", 50)).toBe("allow");
+      expect(saved).toHaveLength(2);
     });
 
     it("a card built over the API never saves a rule, whatever its tags say", async () => {
@@ -153,6 +199,20 @@ describe("one permission story", () => {
       expect(promptCommand(["$ rig up demo", "", " Edit file", " Do you want to make this edit?", " ❯ 1. Yes", "   2. No"].join("\n"))).toBeNull();
     });
 
+    it("reads the command from Claude's gutter dialog, wrapped or not, so its stuck card gets Always buttons", () => {
+      const gutter = readFileSync(join(__dirname, "fixtures/claude-permission-prompt-gutter.txt"), "utf8");
+      const command = "bash /Users/reco/dev/imago/.openrig/monitor/webhook-unexplained.sh 2026-10-13T14:42:00Z";
+      const prompt = readPrompt(gutter)!;
+      expect(prompt.command).toBe(command);
+      expect(prompt.choices).toMatchObject({ allow: { key: "1" }, deny: { key: "4" } });
+      expect(alwaysRuleFor("Bash", { command: prompt.command })).toEqual({ match: "Bash(bash /Users/reco/dev/imago/.openrig/monitor/webhook-unexplained.sh *)", exact: false });
+      const wrapped = gutter.replace(" │ bash /Users/reco/dev/imago/.openrig/monitor/webhook-unexplained.sh 2026-10-13T14:42:00Z",
+        " │ bash /Users/reco/dev/imago/.openrig/monitor/webhook-unexplained.sh\n │ 2026-10-13T14:42:00Z");
+      expect(wrapped).not.toBe(gutter);
+      expect(promptCommand(wrapped)).toBe(command);
+      expect(promptCommand(gutter.replace(" Bash command\n", " Edit file\n"))).toBeNull();
+    });
+
     it("a stuck-prompt card's Always approve types the plain Yes and saves the rule it showed", async () => {
       const rule = "╌".repeat(80);
       const pane = ["─".repeat(80), " Bash command", " Run the sweep", rule, " bash /path/sweep.sh --since 2h", rule, " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""].join("\n");
@@ -167,6 +227,29 @@ describe("one permission story", () => {
       await actOnPromptAnswers(repo, { capture: async () => pane, inMode: async () => false, sendKey: async (_s, k) => { keys.push(k); }, saveRule: (r) => saved.push(r) });
       expect(keys).toEqual(["1"]);
       expect(saved).toEqual([expect.objectContaining({ effect: "allow", match: "Bash(bash /path/sweep.sh *)", seats: "cfo@finance" })]);
+    });
+
+    it("a stuck-prompt card always has the four buttons; an exact rule is saved exact, an unreadable dialog saves none and says why", async () => {
+      const four = ["Approve", "Deny", "Always approve", "Always deny"];
+      const exact = alwaysOffer(alwaysRuleFor("Bash", { command: "rm -rf build" }), "cfo@finance");
+      expect(exact.options.map((o) => o.label)).toEqual(four);
+      expect(exact.tags).toEqual(["always-rule:Bash(rm -rf build)", "always-exact"]);
+      const unread = alwaysOffer({ refused: "no single shell command could be read from the dialog" }, "cfo@finance");
+      expect(unread.options.map((o) => o.label)).toEqual(four);
+      expect(unread.tags).toEqual([]);
+      expect(unread.note).toContain("save no rule: no single shell command could be read from the dialog");
+      const rule = "╌".repeat(80);
+      const pane = ["─".repeat(80), " Bash command", rule, " rm -rf build", rule, " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""].join("\n");
+      const prompt = readPrompt(pane)!;
+      const card = await repo.create({ tags: ["stuck-prompt", "stuck-prompt:e", "stuck-prompt-session:cfo@finance", `stuck-prompt-key:${prompt.key}`, "stuck-prompt-allow:1", "stuck-prompt-deny:2", "stuck-prompt-since:0",
+        ...exact.tags], sourceSession: "cfo@finance", destinationSession: "reco@external", humanIntent: "decision", summary: "cfo@finance is waiting", body: "card",
+        humanQuestions: [{ id: "answer", question: "Answer?", options: exact.options }], nudge: false });
+      repo.recordHumanAnswer({ qitemId: card.qitemId, actorSession: "reco@external", questionId: "answer", optionId: "always_deny" });
+      const keys: string[] = [];
+      const saved: unknown[] = [];
+      await actOnPromptAnswers(repo, { capture: async () => pane, inMode: async () => false, sendKey: async (_s, k) => { keys.push(k); }, saveRule: (r) => saved.push(r) });
+      expect(keys).toEqual(["2"]);
+      expect(saved).toEqual([{ effect: "deny", match: "Bash(rm -rf build)", seats: "cfo@finance", note: "saved from Slack for cfo@finance", exact: true }]);
     });
   });
 

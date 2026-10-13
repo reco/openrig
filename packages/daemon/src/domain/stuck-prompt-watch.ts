@@ -123,19 +123,22 @@ export function readPrompt(pane: string): { reason: string; key: string; promptL
 const DASHED_RULE = /^[╌┄]{20,}$/;
 
 /** The single shell command the prompt on screen asks to run, read only from the runtime's own dialog
- *  shape: Claude's Bash dialog shows it alone between two dashed rules above "Do you want to proceed?",
- *  Codex shows it as the `$ ` line after "Would you like to run the following command?". Null otherwise. */
+ *  shape: Claude's Bash dialog shows it between two dashed rules above "Do you want to proceed?" (alone,
+ *  or behind a `│ ` gutter that may wrap it over several lines), Codex shows it as the `$ ` line after
+ *  "Would you like to run the following command?". Null otherwise. */
 export function promptCommand(pane: string): string | null {
   const lines = pane.split("\n").map((l) => l.trim());
   const asked = lines.lastIndexOf("Do you want to proceed?");
-  if (asked > 0 && DASHED_RULE.test(lines[asked - 1]!)) {
-    const open = lines.slice(0, asked - 1).map((l) => DASHED_RULE.test(l)).lastIndexOf(true);
+  const rules = lines.slice(0, Math.max(0, asked)).flatMap((l, i) => (DASHED_RULE.test(l) ? [i] : []));
+  if (asked > 0 && rules.length >= 2) {
+    const [open, close] = rules.slice(-2) as [number, number];
     // The header must belong to this dialog: below its top border, not somewhere in the scrollback.
-    const top = open > 0 ? lines.slice(0, open).map((l) => DIALOG_BORDER.test(l)).lastIndexOf(true) : -1;
-    const header = open > 0 ? lines.slice(0, open).lastIndexOf("Bash command") : -1;
-    if (top < 0 || header < top) return null;
-    const body = open >= 0 ? lines.slice(open + 1, asked - 1).filter(Boolean) : [];
-    return header >= 0 && body.length === 1 ? body[0]! : null;
+    const top = lines.slice(0, open).map((l) => DIALOG_BORDER.test(l)).lastIndexOf(true);
+    const header = lines.slice(0, open).lastIndexOf("Bash command");
+    if (top < 0 || header < top || lines.slice(close + 1, asked).some((l) => DIALOG_BORDER.test(l))) return null;
+    const body = lines.slice(open + 1, close).filter(Boolean);
+    if (body.length > 0 && body.every((l) => l.startsWith("│"))) return body.map((l) => l.slice(1).trim()).join(" ");
+    return body.length === 1 ? body[0]! : null;
   }
   const codex = lines.lastIndexOf("Would you like to run the following command?");
   if (codex < 0) return null;
@@ -292,7 +295,7 @@ export interface AnswerDeps {
   inMode: (session: string) => Promise<boolean>;
   onSent?: (session: string) => void;
   /** Saves the rule of an Always approve / Always deny click. */
-  saveRule?: (rule: { effect: "allow" | "deny"; match: string; seats: string; note: string }) => void;
+  saveRule?: (rule: { effect: "allow" | "deny"; match: string; seats: string; note: string; exact?: boolean }) => void;
 }
 
 /** Type the chosen option's key, read off the screen now, only while the pane still shows the
@@ -383,7 +386,8 @@ export async function actOnPromptAnswers(repo: QueueRepository, deps: AnswerDeps
     // Always approve / Always deny also saves the rule the card showed, for this seat.
     const always = clicked !== choice ? tagValue(row.tags, "always-rule") : undefined;
     if (always && deps.saveRule) {
-      try { deps.saveRule({ effect: choice, match: always, seats: session, note: `saved from Slack for ${session}` }); }
+      const exact = row.tags?.includes("always-exact") ? { exact: true } : {};
+      try { deps.saveRule({ effect: choice, match: always, seats: session, note: `saved from Slack for ${session}`, ...exact }); }
       catch (e) { repo.update({ qitemId: qitem_id, actorSession: "daemon@kernel", transitionNote: `always rule ${always} not saved: ${(e as Error).message}` }); }
     }
     const since = Number(tagValue(row.tags, "stuck-prompt-since") ?? 0);

@@ -11,6 +11,8 @@ export interface ApprovalRule {
   match: string;
   seats?: string;
   note?: string;
+  /** The match's argument is one literal input, compared whole: no glob, no splitting, no wildcard. */
+  exact?: boolean;
 }
 
 export interface RuleRequest {
@@ -33,7 +35,8 @@ export function approvalRulesPath(home: string): string {
 export function isValidRule(rule: unknown): rule is ApprovalRule {
   const r = rule as Partial<ApprovalRule> | null;
   return !!r && (r.effect === "allow" || r.effect === "deny") && typeof r.match === "string" && parseMatch(r.match) !== null
-    && (r.seats === undefined || typeof r.seats === "string") && (r.note === undefined || typeof r.note === "string");
+    && (r.seats === undefined || typeof r.seats === "string") && (r.note === undefined || typeof r.note === "string")
+    && (r.exact === undefined || (typeof r.exact === "boolean" && (!r.exact || parseMatch(r.match)!.arg !== null)));
 }
 
 export function readApprovalRules(home: string): ApprovalRule[] {
@@ -85,28 +88,43 @@ function fixedStart(words: readonly string[]): string[] {
   return fixed;
 }
 
-/** The rule an "Always approve/deny" click saves for this request: the command's fixed start followed by " *"
- *  for the varying rest. Only a single plain Bash command gets one; anything else returns null and its card has
- *  no Always buttons. */
-export function alwaysRuleFor(toolName: string, toolInput: unknown): string | null {
-  if (toolName !== "Bash") return null;
-  const command = commandOf(toolInput);
-  const parts = command === null ? null : plain.plainParts(command);
+/** A single plain Bash command's fixed start followed by " *" for the varying rest, or null when the command
+ *  has no start that bounds what it does (a wrapper, a destructive verb, a bare executable, a compound). */
+function wildcardRule(command: string): string | null {
+  const parts = plain.plainParts(command);
   if (!parts || parts.length !== 1 || !allowable(parts[0]!)) return null;
   const words = parts[0]!.split(" ");
   const fixed = fixedStart(words);
   // Two fixed words (a script, a subcommand): a bare executable would allow everything it can do.
   if (WRAPPERS.has(words[0]!) || fixed.length < 2) return null;
-  const rule = `Bash(${fixed.join(" ")} *)`;
-  // A rule that would carry a credential literal is not saved: the card shows it masked.
-  return maskSecrets(rule) === rule ? rule : null;
+  return `Bash(${fixed.join(" ")} *)`;
+}
+
+/** The literal an exact rule compares: the whole command, else the tool's path (normalized) or other input. */
+function exactValue(toolInput: unknown): string {
+  const command = commandOf(toolInput);
+  if (command !== null) return command.trim();
+  const arg = argOf(toolInput);
+  return arg.path ? posix.normalize(expandHome(arg.value)) : arg.value.trim();
+}
+
+export type AlwaysRule = { match: string; exact: boolean } | { refused: string };
+
+/** The rule an "Always approve/deny" click saves for this request: a plain Bash command's fixed start with a
+ *  wildcard for the rest, else the exact input. A rule that would carry a credential is never saved. */
+export function alwaysRuleFor(toolName: string, toolInput: unknown): AlwaysRule {
+  const wildcard = toolName === "Bash" && commandOf(toolInput) !== null ? wildcardRule(commandOf(toolInput)!) : null;
+  const value = exactValue(toolInput);
+  const rule = wildcard ? { match: wildcard, exact: false } : { match: `${toolName}(${value})`, exact: true };
+  if (maskSecrets(rule.match) !== rule.match) return { refused: "it carries a credential" };
+  return value && isValidRule({ effect: "allow", ...rule }) ? rule : { refused: "this request has no input a rule can name" };
 }
 
 /** Saves a rule from an Always click: added once, scoped to `seats`, never rewriting other rules. */
 export function saveAlwaysRule(home: string, rule: ApprovalRule): void {
   if (!isValidRule(rule)) throw new Error(`not a rule: ${JSON.stringify(rule)}`);
   const rules = readApprovalRules(home);
-  if (rules.some((r) => r.effect === rule.effect && r.match === rule.match && r.seats === rule.seats)) return;
+  if (rules.some((r) => r.effect === rule.effect && r.match === rule.match && r.seats === rule.seats && !!r.exact === !!rule.exact)) return;
   writeApprovalRules(home, [...rules, rule]);
 }
 
@@ -125,10 +143,10 @@ export function writeApprovalRules(home: string, rules: readonly ApprovalRule[])
   renameSync(`${path}.tmp`, path);
 }
 
-function parseMatch(match: string): { tool: string; arg: string | null } | null {
+function parseMatch(match: string): { tool: string; arg: string | null; literal: string | null } | null {
   const m = /^([^()\s]+)(?:\((.*)\))?$/s.exec(match.trim());
   if (!m || (m[2] !== undefined && !m[2].trim())) return null;
-  return { tool: m[1]!, arg: m[2] === undefined ? null : m[2].trim().replace(/:\*$/, " *") };
+  return { tool: m[1]!, arg: m[2] === undefined ? null : m[2].trim().replace(/:\*$/, " *"), literal: m[2] === undefined ? null : m[2].trim() };
 }
 
 function globRegex(glob: string, path = false): RegExp {
@@ -196,6 +214,7 @@ function allowable(part: string): boolean {
 function hits(rule: ApprovalRule, req: RuleRequest): boolean {
   if (rule.seats && !globMatches(rule.seats, req.sessionName)) return false;
   const match = parseMatch(rule.match)!;
+  if (rule.exact) return match.tool === req.toolName && match.literal === exactValue(req.toolInput);
   if (!globMatches(match.tool, req.toolName)) return false;
   if (match.arg === null) return true;
   const command = commandOf(req.toolInput);
@@ -220,6 +239,8 @@ function hits(rule: ApprovalRule, req: RuleRequest): boolean {
 export function ruleDecision(rules: readonly ApprovalRule[], req: RuleRequest): RuleHit | null {
   const deny = rules.find((r) => r.effect === "deny" && hits(r, req));
   if (deny) return { effect: "deny", rule: deny };
+  const exact = rules.find((r) => r.effect === "allow" && r.exact && hits(r, req));
+  if (exact) return { effect: "allow", rule: exact };
   const allowOf = (r: RuleRequest) => rules.find((rule) => rule.effect === "allow" && hits(rule, r));
   const command = commandOf(req.toolInput);
   if (command === null || (req.toolName.startsWith("mcp__") && /^call\s+[\w.:-]+(?:\s|$)/.test(command.trim()))) {
@@ -238,14 +259,19 @@ const appliesTo = (r: ApprovalRule, sessionName: string | null) => !r.seats || (
  *  prompt or classifier. Claude reads a filesystem-absolute path as //path, and ignores an MCP rule with a
  *  pattern (the daemon still applies those). */
 export function claudePermissionRules(rules: readonly ApprovalRule[], sessionName: string | null): { allow: string[]; deny: string[] } {
-  const native = (effect: RuleEffect) => rules.filter((r) => r.effect === effect && appliesTo(r, sessionName))
-    .flatMap((r) => {
-      const m = parseMatch(r.match)!;
-      if (m.arg === null) return [m.tool];
-      if (m.tool.startsWith("mcp__")) return [];
-      return [`${m.tool}(${m.tool !== "Bash" && /^\/(?!\/)/.test(m.arg) ? `/${m.arg}` : m.arg})`];
-    });
+  const native = (effect: RuleEffect) => rules.filter((r) => r.effect === effect && appliesTo(r, sessionName)).flatMap(claudeRule);
   return { allow: native("allow"), deny: native("deny") };
+}
+
+/** A rule in Claude's syntax, or none when Claude cannot say it: an MCP pattern, or an exact input Claude would
+ *  read as a glob, that spans lines or nests parentheses, or that is no command or path. The daemon still
+ *  applies those. */
+function claudeRule(r: ApprovalRule): string[] {
+  const m = parseMatch(r.match)!;
+  if (m.arg === null) return [m.tool];
+  if (m.tool.startsWith("mcp__")) return [];
+  if (r.exact && (/[*\n()]/.test(m.literal!) || !(m.tool === "Bash" || m.literal!.startsWith("/")))) return [];
+  return [`${m.tool}(${m.tool !== "Bash" && /^\/(?!\/)/.test(m.arg) ? `/${m.arg}` : m.arg})`];
 }
 
 /** Codex rules are literal token prefixes: a Bash pattern of plain words, optionally ending in " *". */
@@ -263,7 +289,7 @@ export const CODEX_RULES_FILE = "openrig.rules";
  *  reads every *.rules file in its home for every session, so a rule scoped to some seats, or a pattern Codex
  *  cannot express as a literal prefix, stays with the daemon too. */
 export function codexRulesText(rules: readonly ApprovalRule[]): string {
-  const lines = rules.filter((r) => r.effect === "deny" && (!r.seats || r.seats === "*")).flatMap((r) => {
+  const lines = rules.filter((r) => r.effect === "deny" && !r.exact && (!r.seats || r.seats === "*")).flatMap((r) => {
     const prefix = codexPrefix(r.match);
     if (!prefix) return [];
     const note = r.note ? `, justification=${JSON.stringify(r.note)}` : "";
@@ -284,11 +310,5 @@ export function projectCodexRules(home: string, codexHome: string): void {
 }
 
 export function claudeDenyRules(rules: readonly ApprovalRule[], sessionName: string | null): string[] {
-  return rules.filter((r) => r.effect === "deny" && appliesTo(r, sessionName))
-    .flatMap((r) => {
-      const m = parseMatch(r.match)!;
-      if (m.arg === null) return [m.tool];
-      if (m.tool.startsWith("mcp__")) return [];
-      return [`${m.tool}(${m.tool !== "Bash" && /^\/(?!\/)/.test(m.arg) ? `/${m.arg}` : m.arg})`];
-    });
+  return rules.filter((r) => r.effect === "deny" && appliesTo(r, sessionName)).flatMap(claudeRule);
 }
