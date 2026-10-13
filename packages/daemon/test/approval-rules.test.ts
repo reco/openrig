@@ -46,6 +46,8 @@ describe("approval rules", () => {
     expect(effect(rules, bash("cd ~ && npm test"))).toBeNull();
     expect(effect(rules, bash("cd /Users/reco/other && npm test"))).toBeNull();
     expect(effect(rules, bash("cd /Users/reco/dev/../.. && npm test"))).toBeNull();
+    expect(effect(rules, bash("cd /Users/reco/dev/x / && npm test"))).toBeNull();
+    expect(effect(rules, bash("cd /Users/reco/dev/x /"))).toBeNull();
     expect(effect(rules, bash("git status && git log --oneline -3"))).toBe("allow");
     expect(effect(rules, bash("git log | grep fix"))).toBe("allow");
     expect(effect(rules, bash("git fetch; git status || git branch"))).toBe("allow");

@@ -102,7 +102,7 @@ function commandSegments(command: string): string[] {
 /** An allow rule takes only plain words, single-spaced: no quoting, expansion, operators, assignment or executable path. */
 const PLAIN_COMMAND = /^[\w\-.:@%+,/=]+(?: [\w\-.:@%+,/=]+)*$/;
 const allowable = (command: string) => PLAIN_COMMAND.test(command) && !/[=/]/.test(command.split(" ")[0]!)
-  && !(command.startsWith("cd ") && command.split(/[ /]/).includes(".."));
+  && !(command.startsWith("cd ") && (!CHANGE_DIR.test(command) || command.split(/[ /]/).includes("..")));
 
 function hits(rule: ApprovalRule, req: RuleRequest): boolean {
   if (rule.seats && !globMatches(rule.seats, req.sessionName)) return false;
@@ -127,7 +127,7 @@ const CHANGE_DIR = /^cd [\w\-.:@%+,/=]+$/;
 function plainParts(command: string): string[] | null {
   if (!/(?:&&|\|\||;|\|)/.test(command)) return null;
   const parts = command.trim().split(OPERATOR);
-  return parts.every((p) => (CHANGE_DIR.test(p) && !p.split(/[ /]/).includes("..")) || allowable(p)) ? parts : null;
+  return parts.every(allowable) ? parts : null;
 }
 
 /** Deny wins over allow; no hit leaves the request to the human. A plain command is allowed by a matching rule;
