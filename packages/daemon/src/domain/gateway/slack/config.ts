@@ -57,6 +57,9 @@ export interface SlackConnectorConfig {
    * it saves and digests unchanged.
    */
   channelMap?: ChannelMapEntry[];
+  /** Optional channel for pure FYI posts: an update with no buttons that is not a reply in a thread.
+   *  Inbound there lands on `inboundDestination`. Absent = those post where everything else does. */
+  notificationsChannel?: string | null;
 }
 
 export const DEFAULT_CONFIG: SlackConnectorConfig = {
@@ -84,7 +87,8 @@ export const MAX_APPROVAL_TIMEOUT_SECONDS = 3600;
 
 /** Every configured channel with the seat its new messages land on; `channel` first. */
 export function channelsOf(cfg: SlackConnectorConfig): Array<{ id: string; inboundDestination: string }> {
-  return [...(cfg.channel ? [{ id: cfg.channel, inboundDestination: cfg.inboundDestination }] : []), ...cfg.extraChannels];
+  return [...(cfg.channel ? [{ id: cfg.channel, inboundDestination: cfg.inboundDestination }] : []), ...cfg.extraChannels,
+    ...(cfg.notificationsChannel ? [{ id: cfg.notificationsChannel, inboundDestination: cfg.inboundDestination }] : [])];
 }
 
 function validateLevel(field: string, value: unknown): asserts value is OwnerNotificationLevel {
@@ -108,8 +112,11 @@ function validateConfig(cfg: SlackConnectorConfig, opts: { reading?: boolean } =
   if (!Array.isArray(cfg.extraChannels) || cfg.extraChannels.some((c) => !c || typeof c.id !== "string" || !/^[A-Z0-9-]+$/.test(c.id) || typeof c.inboundDestination !== "string" || !c.inboundDestination)) {
     throw new Error("extraChannels must be a list of { id: <Slack channel id>, inboundDestination: <seat> }");
   }
+  if (cfg.notificationsChannel != null && (typeof cfg.notificationsChannel !== "string" || !/^[A-Z0-9-]+$/.test(cfg.notificationsChannel))) {
+    throw new Error(`notificationsChannel must be a Slack channel id (got ${String(cfg.notificationsChannel)})`);
+  }
   const ids = channelsOf(cfg).map((c) => c.id);
-  if (new Set(ids).size !== ids.length) throw new Error("each Slack channel may be configured once (channel + extraChannels)");
+  if (new Set(ids).size !== ids.length) throw new Error("each Slack channel may be configured once (channel + extraChannels + notificationsChannel)");
   const { up, down } = cfg.feedbackReactions ?? {};
   if (!Array.isArray(up) || !Array.isArray(down) || [...up, ...down].some((n) => typeof n !== "string" || !/^[a-z0-9_+'-]+$/.test(n))) {
     throw new Error("feedbackReactions must be { up: [emoji names], down: [emoji names] } without colons");

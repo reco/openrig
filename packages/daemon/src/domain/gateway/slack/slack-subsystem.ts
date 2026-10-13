@@ -449,6 +449,12 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   // that row on the person, the park is a decision and opens its own root. A decision a seat
   // itself created with --reply-to (fork: an action button in an earlier request's thread) and
   // every update steer where the post goes.
+  // A pure FYI post (an update with no buttons, not a reply in a thread, not pinned by tag) goes to
+  // the notifications channel when one is set; anything the human answers stays on the default.
+  const notificationsChannelFor = (p: OutboundPostPayload, replyTo: string | null, threadTs: string | undefined): string | null =>
+    cfg.notificationsChannel && p.humanIntent === "update" && !p.humanConfirm && !p.humanQuestions?.length && !replyTo && !threadTs && !taggedChannel(p)
+      ? cfg.notificationsChannel : null;
+
   const threadReplyTo = (p: OutboundPostPayload): string | null => {
     if (!p.replyTo) return null;
     if (p.humanIntent === "update") return p.replyTo;
@@ -690,9 +696,11 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         // follows the map. Without a map (the fork's channels), a post follows its thread's channel,
         // else its slack-channel tag, its seat's channel or the default.
         resolveChannel: (p, threadTs) => {
-          const recorded = threadReplyTo(p) ? opts.queueRepo.replyToChoiceFor(p.qitemId) : null;
-          if (cfg.channelMap?.length) return recorded ? recorded.channel ?? cfg.channel! : resolveOutboundChannel(cfg, p.sourceSession) ?? cfg.channel!;
-          return recorded?.channel ?? channelForPost(p, threadTs);
+          const replyTo = threadReplyTo(p);
+          const recorded = replyTo ? opts.queueRepo.replyToChoiceFor(p.qitemId) : null;
+          const fyi = notificationsChannelFor(p, replyTo, threadTs);
+          if (cfg.channelMap?.length) return recorded ? recorded.channel ?? cfg.channel! : fyi ?? resolveOutboundChannel(cfg, p.sourceSession) ?? cfg.channel!;
+          return recorded?.channel ?? fyi ?? channelForPost(p, threadTs);
         },
         pinChannel: Boolean(cfg.channelMap?.length),
         sourceLabel: cfg.sourceLabel,

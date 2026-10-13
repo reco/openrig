@@ -142,6 +142,7 @@ export function slackCommand(deps: SlackDeps = {}): Command {
     .option("--feedback-up <csv>", "reaction names that count as 👍 feedback (replaces the list; e.g. +1,thumbsup,rr-plus1)")
     .option("--feedback-down <csv>", "reaction names that count as 👎 feedback (replaces the list)")
     .option("--extra-channel <id=session>", "another channel and the seat its new messages land on (repeatable; replaces the list)", (v: string, acc: string[] = []) => { acc.push(v); return acc; })
+    .option("--notifications-channel <id>", "channel for pure FYI posts (updates with no buttons, not thread replies); 'none' clears it")
     .option("--minimum-level-that-posts <level>", "minimum OWNER level posted to Slack: RECORD|NOTICE|ALERT")
     .option("--minimum-level-that-interrupts <level>", "minimum OWNER level that mentions/interrupts: RECORD|NOTICE|ALERT")
     .option("--source-label <label>", "label shown in the posted message footer (where the queue lives)")
@@ -161,6 +162,7 @@ export function slackCommand(deps: SlackDeps = {}): Command {
           up: opts.feedbackUp ? String(opts.feedbackUp).split(",").map((s: string) => s.trim()).filter(Boolean) : cur.feedbackReactions.up,
           down: opts.feedbackDown ? String(opts.feedbackDown).split(",").map((s: string) => s.trim()).filter(Boolean) : cur.feedbackReactions.down,
         },
+        ...(opts.notificationsChannel ? { notificationsChannel: opts.notificationsChannel === "none" ? null : opts.notificationsChannel } : {}),
         extraChannels: opts.extraChannel
           ? (opts.extraChannel as string[]).map((spec) => { const [id = "", inboundDestination = ""] = spec.split("="); return { id, inboundDestination }; })
           : cur.extraChannels,
