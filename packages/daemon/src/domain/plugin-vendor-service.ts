@@ -59,6 +59,11 @@ const DEFAULT_TIMEOUT_MS = 5000;
 const REPO_BASE = "https://github.com/mvschwarz/openrig-plugins";
 const PLUGIN_MANIFESTS = [".claude-plugin/plugin.json", ".codex-plugin/plugin.json"] as const;
 const GLOBAL_VENDOR_VERSION = ".openrig-vendor-version";
+/** What OpenRig last installed in a vendored tree: each file's sha256. A file that no longer matches
+ *  (or was never recorded) was edited there, and an upgrade leaves it alone. */
+const VENDOR_MANIFEST = ".openrig-vendor-manifest.json";
+
+interface VendorManifest { version: string; files: Record<string, string> }
 
 function parseNumericVersion(raw: string, source: string): number[] {
   const value = raw.trim();
@@ -153,38 +158,81 @@ export class PluginVendorService {
         // Equal versions make the installed bytes authoritative. Still repair
         // mode on byte-identical paths: this is metadata reconciliation, not a
         // rollback, and preserves the established executable-helper repair.
+        const identical: Record<string, string> = {};
         for (const relPath of this.fs.listFiles(sourceDir)) {
           const srcPath = nodePath.join(sourceDir, relPath);
           const destPath = nodePath.join(targetDir, relPath);
-          if (
-            this.fs.exists(destPath) &&
-            hashContent(this.fs.readFile(destPath)) === hashContent(this.fs.readFile(srcPath))
-          ) {
+          const srcHash = hashContent(this.fs.readFile(srcPath));
+          if (this.fs.exists(destPath) && hashContent(this.fs.readFile(destPath)) === srcHash) {
             this.preserveMode(srcPath, destPath);
+            identical[relPath] = srcHash;
           }
         }
+        // An install from before the manifest gets one now: only files identical to this version
+        // count as OpenRig's; any other file there is a local edit from here on.
+        if (!this.readManifest(targetDir)) this.writeManifest(targetDir, { version: sourceVersion, files: identical });
         this.logger(`[plugin-vendor] bundled '${pluginName}' ${sourceVersion} equals installed ${targetVersion}; leaving installed bytes unchanged`);
         return;
       }
     }
 
-    this.fs.mkdirp(targetDir);
+    this.syncTree(sourceDir, targetDir, sourceVersion, `plugin '${pluginName}'`);
+  }
 
-    const files = this.fs.listFiles(sourceDir);
-    for (const relPath of files) {
+  private readManifest(targetDir: string): VendorManifest | null {
+    const path = nodePath.join(targetDir, VENDOR_MANIFEST);
+    if (!this.fs.exists(path)) return null;
+    try {
+      const parsed = JSON.parse(this.fs.readFile(path)) as VendorManifest;
+      return parsed && typeof parsed.files === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private writeManifest(targetDir: string, manifest: VendorManifest): void {
+    this.fs.writeFile(nodePath.join(targetDir, VENDOR_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`);
+  }
+
+  /** Copy a newer version's files over a vendored tree. A file OpenRig installed and nobody changed is
+   *  replaced; a file edited in place (its hash no longer the recorded one, or never recorded) is kept.
+   *  A tree from before the manifest has no record of what it shipped: a differing file there is replaced,
+   *  its old bytes kept beside it. */
+  private syncTree(sourceDir: string, targetDir: string, version: string, what: string): void {
+    const manifest = this.readManifest(targetDir);
+    const files: Record<string, string> = {};
+    this.fs.mkdirp(targetDir);
+    for (const relPath of this.fs.listFiles(sourceDir)) {
       const srcPath = nodePath.join(sourceDir, relPath);
       const destPath = nodePath.join(targetDir, relPath);
       const content = this.fs.readFile(srcPath);
+      const srcHash = hashContent(content);
       // Hash-skip: only write if content differs (idempotent re-runs). Reconcile mode even on
       // skip — a byte-identical copy staged earlier may still carry the wrong (default) mode.
-      if (this.fs.exists(destPath) && hashContent(this.fs.readFile(destPath)) === hashContent(content)) {
-        this.preserveMode(srcPath, destPath);
-        continue;
+      if (this.fs.exists(destPath)) {
+        const current = this.fs.readFile(destPath);
+        const destHash = hashContent(current);
+        if (destHash === srcHash) {
+          this.preserveMode(srcPath, destPath);
+          files[relPath] = srcHash;
+          continue;
+        }
+        if (manifest && manifest.files[relPath] !== destHash) {
+          this.logger(`[plugin-vendor] kept the locally edited ${destPath} (${what} ${version} not applied to it)`);
+          continue;
+        }
+        if (!manifest) {
+          const backup = `${destPath}.pre-${version}`;
+          this.fs.writeFile(backup, current);
+          this.logger(`[plugin-vendor] replaced ${destPath} with ${what} ${version}; its earlier bytes are in ${backup}`);
+        }
       }
       this.fs.mkdirp(nodePath.dirname(destPath));
       this.fs.writeFile(destPath, content);
       this.preserveMode(srcPath, destPath);
+      files[relPath] = srcHash;
     }
+    this.writeManifest(targetDir, { version, files });
   }
 
   /**
@@ -239,7 +287,6 @@ export class PluginVendorService {
       throw new Error(`Required global seed '${skillName}' is missing at ${sourceDir}`);
     }
     parseNumericVersion(sourceVersion, `${skillName} source`);
-    const files = this.fs.listFiles(sourceDir);
     for (const root of globalSkillRoots) {
       const targetDir = nodePath.join(root, skillName);
       const versionMarker = nodePath.join(targetDir, GLOBAL_VENDOR_VERSION);
@@ -255,22 +302,7 @@ export class PluginVendorService {
           continue;
         }
       }
-      this.fs.mkdirp(targetDir);
-      for (const relPath of files) {
-        const srcPath = nodePath.join(sourceDir, relPath);
-        const destPath = nodePath.join(targetDir, relPath);
-        const content = this.fs.readFile(srcPath);
-        if (
-          this.fs.exists(destPath) &&
-          hashContent(this.fs.readFile(destPath)) === hashContent(content)
-        ) {
-          this.preserveMode(srcPath, destPath);
-          continue;
-        }
-        this.fs.mkdirp(nodePath.dirname(destPath));
-        this.fs.writeFile(destPath, content);
-        this.preserveMode(srcPath, destPath);
-      }
+      this.syncTree(sourceDir, targetDir, sourceVersion, `global skill '${skillName}'`);
       this.fs.writeFile(versionMarker, `${sourceVersion}\n`);
     }
   }
