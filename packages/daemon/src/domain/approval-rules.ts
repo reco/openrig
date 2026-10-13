@@ -180,7 +180,13 @@ function argOf(toolInput: unknown): { value: string; path: boolean } {
 
 /** A deny rule sees through quoting, spacing, assignments, wrappers and the executable's directory. */
 function denyForm(segment: string): string {
-  let s = segment.replace(/['"\\]/g, "").replace(/\s+/g, " ").trim();
+  let s = segment.replace(/\s+/g, " ").trim();
+  // A quoted value's spaces would otherwise leave part of it in front of the command once the quotes go.
+  for (let prev = ""; prev !== s;) {
+    prev = s;
+    s = s.replace(/^[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|"[^"]*"|[^\s'"])*\s+/, "").replace(/^(?:sudo|env|command|exec|nohup|time|nice)\s+/, "");
+  }
+  s = s.replace(/['"\\]/g, "");
   for (let prev = ""; prev !== s;) {
     prev = s;
     s = s.replace(/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/, "").replace(/^(?:sudo|env|command|exec|nohup|time|nice)\s+/, "");

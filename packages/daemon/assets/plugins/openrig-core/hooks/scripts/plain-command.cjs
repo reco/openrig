@@ -65,8 +65,9 @@ function plainParts(command) {
 }
 
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
-/** Variables that change which program runs or what it loads at startup. */
-const RUN_CHANGING = /^(?:PATH|NODE_OPTIONS|NODE_PATH|LD_\w*|DYLD_\w*|BASH_ENV|ENV|PYTHONPATH|PYTHONSTARTUP|PERL5LIB|RUBYOPT|GIT_\w*|SHELL|IFS|PROMPT_COMMAND)=/;
+/** Variables that change which program runs, what it loads at startup, or where it reads its configuration
+ *  (any case): search paths, option and flag variables, wrappers, shells, home and config directories. */
+const RUN_CHANGING = /^(?:LD_\w*|DYLD_\w*|GIT_\w*|NPM_CONFIG_\w*|XDG_\w*|BASH_ENV|ENV|IFS|PS4|PROMPT_COMMAND|SHELLOPTS|BASHOPTS|MAKEFILES|PAGER|EDITOR|VISUAL|PYTHONSTARTUP|\w*(?:PATH|OPT|OPTS|OPTIONS|FLAGS|WRAPPER|SHELL|LIB|LIBS|HOME|CONFIG|RC))=/i;
 
 /** A part's words after its leading NAME=value assignments; null when one of them changes what runs. */
 function afterAssignments(words) {
