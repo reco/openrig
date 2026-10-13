@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { answerPrompt, makeStuckPromptWatch, promptBlock, promptCardBody, promptChoices, readPrompt, type StuckPrompt } from "../src/domain/stuck-prompt-watch.js";
+import { answerPrompt, makeStuckPromptWatch, promptBlock, promptCardBody, promptCardDetail, promptChoices, readPrompt, type StuckPrompt } from "../src/domain/stuck-prompt-watch.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const prompt = (question: string) => ["", "  Edit file", question, "❯ 1. Yes", "  2. Yes, and don't ask again", "  3. No", ""].join("\n");
+// The cursor off the plain Yes: not answerable from a card, so it waits the full five minutes.
+const prompt = (question: string) => ["", "  Edit file", question, "  1. Yes", "❯ 2. Yes, and don't ask again", "  3. No", ""].join("\n");
 
 describe("stuck-prompt watch", () => {
   it("notifies once per prompt episode after five minutes, with the question and the attach command", async () => {
@@ -140,9 +141,11 @@ describe("stuck-prompt watch", () => {
     expect(await ask("cfo@finance")).toEqual({ outcome: "no-prompt" });
     pane = ["Which color?", "❯ 1. Red", "  2. Blue"].join("\n");
     expect(await ask("cfo@finance")).toEqual({ outcome: "not-answerable" });
-    pane = "─".repeat(80) + "\n" + [" Bash command", "", ...Array.from({ length: 70 }, (_, i) => `   echo ${i}`), "", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""].join("\n");
+    pane = [...Array.from({ length: 70 }, (_, i) => `   echo ${i}`), "", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""].join("\n");
     expect(await ask("cfo@finance")).toEqual({ outcome: "not-answerable" });
-    expect(sent).toHaveLength(0);
+    pane = [...Array.from({ length: 30 }, (_, i) => `scrollback ${i}`), "─".repeat(80), " Bash command", "", ...Array.from({ length: 70 }, (_, i) => `   echo ${i}`), "", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""].join("\n");
+    expect(await ask("cfo@finance")).toEqual({ outcome: "posted", qitemId: "q1" });
+    expect(sent).toHaveLength(1);
   });
 
   const webSearch = claude.replace(/ Bash command[\s\S]*?(?= Do you want to proceed\?)/, " Tool use\n\n   WebSearch(query: \"r2 pricing class a operations\")\n   Claude wants to search the web for: r2 pricing class a operations\n\n")
@@ -268,16 +271,22 @@ describe("stuck-prompt watch", () => {
     expect(readPrompt(dialog(["rm -rf /", "───────", "echo done"]))!.key).not.toBe(readPrompt(dialog(["ls", "───────", "echo done"]))!.key);
   });
 
-  it("offers no buttons when the dialog's top is cut off (a command longer than the window)", () => {
-    const long = [" Bash command", "", ...Array.from({ length: 70 }, (_, i) => `   echo ${i}`), "", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""].join("\n");
-    expect(readPrompt("─".repeat(80) + "\n" + long)!.choices).toBeUndefined();
+  it("offers no buttons when the dialog's start is off screen (no border or header captured), and says why", () => {
+    const cut = readPrompt([...Array.from({ length: 70 }, (_, i) => `   echo ${i}`), "", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""].join("\n"))!;
+    expect(cut.choices).toBeUndefined();
+    expect(cut.dialogCut).toBe(true);
+    expect(promptCardBody({ session: "s@r", reason: cut.reason, promptLine: cut.promptLine, attach: "tmux attach -t s@r", waitingMinutes: 5, episodeId: "e", since: 0, key: cut.key, dialog: cut.dialog, dialogCut: true }))
+      .toContain("No buttons: the start of this prompt is off screen");
+    const header = readPrompt([...Array.from({ length: 30 }, (_, i) => `scrollback ${i}`), " Bash command", "", ...Array.from({ length: 70 }, (_, i) => `   echo ${i}`), "", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""].join("\n"))!;
+    expect(header.choices).toBeDefined();
+    expect(header.dialog.startsWith("Bash command")).toBe(true);
   });
 
   it("offers no buttons when the cursor is not on the plain Yes", () => {
     expect(promptChoices(claude.replace(" ❯ 1. Yes", "   1. Yes").replace("   4. No", " ❯ 4. No"))).toBeUndefined();
   });
 
-  it("the notice shows what the prompt runs, credentials masked; a dialog too long to show in full gets no buttons", () => {
+  it("the notice shows what the prompt runs, credentials masked; a long dialog keeps its buttons, its card an excerpt, its thread the whole", () => {
     const dialog = (command: string[]) => ["─".repeat(80), " Bash command", "", ...command.map((l) => `   ${l}`), "", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""].join("\n");
     const shown = readPrompt(dialog(["API_TOKEN=s3cr3tvalue123 ./deploy --env prod"]))!;
     expect(shown.choices).toBeDefined();
@@ -287,11 +296,15 @@ describe("stuck-prompt watch", () => {
     expect(block).not.toContain("s3cr3tvalue123");
     expect(block.startsWith("```\n")).toBe(true);
     const long = readPrompt(dialog(Array.from({ length: 40 }, (_, i) => `echo this is line number ${i} of a long generated deployment script`)))!;
-    expect(long.dialogCut).toBe(true);
-    expect(long.choices).toBeUndefined();
-    expect(long.dialog).toContain("(earlier lines cut)");
-    expect(long.dialog).toContain("line number 39");
-    expect(long.dialog).toContain("Do you want to proceed?");
+    expect(long.dialogCut).toBe(false);
+    expect(long.choices).toBeDefined();
+    const card = promptBlock(long);
+    expect(card).toContain("line number 0 of");
+    expect(card).toContain("line number 39 of");
+    expect(card).not.toContain("line number 20 of");
+    const detail = promptCardDetail(long)!;
+    for (let i = 0; i < 40; i++) expect(detail).toContain(`line number ${i} of`);
+    expect(detail.indexOf("line number 5 of")).toBeLessThan(detail.indexOf("line number 6 of"));
   });
 
   it("an unbordered dialog under a long scrollback shows its question, not the top of the scrollback", () => {

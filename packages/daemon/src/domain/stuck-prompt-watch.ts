@@ -33,6 +33,8 @@ export interface StuckPrompt {
   choices?: PromptChoices;
   /** What the prompt asks about (its dialog text: the command, its description), credentials masked. */
   dialog?: string;
+  /** The dialog's start is off screen: it cannot be shown in full, so the card has no buttons. */
+  dialogCut?: boolean;
   /** A seat asked for this card before the prompt had waited five minutes, and why. */
   requestedBy?: string;
   requestReason?: string;
@@ -48,18 +50,34 @@ export type PromptCardResult =
 export const PROMPT_DIALOG_CAP = 1500;
 
 /** The prompt as the notice shows it: its dialog text in a code block, else its question line. */
+const fenced = (text: string) => { const fence = "`".repeat(3); return `${fence}\n${text.split(fence).join("` ` `")}\n${fence}`; };
+
+/** A dialog's first and last lines when it is too long for a card; the whole dialog when it fits. */
+export function dialogExcerpt(dialog: string, cap = PROMPT_DIALOG_CAP): string {
+  if (dialog.length <= cap) return dialog;
+  const lines = dialog.split("\n").map((l) => (l.length > 200 ? `${l.slice(0, 200)}…` : l));
+  return [...lines.slice(0, 3), "…", ...lines.slice(-4)].join("\n");
+}
+
 export function promptBlock(p: { dialog?: string; promptLine: string }): string {
-  const fence = "`".repeat(3);
-  return p.dialog ? `${fence}\n${p.dialog.split(fence).join("` ` `")}\n${fence}` : p.promptLine;
+  return p.dialog ? fenced(dialogExcerpt(p.dialog)) : p.promptLine;
+}
+
+/** The whole dialog for the card's thread, when the card shows only an excerpt. */
+export function promptCardDetail(p: { dialog?: string }): string | undefined {
+  return p.dialog && p.dialog.length > PROMPT_DIALOG_CAP ? `Full dialog:\n${fenced(p.dialog)}` : undefined;
 }
 
 /** A prompt card's text: the prompt, what the buttons do, how to attach, and a requester's reason
  *  on its own last line, right above the buttons. */
 export function promptCardBody(p: StuckPrompt): string {
-  const buttons = p.choices ? `Approve selects "${p.choices.allow.label}" in the terminal, Deny selects "${p.choices.deny.label}", only while this prompt is still up. ` : "";
+  const buttons = p.choices ? `Approve selects "${p.choices.allow.label}" in the terminal, Deny selects "${p.choices.deny.label}", only while this prompt is still up. `
+    : p.dialogCut ? "No buttons: the start of this prompt is off screen, so it cannot be shown in full. "
+    : "No buttons: its plain Yes and No options could not be told apart on screen. ";
+  const full = promptCardDetail(p) ? "Full dialog in this card's thread. " : "";
   const waiting = p.requestedBy ? "" : `Waiting for ${p.waitingMinutes} minutes. `;
   const reason = p.requestedBy ? `\n\n*Why ${p.requestedBy} asks:* ${String(p.requestReason ?? "").replace(/\s+/g, " ").trim()}` : "";
-  return `${promptBlock(p)}\n\n${buttons}${waiting}Attach: \`${p.attach}\`${reason}`;
+  return `${promptBlock(p)}\n\n${full}${buttons}${waiting}Attach: \`${p.attach}\`${reason}`;
 }
 
 export interface PromptChoices { allow: { key: string; label: string }; deny: { key: string; label: string } }
@@ -90,13 +108,12 @@ export function readPrompt(pane: string): { reason: string; key: string; promptL
   const seen = classifyPaneActivity(pane);
   if (seen.state !== "attention" || !PROMPT_REASONS.has(seen.reason ?? "")) return null;
   const evidence = String(seen.evidence ?? "");
-  const { body, bordered, dialog: text } = promptBody(pane, evidence);
+  const { body, dialog: text, topKnown } = promptBody(pane, evidence);
   const key = createHash("sha256").update(`${seen.reason}|${body}`).digest("hex");
-  const masked = maskSecrets(text);
-  const dialogCut = !bordered || masked.length > PROMPT_DIALOG_CAP;
-  // The question and the command sit just above the options: a long dialog keeps its end.
-  const dialog = masked.length > PROMPT_DIALOG_CAP ? `… (earlier lines cut)\n${masked.slice(-PROMPT_DIALOG_CAP)}` : masked;
-  // Answerable only when the human sees all of what they approve: the whole dialog, shown in full.
+  const dialog = maskSecrets(text);
+  const dialogCut = !topKnown;
+  // A dialog too long for the card shows in full in the card's thread, so its buttons stay; one whose
+  // start is off screen cannot be shown in full, so it gets none.
   return { reason: seen.reason!, key, promptLine: questionLine(pane, evidence), choices: dialogCut ? undefined : promptChoices(pane), dialog, dialogCut };
 }
 
@@ -137,21 +154,27 @@ function questionLine(pane: string, evidence: string): string {
 /** The prompt as the seat shows it, from its dialog's top rule (else 20 lines above the options)
  *  to the end, with whitespace and frame characters dropped so a resize or reflow is the same prompt. */
 const DIALOG_BORDER = /^[╭─━]{20,}/;
+/** The first line of a runtime's permission dialog, when it has no border on screen. */
+const DIALOG_HEADER = /^\s*(?:Bash command|Edit file|Create file|Write file|Read file|Tool use|Fetch|Would you like to run the following command\?)\s*$/;
 
 /** The prompt's text from its dialog's top border (else 60 lines above the options) to the end. The
  *  border starts at the left edge; a rule inside the shown command is indented. */
-function promptBody(pane: string, evidence: string): { body: string; bordered: boolean; dialog: string } {
+function promptBody(pane: string, evidence: string): { body: string; dialog: string; topKnown: boolean } {
   const raw = pane.split("\n");
   const at = Math.max(0, anchorLine(raw.map((l) => l.trim()), evidence));
   let from = at;
   while (from > Math.max(0, at - 60) && !DIALOG_BORDER.test(raw[from]!)) from--;
-  const bordered = DIALOG_BORDER.test(raw[from]!);
+  // The dialog's own start, anywhere on the captured screen: its top border, else its header line.
+  let top = at;
+  while (top > 0 && !DIALOG_BORDER.test(raw[top]!)) top--;
+  let start = DIALOG_BORDER.test(raw[top]!) ? top + 1 : -1;
+  for (let i = at; start < 0 && i >= 0; i--) if (DIALOG_HEADER.test(raw[i]!)) start = i;
   // The dialog's text above its options: the command and what it says about it.
-  const above = raw.slice(bordered ? from + 1 : from);
+  const above = raw.slice(start >= 0 ? start : from);
   const firstOption = above.findIndex((l) => OPTION_LINE.test(l));
   const dialog = (firstOption >= 0 ? above.slice(0, firstOption) : above).map((l) => l.trim())
     .filter((l) => l && !/^[╌─━-]+$/.test(l)).join("\n");
-  return { body: flat(raw.slice(from).join("")), bordered, dialog };
+  return { body: flat(raw.slice(from).join("")), dialog, topKnown: start >= 0 };
 }
 
 export interface StuckPromptWatch {
@@ -203,7 +226,7 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
         if (episode.notifiedAt !== undefined || now() - episode.since < wait) continue;
         episode.notifiedAt = now();
         try {
-          await deps.notify({ session, reason: prompt.reason, promptLine, attach: `tmux attach -t ${session}`, episodeId: episodeIdOf(session, key), since: episode.since, key, dialog: prompt.dialog,
+          await deps.notify({ session, reason: prompt.reason, promptLine, attach: `tmux attach -t ${session}`, episodeId: episodeIdOf(session, key), since: episode.since, key, dialog: prompt.dialog, dialogCut: prompt.dialogCut,
             ...(prompt.choices ? { choices: prompt.choices } : {}), waitingMinutes: Math.floor((now() - episode.since) / 60_000) });
         } catch (e) {
           episode.notifiedAt = undefined;
@@ -317,6 +340,8 @@ export async function actOnPromptAnswers(repo: QueueRepository, deps: AnswerDeps
     const row = repo.getById(qitem_id);
     const choice = row?.humanAnswers?.answer;
     if (!row || (choice !== "allow" && choice !== "deny")) continue;
+    // A card split over its thread: its buttons count only once every part, the full dialog included, is in Slack.
+    if (row.humanDetail && !repo.humanNotificationPostedThisEpisode(qitem_id)) continue;
     const transitions = repo.transitionLog.listForQitem(qitem_id);
     if (transitions.some((t) => t.transitionNote?.startsWith("stuck-prompt answer:"))) continue;
     const created = transitions.find((t) => t.transitionNote === "created");

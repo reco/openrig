@@ -2200,7 +2200,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     });
     queueRepoInstance.startWaitReminders();
     {
-      const { hasRecentPromptCard, makeStuckPromptWatch, promptCardBody, retireStalePromptNotices, supersedePromptNotices } = await import("./domain/stuck-prompt-watch.js");
+      const { hasRecentPromptCard, makeStuckPromptWatch, promptCardBody, promptCardDetail, retireStalePromptNotices, supersedePromptNotices } = await import("./domain/stuck-prompt-watch.js");
       // Enough for a long command's whole dialog, so two prompts differing only near the top differ.
       const STUCK_PROMPT_CAPTURE_LINES = 120;
       const { retireApprovalsAnsweredInTerminal, seatHasOpenApproval } = await import("./domain/approvals.js");
@@ -2227,7 +2227,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           supersedePromptNotices(queueRepoInstance, p.session);
           if (!p.choices) {
             await queueRepoInstance.create({ tags: ["stuck-prompt", `stuck-prompt:${p.episodeId}`, `stuck-prompt-session:${p.session}`, `stuck-prompt-key:${p.key}`], sourceSession: "daemon@kernel",
-              destinationSession: human.address, humanIntent: "update", summary, body: promptCardBody(p), nudge: false });
+              destinationSession: human.address, humanIntent: "update", summary, body: promptCardBody(p), humanDetail: promptCardDetail(p), nudge: false });
             return;
           }
           // Answerable from Slack: the seat is the source, so the answer's reply row reaches it.
@@ -2239,6 +2239,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
             humanIntent: "decision",
             summary,
             body: promptCardBody(p),
+            humanDetail: promptCardDetail(p),
             humanQuestions: [{ id: "answer", question: `Answer ${p.session}'s prompt?`, options: [{ id: "allow", label: "Approve" }, { id: "deny", label: "Deny" }] }],
             nudge: false,
           });

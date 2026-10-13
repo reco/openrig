@@ -1,6 +1,6 @@
 // Slack approvals for permission prompts: opt-in seats only, the full command (credentials
 // masked), one-shot, only the addressed human answers, nothing on timeout.
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRequire } from "node:module";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
@@ -49,13 +49,31 @@ describe("Slack approvals", () => {
     expect(repo.getById(id)!.body).toContain(command);
   });
 
-  it("returns Deny, and starts nothing for a seat that did not opt in or an input too long to show in full", async () => {
+  it("returns Deny, and starts nothing for a seat that did not opt in or an input too long even for the card's thread", async () => {
     const s = service();
     const id = (await s.start({ sessionName: "psa-dev@psa", toolName: "Write", toolInput: { file_path: "/a.ts", content: "x" } }))!;
     click(id, "reco@external", "deny");
     expect(await s.wait(id, "psa-dev@psa", 20)).toBe("deny");
     expect(await s.start({ sessionName: "other@rig", toolName: "Bash", toolInput: { command: "ls" } })).toBeNull();
-    expect(await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "echo a && b > c ".repeat(200) } })).toBeNull();
+    expect(await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "echo a && b > c ".repeat(3000) } })).toBeNull();
+  });
+
+  it("a long input keeps its buttons: the card shows its start and end, its thread the whole, and a click counts once the thread is posted", async () => {
+    const s = service();
+    const command = Array.from({ length: 200 }, (_, i) => `echo step ${i} of the generated migration`).join("\n");
+    const id = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command } }))!;
+    const row = repo.getById(id)!;
+    expect(row.humanQuestions?.[0]!.options.map((o) => o.id)).toEqual(["allow", "deny"]);
+    expect(row.body).toContain("echo step 0 of");
+    expect(row.body).toContain("echo step 199 of");
+    expect(row.body).not.toContain("echo step 100 of");
+    expect(row.body).toContain("Full Bash input in this card's thread.");
+    expect(row.humanDetail).toContain("echo step 100 of");
+    const posted = vi.spyOn(repo, "humanNotificationPostedThisEpisode").mockReturnValue(false);
+    click(id, "reco@external", "allow");
+    expect(await s.wait(id, "psa-dev@psa", 20)).toBe("pending");
+    posted.mockReturnValue(true);
+    expect(await s.wait(id, "psa-dev@psa", 20)).toBe("allow");
   });
 
   it("expires with nothing decided: the row is canceled and a later click does nothing", async () => {
