@@ -17,3 +17,7 @@ Bias toward action and deliver what the user asked for. Guardrails, reviews, and
 ## Match rigor to stakes
 
 Use root-cause discipline, verify the real user path, and protect owner state. Be thorough where failure has real consequences and decisive on low-risk details. When process starts taking more attention than the product, simplify and get back to shipping.
+
+## Simple shell commands
+
+Run shell commands as plain commands, or chains joined by `&&`, `||`, `;` or `|`. Pass text as quoted literals. Put multi-step logic in a script file and run that. Do not use `$(...)`, backticks, variables, loops, heredocs, redirects or a background `&`. The human's approval rules can only answer simple commands, so anything else waits for the human. Claude seats refuse such a command outright, with the reason.

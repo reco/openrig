@@ -162,6 +162,19 @@ describe("Claude activity-hook delivery — ENABLE (entry present, source + mani
     expect(fs._modes[RELAY_DEST]! & 0o777).toBe(0o755);
   });
 
+  it("projects the simple-command guard as one Bash PreToolUse hook with its shared definition, without duplicating it", async () => {
+    const dir = "/assets/plugins/openrig-core/hooks/scripts";
+    const fs = enableFs({ [`${dir}/simple-command-guard.cjs`]: "// guard", [`${dir}/plain-command.cjs`]: "// plain" });
+    const adapter = makeAdapter(fs);
+    await adapter.project(plan([activityEntry()]), binding());
+    await adapter.project(plan([activityEntry()]), binding());
+    const guardDest = `${STATE_DIR}/state/claude-activity-hooks/simple-command-guard.cjs`;
+    expect(fs._store[guardDest]).toBe("// guard");
+    expect(fs._store[`${STATE_DIR}/state/claude-activity-hooks/plain-command.cjs`]).toBe("// plain");
+    const pre = readSettings(fs).hooks.PreToolUse as Array<{ matcher: string; hooks: Array<{ command: string }> }>;
+    expect(pre.filter((g) => g.hooks.some((h) => h.command === `node ${shellQuote(guardDest)}`))).toEqual([{ matcher: "Bash", hooks: [{ type: "command", command: `node ${shellQuote(guardDest)}`, timeout: 5 }] }]);
+  });
+
   it("copies the relay outside cwd into the configured instance at mode 0755", async () => {
     const fs = enableFs();
     await makeAdapter(fs).project(plan([activityEntry()]), binding());

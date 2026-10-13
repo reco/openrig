@@ -1,6 +1,7 @@
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, posix } from "node:path";
+import { createRequire } from "node:module";
 
 export type RuleEffect = "allow" | "deny";
 
@@ -99,10 +100,25 @@ function commandSegments(command: string): string[] {
   return command.split(/[;&|\n`(){}<>]+|\$\(/).map(denyForm).filter(Boolean);
 }
 
-/** An allow rule takes only plain words, single-spaced: no quoting, expansion, operators, assignment or executable path. */
-const PLAIN_COMMAND = /^[\w\-.:@%+,/=]+(?: [\w\-.:@%+,/=]+)*$/;
-const allowable = (command: string) => PLAIN_COMMAND.test(command) && !/[=/]/.test(command.split(" ")[0]!)
-  && !(command.startsWith("cd ") && (!CHANGE_DIR.test(command) || command.split(/[ /]/).includes("..")));
+interface PlainCommand {
+  parse: (command: string) => Array<Array<{ text: string; quoted: boolean }>> | null;
+  plainParts: (command: string) => string[] | null;
+}
+const plain = createRequire(import.meta.url)("../../assets/plugins/openrig-core/hooks/scripts/plain-command.cjs") as PlainCommand;
+
+const PLAIN_WORD = /^[\w\-.:@%+,/=]+$/;
+
+/** An allow rule takes a simple part whose words are plain or quoted literals: no glob, tilde,
+ *  assignment or executable path; a cd takes one plain directory and never climbs with "..". */
+function allowable(part: string): boolean {
+  const words = plain.parse(part);
+  if (!words || words.length !== 1) return false;
+  const [first, ...args] = words[0]!;
+  if (!first || first.quoted || !PLAIN_WORD.test(first.text) || /[=/]/.test(first.text)) return false;
+  if (!args.every((w) => w.quoted || PLAIN_WORD.test(w.text))) return false;
+  if (first.text !== "cd") return true;
+  return args.length === 1 && !args[0]!.quoted && !args[0]!.text.split("/").includes("..");
+}
 
 function hits(rule: ApprovalRule, req: RuleRequest): boolean {
   if (rule.seats && !globMatches(rule.seats, req.sessionName)) return false;
@@ -120,30 +136,21 @@ function hits(rule: ApprovalRule, req: RuleRequest): boolean {
   return allowable(command) && globMatches(match.arg, command);
 }
 
-const OPERATOR = /\s*(?:&&|\|\||;|\|)\s*/;
-const CHANGE_DIR = /^cd [\w\-.:@%+,/=]+$/;
-
-/** The plain commands of a command chained only with &&, ||, ; or |, or null when any part is not plain. */
-function plainParts(command: string): string[] | null {
-  if (!/(?:&&|\|\||;|\|)/.test(command)) return null;
-  const parts = command.trim().split(OPERATOR);
-  return parts.every(allowable) ? parts : null;
-}
-
-/** Deny wins over allow; no hit leaves the request to the human. A plain command is allowed by a matching rule;
- *  a chain of plain commands only when every command in it is, a cd included (and a cd never climbs with ..). */
+/** Deny wins over allow; no hit leaves the request to the human. A command is allowed only when it is
+ *  simple (the guard's definition) and every part of it, a cd included, matches an allow rule. */
 export function ruleDecision(rules: readonly ApprovalRule[], req: RuleRequest): RuleHit | null {
   const deny = rules.find((r) => r.effect === "deny" && hits(r, req));
   if (deny) return { effect: "deny", rule: deny };
   const allowOf = (r: RuleRequest) => rules.find((rule) => rule.effect === "allow" && hits(rule, r));
   const command = commandOf(req.toolInput);
-  const parts = command === null ? null : plainParts(command);
-  if (parts) {
-    const covering = parts.map((p) => allowOf({ ...req, toolInput: { command: p } }));
-    return covering.length && covering.every(Boolean) ? { effect: "allow", rule: covering[covering.length - 1]! } : null;
+  if (command === null) {
+    const allow = allowOf(req);
+    return allow ? { effect: "allow", rule: allow } : null;
   }
-  const allow = allowOf(req);
-  return allow ? { effect: "allow", rule: allow } : null;
+  const parts = plain.plainParts(command);
+  if (!parts) return null;
+  const covering = parts.map((p) => allowOf({ ...req, toolInput: { command: p } }));
+  return covering.every(Boolean) ? { effect: "allow", rule: covering[covering.length - 1]! } : null;
 }
 
 /** The deny rules for one seat in Claude's own permission syntax, so its runtime refuses them even without the daemon.

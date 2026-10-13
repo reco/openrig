@@ -1019,6 +1019,19 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         groups.push({ hooks: [{ type: "command", command: `node ${shellQuote(approvalDest)}`, timeout: APPROVAL_HOOK_TIMEOUT_SEC }] });
         hooks["PermissionRequest"] = groups;
       }
+      // Simple commands only: a Bash command approval rules cannot read is refused before any prompt.
+      const scriptsDir = nodePath.dirname(this.activityRelayPath!);
+      const guardSource = nodePath.join(scriptsDir, "simple-command-guard.cjs");
+      if (this.fs.exists(guardSource)) {
+        for (const name of ["plain-command.cjs", "simple-command-guard.cjs"]) {
+          const source = nodePath.join(scriptsDir, name), dest = nodePath.join(nodePath.dirname(relayDest), name);
+          if (!this.fs.exists(dest) || this.fs.readFile(dest) !== this.fs.readFile(source)) this.fs.copyFile(source, dest);
+          this.preserveMode(source, dest);
+        }
+        const groups = Array.isArray(hooks["PreToolUse"]) ? (hooks["PreToolUse"] as unknown[]) : [];
+        groups.push({ matcher: "Bash", hooks: [{ type: "command", command: `node ${shellQuote(nodePath.join(nodePath.dirname(relayDest), "simple-command-guard.cjs"))}`, timeout: 5 }] });
+        hooks["PreToolUse"] = groups;
+      }
     }
 
     // 3. Persist only when something changed (never touch an unchanged / never-managed file).
@@ -1052,6 +1065,7 @@ interface ActivityHookOutcome {
 const LEGACY_OWNED_RELAY_SUFFIX = "/.openrig/hooks/scripts/activity-relay.cjs";
 const LEGACY_OWNED_APPROVAL_SUFFIX = "/.openrig/hooks/scripts/approval-request.cjs";
 const OWNED_APPROVAL_RELATIVE_PATH = CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH.replace(/activity-relay\.cjs$/, "approval-request.cjs");
+const OWNED_GUARD_RELATIVE_PATH = CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH.replace(/activity-relay\.cjs$/, "simple-command-guard.cjs");
 /** Just above the longest approval deadline (MAX_APPROVAL_TIMEOUT_SECONDS); the daemon ends the wait. */
 const APPROVAL_HOOK_TIMEOUT_SEC = 3660;
 /** sha256 of every approval-request.cjs this package has shipped: a project copy matching one is ours to update. */
@@ -1107,7 +1121,8 @@ function isOwnedRelayCommand(cmd: string | undefined): boolean {
   return decoded.endsWith(LEGACY_OWNED_RELAY_SUFFIX)
     || decoded.endsWith(`/${CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH}`)
     || decoded.endsWith(LEGACY_OWNED_APPROVAL_SUFFIX)
-    || decoded.endsWith(`/${OWNED_APPROVAL_RELATIVE_PATH}`);
+    || decoded.endsWith(`/${OWNED_APPROVAL_RELATIVE_PATH}`)
+    || decoded.endsWith(`/${OWNED_GUARD_RELATIVE_PATH}`);
 }
 
 /** Decode ONE POSIX single-quoted shell token as produced by shellQuote (outer `'…'` with an

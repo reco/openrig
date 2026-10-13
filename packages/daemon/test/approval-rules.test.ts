@@ -55,10 +55,19 @@ describe("approval rules", () => {
     expect(effect(rules, bash("git status && npm publish"))).toBeNull();
   });
 
+  it("allows quoted literals: single quotes, or double quotes without $, ` or \\ inside", () => {
+    const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(sqlite3 -readonly -safe *)" }, { effect: "allow", match: "Bash(grep *)" }, { effect: "allow", match: "Bash(git log *)" }];
+    expect(effect(rules, bash("sqlite3 -readonly -safe db.sqlite 'select count(*) from t where a = 1;'"))).toBe("allow");
+    expect(effect(rules, bash(`grep -rn "a && b | c" src`))).toBe("allow");
+    expect(effect(rules, bash(`git log --format='%h %s' | grep 'fix: x'`))).toBe("allow");
+    expect(effect(rules, bash(`grep "$PATH" x`))).toBeNull();
+    expect(effect(rules, bash("grep 'unbalanced x"))).toBeNull();
+  });
+
   it("never allows past an assignment, a wrapper, an executable path, quoting or odd spacing", () => {
     const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(ps *)" }, { effect: "allow", match: "Bash(ls *)" }];
     for (const command of ["PATH=/tmp/evil ps aux", "LD_PRELOAD=/tmp/x.so ps", "./ps aux", "/tmp/x/ps", "/bin/ps aux", "sudo ls /root", "env ls",
-      "ps  aux", "ps\taux", "ps 'aux'", "ps a\\ux", "ls *", "ls ~"]) {
+      "ps\taux", "ps a\\ux", "ls *", "ls ~", "'ps' aux", "ps \"$HOME\"", "ps \"a`id`\"", "ps \"a\\b\""]) {
       expect(effect(rules, bash(command)), command).toBeNull();
     }
   });
