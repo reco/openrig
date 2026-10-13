@@ -90,6 +90,21 @@ describe("approval rules", () => {
     expect(claudeDenyRules(env, null)).toEqual(["Read(~/**/.env)", "Edit(//etc/**)"]);
   });
 
+  it("the git deny rules stop command-running and file-writing options that the subcommand allows would pass", () => {
+    const rules: ApprovalRule[] = [
+      ...["git status *", "git log *", "git diff *", "git show *", "git fetch *", "git branch *", "git rev-parse *"].map((m) => ({ effect: "allow" as const, match: `Bash(${m})` })),
+      ...["git *--upload-pack*", "git *--output*", "git -c *", "git *--ext-diff*"].map((m) => ({ effect: "deny" as const, match: `Bash(${m})` })),
+    ];
+    for (const command of ["git fetch --upload-pack=/tmp/x origin", "git fetch origin --upload-pack /tmp/x", "git diff --output=/etc/hosts", "git log --output=/tmp/x",
+      "git show HEAD --output=x", "git -c core.pager=sh log", "git -c diff.external=/tmp/x diff", "git diff --ext-diff", "cd /Users/reco/dev/x && git log --output=y"]) {
+      expect(effect(rules, bash(command)), command).toBe("deny");
+    }
+    for (const command of ["git fetch origin", "git fetch", "git log --oneline -5", "git diff HEAD~1", "git status"]) {
+      expect(effect(rules, bash(command)), command).not.toBe("deny");
+    }
+    expect(effect(rules, bash("git fetch origin"))).toBe("allow");
+  });
+
   it("matches tools by name and file tools by path, scoped to seats", () => {
     const rules: ApprovalRule[] = [
       { effect: "allow", match: "Edit(/Users/reco/dev/**)", seats: "*@openrig-dev" },
