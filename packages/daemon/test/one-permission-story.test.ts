@@ -14,7 +14,7 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import { alwaysOffer, makeApprovalService } from "../src/domain/approvals.js";
-import { actOnPromptAnswers, promptCommand, readPrompt } from "../src/domain/stuck-prompt-watch.js";
+import { actOnPromptAnswers, answerPromptsByRule, promptCommand, readPrompt } from "../src/domain/stuck-prompt-watch.js";
 import {
   DEFAULT_APPROVAL_RULES, alwaysRuleFor, claudePermissionRules, codexRulesText, projectCodexRules, readApprovalRules,
   ruleDecision, saveAlwaysRule, seedApprovalRules, type ApprovalRule,
@@ -318,6 +318,50 @@ describe("one permission story", () => {
       await actOnPromptAnswers(repo, { capture: async () => pane, inMode: async () => false, sendKey: async (_s, k) => { keys.push(k); }, saveRule: (r) => saved.push(r) });
       expect(keys).toEqual(["2"]);
       expect(saved).toEqual([{ effect: "deny", match: "Bash(rm -rf build)", seats: "cfo@finance", note: "saved from Slack for cfo@finance", exact: true }]);
+    });
+
+    it("a rule added while an approval is open answers it as a rule hit at start would; deny still wins; no hit leaves it with the human", async () => {
+      const rules: ApprovalRule[] = [];
+      const s = makeApprovalService({ queueRepo: repo, optedIn: () => ["cfo@finance"], approver: () => "reco@external", verifySeat: () => true, pollMs: 10, rules: () => rules });
+      const sweep = (await s.start(bash("bash /path/sweep.sh --since 2h", "cfo@finance")))!;
+      const wipe = (await s.start(bash("rm -rf build", "cfo@finance")))!;
+      expect(s.recheck()).toEqual([]);
+      expect(await s.wait(sweep, "cfo@finance", 20)).toBe("pending");
+      rules.push({ effect: "allow", match: "Bash(bash /path/sweep.sh *)" }, { effect: "allow", match: "Bash(rm *)" }, { effect: "deny", match: "Bash(rm -rf *)" });
+      expect(s.recheck().sort()).toEqual([sweep, wipe].sort());
+      expect(await s.wait(sweep, "cfo@finance", 20)).toBe("allow");
+      expect(s.ruleMessage(sweep)).toBe("Allowed by the OpenRig approval rule Bash(bash /path/sweep.sh *)");
+      expect(await s.wait(wipe, "cfo@finance", 20)).toBe("deny");
+      expect(s.ruleMessage(wipe)).toBe("Denied by the OpenRig approval rule Bash(rm -rf *)");
+      expect(repo.getById(wipe)!.state).toBe("canceled");
+      expect(repo.transitionLog.listForQitem(wipe).map((t) => t.transitionNote)).toContain("stuck-prompt cleared: denied by rule Bash(rm -rf *)");
+      expect(s.recheck()).toEqual([]);
+    });
+
+    it("a rule added while a stuck-prompt card is open answers its prompt once, only while that prompt is on screen", async () => {
+      const rule = "╌".repeat(80);
+      const paneFor = (command: string) => ["─".repeat(80), " Bash command", rule, ` ${command}`, rule, " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""].join("\n");
+      const cardFor = async (session: string, pane: string) => (await repo.create({ tags: ["stuck-prompt", "stuck-prompt:e", `stuck-prompt-session:${session}`, `stuck-prompt-key:${readPrompt(pane)!.key}`,
+        "stuck-prompt-allow:1", "stuck-prompt-deny:2", "stuck-prompt-since:0"], sourceSession: session, destinationSession: "reco@external", humanIntent: "decision", summary: `${session} is waiting`, body: "card",
+        humanQuestions: [{ id: "answer", question: "Answer?", options: [{ id: "allow", label: "Approve" }, { id: "deny", label: "Deny" }] }], nudge: false })).qitemId;
+      const screens: Record<string, string> = { "a@rig": paneFor("bash /path/sweep.sh --since 2h"), "b@rig": paneFor("rm -rf build"), "c@rig": paneFor("bash /path/sweep.sh --since 2h") };
+      const sweep = await cardFor("a@rig", screens["a@rig"]!);
+      const wipe = await cardFor("b@rig", screens["b@rig"]!);
+      const moved = await cardFor("c@rig", screens["c@rig"]!);
+      screens["c@rig"] = paneFor("bash /path/sweep.sh --since 3h");
+      const keys: string[] = [];
+      const answerDeps = { capture: async (s: string) => screens[s]!, inMode: async () => false, sendKey: async (s: string, k: string) => { keys.push(`${s}:${k}`); } };
+      expect(await answerPromptsByRule(repo, { ...answerDeps, rules: [] })).toEqual([]);
+      const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(bash /path/sweep.sh *)" }, { effect: "allow", match: "Bash(rm *)" }, { effect: "deny", match: "Bash(rm -rf *)" }];
+      expect((await answerPromptsByRule(repo, { ...answerDeps, rules })).sort()).toEqual([sweep, wipe].sort());
+      expect(keys).toEqual(["a@rig:1", "b@rig:2"]);
+      expect(repo.getById(sweep)!.state).toBe("canceled");
+      expect(repo.transitionLog.listForQitem(sweep).map((t) => t.transitionNote)).toContain("stuck-prompt cleared: approved by rule Bash(bash /path/sweep.sh *)");
+      expect(repo.getById(moved)!.state).toBe("pending");
+      expect(await answerPromptsByRule(repo, { ...answerDeps, rules })).toEqual([]);
+      repo.recordHumanAnswer({ qitemId: sweep, actorSession: "reco@external", questionId: "answer", optionId: "allow" });
+      await actOnPromptAnswers(repo, answerDeps);
+      expect(keys).toEqual(["a@rig:1", "b@rig:2"]);
     });
   });
 

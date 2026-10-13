@@ -2258,18 +2258,33 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       });
       // A human's Approve / Deny on a stuck-prompt notice is typed into the seat's terminal once, and
       // only while the same prompt is up; the thread says what happened either way.
-      const { actOnPromptAnswers } = await import("./domain/stuck-prompt-watch.js");
+      const { actOnPromptAnswers, answerPromptsByRule } = await import("./domain/stuck-prompt-watch.js");
+      const { approvalRulesPath, readApprovalRules } = await import("./domain/approval-rules.js");
+      const answerDeps = {
+        capture: (session: string) => tmuxAdapter.capturePaneContent(session, STUCK_PROMPT_CAPTURE_LINES),
+        inMode: (session: string) => tmuxAdapter.isPaneInMode(session),
+        onSent: (session: string) => deps.stuckPromptWatch?.forget(session),
+        saveRule: (rule: Parameters<typeof saveAlwaysRule>[1]) => saveAlwaysRule(OPENRIG_HOME, rule),
+        sendKey: async (session: string, key: string) => { const r = await tmuxAdapter.sendKeys(session, [key]); if (!r.ok) throw new Error(r.message ?? "send failed"); },
+      };
+      // Any write to the rules file (rig approvals, an Always click, an editor) re-checks the open prompts once.
+      const rulesStamp = () => { try { const s = fs.statSync(approvalRulesPath(OPENRIG_HOME)); return `${s.mtimeMs}|${s.size}`; } catch { return "none"; } };
+      let rulesSeen = rulesStamp();
+      const recheckOpenPrompts = async () => {
+        const stamp = rulesStamp();
+        if (stamp === rulesSeen) return;
+        rulesSeen = stamp;
+        const rules = readApprovalRules(OPENRIG_HOME);
+        for (const id of deps.approvalService?.recheck() ?? []) console.log(`[approvals] ${id} answered by a rule added after it was asked`);
+        for (const id of await answerPromptsByRule(queueRepoInstance, { ...answerDeps, rules })) console.log(`[stuck-prompt] ${id} answered by a rule added after it was asked`);
+      };
       let answering = false;
       setInterval(() => {
         if (answering || !db.open) return;
         answering = true;
-        void actOnPromptAnswers(queueRepoInstance, {
-          capture: (session) => tmuxAdapter.capturePaneContent(session, STUCK_PROMPT_CAPTURE_LINES),
-          inMode: (session) => tmuxAdapter.isPaneInMode(session),
-          onSent: (session) => deps.stuckPromptWatch?.forget(session),
-          saveRule: (rule) => saveAlwaysRule(OPENRIG_HOME, rule),
-          sendKey: async (session, key) => { const r = await tmuxAdapter.sendKeys(session, [key]); if (!r.ok) throw new Error(r.message ?? "send failed"); },
-        }).catch((e) => console.log(`[stuck-prompt] answer pass failed: ${(e as Error).message}`)).finally(() => { answering = false; });
+        void recheckOpenPrompts().catch((e) => console.log(`[approvals] rule re-check failed: ${(e as Error).message}`))
+          .then(() => actOnPromptAnswers(queueRepoInstance, answerDeps))
+          .catch((e) => console.log(`[stuck-prompt] answer pass failed: ${(e as Error).message}`)).finally(() => { answering = false; });
       }, 3_000).unref();
       // Merge / Not now on a merge card the daemon built: the daemon re-checks the gates and merges.
       const { actOnMergeAnswers, defaultGh } = await import("./domain/human-merge.js");

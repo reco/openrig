@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import type { QueueRepository } from "./queue-repository.js";
 import { maskSecrets } from "./credential-mask.js";
 import { SLACK_SECTION_CAP, escapeSlackText, redactSecrets } from "./gateway/slack/message.js";
-import { dialogExcerpt } from "./stuck-prompt-watch.js";
+import { PROMPT_CLEARED_PREFIX, dialogExcerpt } from "./stuck-prompt-watch.js";
 import { alwaysRuleFor, ruleDecision, type AlwaysRule, type ApprovalRule } from "./approval-rules.js";
 
 /** On a card that offers Always approve / Always deny: the exact rule it shows, saved on that click. */
@@ -72,7 +72,13 @@ export interface ApprovalService {
   /** Expire every open request whose deadline passed or whose hook stopped asking (killed,
    *  answered in the terminal, an older hook that gave up, a daemon restart). */
   sweep: () => Promise<void>;
+  /** Answer every open request a rule now covers, as a rule hit at start would; returns the answered ids. */
+  recheck: () => string[];
+  /** The rule's message for a request a rule answered after it was asked; null otherwise. */
+  ruleMessage: (requestId: string) => string | null;
 }
+
+const RULED = new RegExp(`^${PROMPT_CLEARED_PREFIX}(approved|denied) by rule (.+)$`, "s");
 
 /** A hook asks again within a minute (one wait slice); twice that without a call means it is gone. */
 export const APPROVAL_ABANDONED_MS = 120_000;
@@ -171,28 +177,54 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
     try { deps.saveRule({ effect, match, seats: seat, note: `saved from Slack for ${seat}`, ...exact }); return match; }
     catch (e) { log(`always rule ${match} not saved: ${(e as Error).message}`); return null; }
   };
+  /** The input of each request this process asked about, so a later rule can answer it. */
+  const asked = new Map<string, ApprovalRequest>();
   const hitFor = (input: ApprovalRequest) => {
     try { return ruleDecision(deps.rules?.() ?? [], input); } catch (e) {
       log(`approval rules not applied: ${(e as Error).message}`);
       return null;
     }
   };
-  const ruleMessage = (hit: NonNullable<ReturnType<typeof ruleDecision>>) =>
+  const hitMessage = (hit: NonNullable<ReturnType<typeof ruleDecision>>) =>
     `${hit.effect === "deny" ? "Denied" : "Allowed"} by the OpenRig approval rule ${hit.rule.match}${hit.rule.note ? `: ${hit.rule.note}` : ""}`;
+  const ruledBy = (requestId: string) => {
+    const notes = deps.queueRepo.transitionLog.listForQitem(requestId);
+    const m = notes.map((t) => RULED.exec(t.transitionNote ?? "")).find(Boolean);
+    return m ? { decision: (m[1] === "approved" ? "allow" : "deny") as ApprovalDecision, match: m[2]! } : null;
+  };
   const service: ApprovalService = {
     verify: async (sessionName, seatToken) => deps.verifySeat(sessionName, seatToken),
     byRule(input) {
       const hit = hitFor(input);
       if (!hit) return null;
       log(`${hit.effect} by rule ${hit.rule.match}${hit.rule.seats ? ` for ${hit.rule.seats}` : ""}: ${input.sessionName} ${input.toolName} ${approvalText(input.toolName, input.toolInput).split("\n")[0]!.slice(0, 200)}`);
-      return { decision: hit.effect, message: ruleMessage(hit) };
+      return { decision: hit.effect, message: hitMessage(hit) };
     },
     denyByRule(input) {
       // Unreadable rules throw: the hook then refuses what it cannot check, rather than every deny going quiet.
       const hit = ruleDecision(deps.rules?.() ?? [], input);
       if (hit?.effect !== "deny") return null;
       log(`deny by rule ${hit.rule.match} before the runtime's own rules: ${input.sessionName} ${approvalText(input.toolName, input.toolInput).split("\n")[0]!.slice(0, 200)}`);
-      return ruleMessage(hit);
+      return hitMessage(hit);
+    },
+    recheck() {
+      const answered: string[] = [];
+      for (const [requestId, input] of asked) {
+        const item = deps.queueRepo.getById(requestId);
+        if (!item || item.state !== "pending" || item.humanAnswers?.[QUESTION_ID]) { asked.delete(requestId); continue; }
+        const hit = hitFor(input);
+        if (!hit) continue;
+        asked.delete(requestId);
+        // Canceling closes the card, its line saying which rule answered (request-lifecycle closeRequest).
+        deps.queueRepo.update({ qitemId: requestId, actorSession: "daemon@kernel", state: "canceled",
+          transitionNote: `${PROMPT_CLEARED_PREFIX}${hit.effect === "allow" ? "approved" : "denied"} by rule ${hit.rule.match}` });
+        answered.push(requestId);
+      }
+      return answered;
+    },
+    ruleMessage(requestId) {
+      const ruled = ruledBy(requestId);
+      return ruled ? `${ruled.decision === "deny" ? "Denied" : "Allowed"} by the OpenRig approval rule ${ruled.match}` : null;
     },
     async start(input) {
       if (!deps.optedIn().includes(input.sessionName)) return null;
@@ -233,6 +265,7 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
         humanQuestions: [{ id: QUESTION_ID, question: `Allow ${input.sessionName} to run this ${input.toolName}?`, options: always.options }],
         nudge: false,
       });
+      asked.set(qitemId, input);
       return qitemId;
     },
     async sweep() {
@@ -248,6 +281,8 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
       for (;;) {
         const item = deps.queueRepo.getById(requestId);
         if (!item?.tags?.includes("approval-request") || item.sourceSession !== sessionName) return "expired";
+        const ruled = item.state === "canceled" ? ruledBy(requestId) : null;
+        if (ruled) return ruled.decision;
         const clicked = item.humanAnswers?.[QUESTION_ID];
         const answer = clicked === "always_allow" ? "allow" : clicked === "always_deny" ? "deny" : clicked;
         // A card split over its thread: its buttons count only once every part, the full input included, is in Slack.

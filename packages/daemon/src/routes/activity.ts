@@ -559,5 +559,6 @@ activityRoutes.post("/approvals", async (c) => {
   })();
   if (!requestId) return c.json({ ok: true, decision: null, pending: false });
   const outcome = await approvals.wait(requestId, sessionName, 60_000);
-  return c.json({ ok: true, requestId, decision: outcome === "allow" || outcome === "deny" ? outcome : null, pending: outcome === "pending" });
+  const message = outcome === "allow" || outcome === "deny" ? approvals.ruleMessage(requestId) : null;
+  return c.json({ ok: true, requestId, decision: outcome === "allow" || outcome === "deny" ? outcome : null, ...(message ? { message } : {}), pending: outcome === "pending" });
 });

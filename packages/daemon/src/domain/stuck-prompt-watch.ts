@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { classifyPaneActivity } from "./session-transport.js";
 import { maskSecrets } from "./credential-mask.js";
 import type { QueueRepository } from "./queue-repository.js";
+import { ruleDecision, type ApprovalRule } from "./approval-rules.js";
 
 export const STUCK_PROMPT_AFTER_MS = 5 * 60_000;
 export const ANSWERABLE_PROMPT_AFTER_MS = 10_000;
@@ -357,10 +358,8 @@ export function supersedePromptNotices(repo: QueueRepository, session: string): 
  *  only while the same prompt is up; the notice's thread says what happened either way. Only a
  *  notice the daemon itself created counts (a row made over the API carries an identity provenance),
  *  its seat is the row's own source, and the key comes from the screen, never from the row. */
-export async function actOnPromptAnswers(repo: QueueRepository, deps: AnswerDeps, now = Date.now()): Promise<void> {
-  const rows = repo.db.prepare(`SELECT qitem_id FROM queue_items WHERE ts_created > ? AND tags LIKE '%"stuck-prompt-key:%'`)
-    .all(new Date(now - 2 * 3600_000).toISOString()) as Array<{ qitem_id: string }>;
-  // The last time each prompt was answered: a card for that prompt's episode started before then types nothing.
+/** The last time each prompt was answered: a card for that prompt's episode started before then types nothing. */
+function promptAnsweredAt(repo: QueueRepository, now: number): Map<string, number> {
   const answeredAt = new Map<string, number>();
   for (const r of repo.db.prepare(`SELECT q.tags AS tags, t.ts AS ts FROM queue_items q JOIN queue_transitions t ON t.qitem_id = q.qitem_id
       WHERE q.ts_created > ? AND t.transition_note LIKE 'stuck-prompt answer: % sent%'`).all(new Date(now - 2 * 3600_000).toISOString()) as Array<{ tags: string; ts: string }>) {
@@ -368,6 +367,42 @@ export async function actOnPromptAnswers(repo: QueueRepository, deps: AnswerDeps
     const key = `${tagValue(tags, "stuck-prompt-session")}|${tagValue(tags, "stuck-prompt-key")}`;
     answeredAt.set(key, Math.max(answeredAt.get(key) ?? 0, Date.parse(r.ts)));
   }
+  return answeredAt;
+}
+
+/** After the rules change: an unanswered card whose prompt is still on screen, showing a command a rule now covers,
+ *  is answered with that rule's effect through the same key path as its buttons, and closed naming the rule. */
+export async function answerPromptsByRule(repo: QueueRepository, deps: AnswerDeps & { rules: readonly ApprovalRule[] }, now = Date.now()): Promise<string[]> {
+  const answeredAt = promptAnsweredAt(repo, now);
+  const answered: string[] = [];
+  for (const n of openPromptNotices(repo)) {
+    const row = repo.getById(n.qitemId);
+    const transitions = repo.transitionLog.listForQitem(n.qitemId);
+    const created = transitions.find((t) => t.transitionNote === "created");
+    if (!row || row.humanAnswers?.answer || !n.key || n.session !== row.sourceSession || !tagValue(row.tags, "stuck-prompt-allow")) continue;
+    if (!created || created.identityProvenance !== null || transitions.some((t) => t.transitionNote?.startsWith("stuck-prompt answer:"))) continue;
+    const pane = await deps.capture(n.session).catch(() => null);
+    const prompt = pane === null ? null : readPrompt(pane);
+    if (!prompt || prompt.key !== n.key || !prompt.command) continue;
+    const hit = ruleDecision(deps.rules, { sessionName: n.session, toolName: "Bash", toolInput: { command: prompt.command } });
+    // A prompt already answered this episode, or a pane a key would not reach, keeps its card for the human.
+    if (!hit || (answeredAt.get(`${n.session}|${n.key}`) ?? -1) >= Number(tagValue(row.tags, "stuck-prompt-since") ?? 0) || await deps.inMode(n.session)) continue;
+    repo.update({ qitemId: n.qitemId, actorSession: "daemon@kernel", transitionNote: `stuck-prompt answer: ${hit.effect} pending` });
+    const result = await answerPrompt(deps, n.session, n.key, hit.effect).catch((e: Error) => ({ outcome: `failed: ${e.message}` as const, key: undefined }));
+    repo.update({ qitemId: n.qitemId, actorSession: "daemon@kernel", transitionNote: `stuck-prompt answer: ${hit.effect}${result.key ? ` key=${result.key}` : ""} ${result.outcome} by rule ${hit.rule.match}` });
+    if (result.outcome !== "sent") continue;
+    answeredAt.set(`${n.session}|${n.key}`, now);
+    deps.onSent?.(n.session);
+    cancelNotice(repo, n.qitemId, `${hit.effect === "allow" ? "approved" : "denied"} by rule ${hit.rule.match}`);
+    answered.push(n.qitemId);
+  }
+  return answered;
+}
+
+export async function actOnPromptAnswers(repo: QueueRepository, deps: AnswerDeps, now = Date.now()): Promise<void> {
+  const rows = repo.db.prepare(`SELECT qitem_id FROM queue_items WHERE ts_created > ? AND tags LIKE '%"stuck-prompt-key:%'`)
+    .all(new Date(now - 2 * 3600_000).toISOString()) as Array<{ qitem_id: string }>;
+  const answeredAt = promptAnsweredAt(repo, now);
   for (const { qitem_id } of rows) {
     const row = repo.getById(qitem_id);
     const clicked = row?.humanAnswers?.answer;
