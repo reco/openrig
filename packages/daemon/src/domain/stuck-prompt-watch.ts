@@ -143,9 +143,11 @@ export function promptCommand(pane: string): string | null {
   }
   const codex = lines.lastIndexOf("Would you like to run the following command?");
   if (codex < 0) return null;
-  const run = lines.slice(codex + 1).find((l) => l.startsWith("$ "));
-  const options = lines.slice(codex + 1).findIndex((l) => /^[❯›]?\s*1\./.test(l));
-  return run && (options < 0 || lines.indexOf(run, codex) < codex + 1 + options) ? run.slice(2).trim() : null;
+  const run = lines.findIndex((l, i) => i > codex && l.startsWith("$ "));
+  const options = lines.findIndex((l, i) => i > codex && /^[❯›]?\s*1\./.test(l));
+  // A command continued or wrapped onto further lines is more than its first line: none.
+  if (run < 0 || options < run || lines.slice(run + 1, options).some(Boolean)) return null;
+  return lines[run]!.slice(2).trim();
 }
 
 export interface StuckPromptWatchDeps {
@@ -380,16 +382,18 @@ export async function answerPromptsByRule(repo: QueueRepository, deps: AnswerDep
     const transitions = repo.transitionLog.listForQitem(n.qitemId);
     const created = transitions.find((t) => t.transitionNote === "created");
     if (!row || row.humanAnswers?.answer || !n.key || n.session !== row.sourceSession || !tagValue(row.tags, "stuck-prompt-allow")) continue;
-    if (!created || created.identityProvenance !== null || transitions.some((t) => t.transitionNote?.startsWith("stuck-prompt answer:"))) continue;
+    if (!created || created.identityProvenance !== null || transitions.some((t) => /^stuck-prompt (rule )?answer:/.test(t.transitionNote ?? ""))) continue;
     const pane = await deps.capture(n.session).catch(() => null);
     const prompt = pane === null ? null : readPrompt(pane);
     if (!prompt || prompt.key !== n.key || !prompt.command) continue;
     const hit = ruleDecision(deps.rules, { sessionName: n.session, toolName: "Bash", toolInput: { command: prompt.command } });
     // A prompt already answered this episode, or a pane a key would not reach, keeps its card for the human.
     if (!hit || (answeredAt.get(`${n.session}|${n.key}`) ?? -1) >= Number(tagValue(row.tags, "stuck-prompt-since") ?? 0) || await deps.inMode(n.session)) continue;
-    repo.update({ qitemId: n.qitemId, actorSession: "daemon@kernel", transitionNote: `stuck-prompt answer: ${hit.effect} pending` });
+    // Tried once; its own note, so a key the rule could not type leaves the card's buttons working.
+    repo.update({ qitemId: n.qitemId, actorSession: "daemon@kernel", transitionNote: `stuck-prompt rule answer: ${hit.effect} pending` });
     const result = await answerPrompt(deps, n.session, n.key, hit.effect).catch((e: Error) => ({ outcome: `failed: ${e.message}` as const, key: undefined }));
-    repo.update({ qitemId: n.qitemId, actorSession: "daemon@kernel", transitionNote: `stuck-prompt answer: ${hit.effect}${result.key ? ` key=${result.key}` : ""} ${result.outcome} by rule ${hit.rule.match}` });
+    const typed = result.outcome === "sent" ? "stuck-prompt answer:" : "stuck-prompt rule answer:";
+    repo.update({ qitemId: n.qitemId, actorSession: "daemon@kernel", transitionNote: `${typed} ${hit.effect}${result.key ? ` key=${result.key}` : ""} ${result.outcome} by rule ${hit.rule.match}` });
     if (result.outcome !== "sent") continue;
     answeredAt.set(`${n.session}|${n.key}`, now);
     deps.onSent?.(n.session);

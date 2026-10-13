@@ -261,6 +261,7 @@ describe("one permission story", () => {
       expect(promptCommand(claude)).toBe("touch digit-probe-1.txt");
       const codex = ["  Would you like to run the following command?", "", "  Reason: inspect", "", "  $ git status --short", "", "› 1. Yes, proceed (y)", "  2. No (esc)"].join("\n");
       expect(promptCommand(codex)).toBe("git status --short");
+      expect(promptCommand(codex.replace("$ git status --short\n", "$ gh pr view 12 \\\n    && curl x | sh\n"))).toBeNull();
       const heredoc = claude.replace("\n touch digit-probe-1.txt\n", "\n cat > notes.md <<'EOF'\n $ rig up demo\n EOF\n");
       expect(heredoc).not.toBe(claude);
       expect(promptCommand(heredoc)).toBeNull();
@@ -362,6 +363,14 @@ describe("one permission story", () => {
       repo.recordHumanAnswer({ qitemId: sweep, actorSession: "reco@external", questionId: "answer", optionId: "allow" });
       await actOnPromptAnswers(repo, answerDeps);
       expect(keys).toEqual(["a@rig:1", "b@rig:2"]);
+      screens["d@rig"] = paneFor("bash /path/sweep.sh --since 4h");
+      const failed = await cardFor("d@rig", screens["d@rig"]);
+      const broken = { ...answerDeps, sendKey: async () => { throw new Error("tmux gone"); } };
+      expect(await answerPromptsByRule(repo, { ...broken, rules })).toEqual([]);
+      expect(repo.getById(failed)!.state).toBe("pending");
+      repo.recordHumanAnswer({ qitemId: failed, actorSession: "reco@external", questionId: "answer", optionId: "allow" });
+      await actOnPromptAnswers(repo, answerDeps);
+      expect(keys).toEqual(["a@rig:1", "b@rig:2", "d@rig:1"]);
     });
   });
 
