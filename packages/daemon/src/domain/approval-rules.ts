@@ -117,6 +117,8 @@ export function alwaysRuleFor(toolName: string, toolInput: unknown): AlwaysRule 
   const value = exactValue(toolInput);
   const rule = wildcard ? { match: wildcard, exact: false } : { match: `${toolName}(${value})`, exact: true };
   if (maskSecrets(rule.match) !== rule.match) return { refused: "it carries a credential" };
+  const arg = commandOf(toolInput) === null ? argOf(toolInput) : null;
+  if (arg?.path && arg.value.split("/").includes("..")) return { refused: "its path climbs with \"..\"" };
   return value && isValidRule({ effect: "allow", ...rule }) ? rule : { refused: "this request has no input a rule can name" };
 }
 
@@ -214,7 +216,12 @@ function allowable(part: string): boolean {
 function hits(rule: ApprovalRule, req: RuleRequest): boolean {
   if (rule.seats && !globMatches(rule.seats, req.sessionName)) return false;
   const match = parseMatch(rule.match)!;
-  if (rule.exact) return match.tool === req.toolName && match.literal === exactValue(req.toolInput);
+  if (rule.exact) {
+    // A path that climbs with ".." may reach another file through a symlink: an exact allow never takes one.
+    const arg = commandOf(req.toolInput) === null ? argOf(req.toolInput) : null;
+    if (rule.effect === "allow" && arg?.path && arg.value.split("/").includes("..")) return false;
+    return match.tool === req.toolName && match.literal === exactValue(req.toolInput);
+  }
   if (!globMatches(match.tool, req.toolName)) return false;
   if (match.arg === null) return true;
   const command = commandOf(req.toolInput);
@@ -264,13 +271,13 @@ export function claudePermissionRules(rules: readonly ApprovalRule[], sessionNam
 }
 
 /** A rule in Claude's syntax, or none when Claude cannot say it: an MCP pattern, or an exact input Claude would
- *  read as a glob, that spans lines or nests parentheses, or that is no command or path. The daemon still
- *  applies those. */
+ *  read as a glob (`*`, `?`, `[...]`, an escape), that spans lines or nests parentheses, or that is no command or
+ *  path. The daemon still applies those. */
 function claudeRule(r: ApprovalRule): string[] {
   const m = parseMatch(r.match)!;
   if (m.arg === null) return [m.tool];
   if (m.tool.startsWith("mcp__")) return [];
-  if (r.exact && (/[*\n()]/.test(m.literal!) || !(m.tool === "Bash" || m.literal!.startsWith("/")))) return [];
+  if (r.exact && (/[*?[\]\\\n()]/.test(m.literal!) || !(m.tool === "Bash" || m.literal!.startsWith("/")))) return [];
   return [`${m.tool}(${m.tool !== "Bash" && /^\/(?!\/)/.test(m.arg) ? `/${m.arg}` : m.arg})`];
 }
 

@@ -123,8 +123,8 @@ export function readPrompt(pane: string): { reason: string; key: string; promptL
 const DASHED_RULE = /^[╌┄]{20,}$/;
 
 /** The single shell command the prompt on screen asks to run, read only from the runtime's own dialog
- *  shape: Claude's Bash dialog shows it between two dashed rules above "Do you want to proceed?" (alone,
- *  or behind a `│ ` gutter that may wrap it over several lines), Codex shows it as the `$ ` line after
+ *  shape: Claude's Bash dialog shows it on one line between two dashed rules above "Do you want to proceed?"
+ *  (bare or behind a `│ ` gutter), Codex shows it as the `$ ` line after
  *  "Would you like to run the following command?". Null otherwise. */
 export function promptCommand(pane: string): string | null {
   const lines = pane.split("\n").map((l) => l.trim());
@@ -137,8 +137,8 @@ export function promptCommand(pane: string): string | null {
     const header = lines.slice(0, open).lastIndexOf("Bash command");
     if (top < 0 || header < top || lines.slice(close + 1, asked).some((l) => DIALOG_BORDER.test(l))) return null;
     const body = lines.slice(open + 1, close).filter(Boolean);
-    if (body.length > 0 && body.every((l) => l.startsWith("│"))) return body.map((l) => l.slice(1).trim()).join(" ");
-    return body.length === 1 ? body[0]! : null;
+    // Several gutter lines may be a soft wrap, a word broken mid-way or real newlines: no telling which, so none.
+    return body.length === 1 ? body[0]!.replace(/^│\s*/, "") : null;
   }
   const codex = lines.lastIndexOf("Would you like to run the following command?");
   if (codex < 0) return null;

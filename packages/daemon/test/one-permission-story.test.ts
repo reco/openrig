@@ -98,7 +98,8 @@ describe("one permission story", () => {
       expect(wildcard(` ${command}\n`), command).toEqual({ match: `Bash(${command})`, exact: true });
     }
     expect(wildcard("curl https://deploy:ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/x/y")).toEqual({ refused: "it carries a credential" });
-    expect(alwaysRuleFor("Edit", { file_path: "/x/../y" })).toEqual({ match: "Edit(/y)", exact: true });
+    expect(alwaysRuleFor("Edit", { file_path: "/x/./y" })).toEqual({ match: "Edit(/x/y)", exact: true });
+    expect(alwaysRuleFor("Edit", { file_path: "/x/../y" })).toEqual({ refused: "its path climbs with \"..\"" });
     expect(alwaysRuleFor("WebFetch", { url: "https://example.com/a" })).toEqual({ match: "WebFetch(https://example.com/a)", exact: true });
   });
 
@@ -113,14 +114,17 @@ describe("one permission story", () => {
     expect(ruleDecision(rules, bash("kill 12345"))?.effect).toBe("allow");
     expect(ruleDecision(rules, bash("ls && rm -rf build/*", "other@rig"))?.effect).toBe("allow");
     expect(ruleDecision([{ ...rules[0]!, seats: "cfo@finance" }], bash("ls && rm -rf build/*", "other@rig"))).toBeNull();
-    expect(ruleDecision([{ effect: "allow", match: "Edit(/y)", exact: true }], { sessionName: "dev@rig", toolName: "Edit", toolInput: { file_path: "/x/../y" } })?.effect).toBe("allow");
+    expect(ruleDecision([{ effect: "allow", match: "Edit(/y)", exact: true }], { sessionName: "dev@rig", toolName: "Edit", toolInput: { file_path: "/./y" } })?.effect).toBe("allow");
+    expect(ruleDecision([{ effect: "allow", match: "Edit(/repo/y)", exact: true }], { sessionName: "dev@rig", toolName: "Edit", toolInput: { file_path: "/repo/link/../y" } })).toBeNull();
+    expect(ruleDecision([{ effect: "deny", match: "Edit(/repo/y)", exact: true }], { sessionName: "dev@rig", toolName: "Edit", toolInput: { file_path: "/repo/link/../y" } })?.effect).toBe("deny");
     expect(ruleDecision([{ effect: "allow", match: "Edit(/y)", exact: true }], { sessionName: "dev@rig", toolName: "Edit", toolInput: { file_path: "/y/z" } })).toBeNull();
   });
 
   it("projects an exact rule to Claude only when Claude reads it literally", () => {
     const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(rm build)", exact: true }, { effect: "deny", match: "Bash(kill 1234)", exact: true },
       { effect: "allow", match: "Bash(rm -rf build/*)", exact: true }, { effect: "allow", match: "Bash(cat <<EOF\nx\nEOF)", exact: true },
-      { effect: "allow", match: "Bash(echo $(id))", exact: true }, { effect: "allow", match: "WebFetch(https://example.com/a)", exact: true }, { effect: "allow", match: "Edit(/y)", exact: true }];
+      { effect: "allow", match: "Bash(echo $(id))", exact: true }, { effect: "allow", match: "WebFetch(https://example.com/a)", exact: true }, { effect: "allow", match: "Edit(/y)", exact: true },
+      { effect: "allow", match: "Edit(/repo/app/[id]/page.tsx)", exact: true }, { effect: "allow", match: "Edit(/repo/a?.ts)", exact: true }, { effect: "allow", match: "Bash(echo a\\ b)", exact: true }];
     expect(claudePermissionRules(rules, "dev@rig")).toEqual({ allow: ["Bash(rm build)", "Edit(//y)"], deny: ["Bash(kill 1234)"] });
     expect(codexRulesText(rules)).not.toContain("kill");
   });
@@ -199,7 +203,7 @@ describe("one permission story", () => {
       expect(promptCommand(["$ rig up demo", "", " Edit file", " Do you want to make this edit?", " ❯ 1. Yes", "   2. No"].join("\n"))).toBeNull();
     });
 
-    it("reads the command from Claude's gutter dialog, wrapped or not, so its stuck card gets Always buttons", () => {
+    it("reads the command from Claude's one-line gutter dialog; one shown over several lines gives none", () => {
       const gutter = readFileSync(join(__dirname, "fixtures/claude-permission-prompt-gutter.txt"), "utf8");
       const command = "bash /Users/reco/dev/imago/.openrig/monitor/webhook-unexplained.sh 2026-10-13T14:42:00Z";
       const prompt = readPrompt(gutter)!;
@@ -209,7 +213,7 @@ describe("one permission story", () => {
       const wrapped = gutter.replace(" │ bash /Users/reco/dev/imago/.openrig/monitor/webhook-unexplained.sh 2026-10-13T14:42:00Z",
         " │ bash /Users/reco/dev/imago/.openrig/monitor/webhook-unexplained.sh\n │ 2026-10-13T14:42:00Z");
       expect(wrapped).not.toBe(gutter);
-      expect(promptCommand(wrapped)).toBe(command);
+      expect(promptCommand(wrapped)).toBeNull();
       expect(promptCommand(gutter.replace(" Bash command\n", " Edit file\n"))).toBeNull();
     });
 
