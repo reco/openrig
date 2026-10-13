@@ -443,11 +443,17 @@ describe("Slack approval hook projection", () => {
     const PROJECT_COPY = "/project/.openrig/hooks/scripts/approval-request.cjs";
     const edited = shipped.replace("async function main", "// local rm policy\nasync function main");
     const fs = enableFs({ [APPROVAL_SRC]: shipped, [PROJECT_COPY]: edited });
-    fs._store["/project/.claude/settings.local.json"] = JSON.stringify({ hooks: { PermissionRequest: [{ hooks: [{ type: "command", command: `node ${shellQuote(PROJECT_COPY)}`, timeout: 3660 }] }] } });
+    fs._store["/project/.claude/settings.local.json"] = JSON.stringify({ hooks: {
+      PermissionRequest: [{ hooks: [{ type: "command", command: `node ${shellQuote(PROJECT_COPY)}`, timeout: 3660 }] }],
+      PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "node /user/own-guard.js" }] }],
+    } });
+    await makeAdapter(fs).project(plan([activityEntry()]), binding());
     await makeAdapter(fs).project(plan([activityEntry()]), binding());
     expect(fs._store[PROJECT_COPY]).toBe(edited);
     const commands = allCommands(readSettings(fs));
     expect(commands.filter((c: string) => c.includes("approval-request.cjs"))).toEqual([`node ${shellQuote(PROJECT_COPY)}`]);
+    expect(commands.filter((c: string) => c === "node /user/own-guard.js")).toHaveLength(1);
+    expect(fs._store[APPROVAL_DEST]).toBeUndefined();
 
     const shippedFs = enableFs({ [APPROVAL_SRC]: shipped, [PROJECT_COPY]: shipped });
     await makeAdapter(shippedFs).project(plan([activityEntry()]), binding());
