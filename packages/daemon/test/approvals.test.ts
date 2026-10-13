@@ -1,6 +1,6 @@
 // Slack approvals for permission prompts: opt-in seats only, the full command (credentials
 // masked), one-shot, only the addressed human answers, nothing on timeout.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createRequire } from "node:module";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
@@ -69,11 +69,8 @@ describe("Slack approvals", () => {
     expect(row.body).not.toContain("echo step 100 of");
     expect(row.body).toContain("Full Bash input in this card's thread.");
     expect(row.humanDetail).toContain("echo step 100 of");
-    const posted = vi.spyOn(repo, "humanNotificationPostedThisEpisode").mockReturnValue(false);
     click(id, "reco@external", "allow");
     expect(await s.wait(id, "psa-dev@psa", 20)).toBe("pending");
-    posted.mockReturnValue(true);
-    expect(await s.wait(id, "psa-dev@psa", 20)).toBe("allow");
   });
 
   it("expires with nothing decided: the row is canceled and a later click does nothing", async () => {

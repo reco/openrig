@@ -60,8 +60,8 @@ export const APPROVAL_ABANDONED_MS = 120_000;
 export const APPROVAL_TIMEOUT_MS = 1_800_000;
 const QUESTION_ID = "approval";
 const MAX_PENDING_PER_SEAT = 3;
-/** What the card's thread can carry within Slack's per-message parts. */
-const MAX_DETAIL_CHARS = 40_000;
+/** What the card's thread can carry within Slack's 20 message parts, escaped, with half-full cuts. */
+const MAX_DETAIL_CHARS = 25_000;
 
 /** What the human approves, in full: the command or patch text as written (Bash, Codex's
  *  apply_patch), else the tool input as JSON. */
@@ -165,7 +165,7 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
       const whole = `${head}\`\`\`\n${text}\n\`\`\``;
       // Too long for one card: the card shows the start and end, its thread the whole input.
       const fits = escapeSlackText(redactSecrets(whole)).length <= SLACK_SECTION_CAP;
-      if (!fits && text.length > MAX_DETAIL_CHARS) {
+      if (!fits && escapeSlackText(redactSecrets(text)).length > MAX_DETAIL_CHARS) {
         log(`approval for ${input.sessionName} not sent: the ${input.toolName} input is too long even for the card's thread`);
         return null;
       }
@@ -206,7 +206,7 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
         if (!item?.tags?.includes("approval-request") || item.sourceSession !== sessionName) return "expired";
         const answer = item.humanAnswers?.[QUESTION_ID];
         // A card split over its thread: its buttons count only once every part, the full input included, is in Slack.
-        if ((answer === "allow" || answer === "deny") && (!item.humanDetail || deps.queueRepo.humanNotificationPostedThisEpisode(requestId))) {
+        if ((answer === "allow" || answer === "deny") && (!item.humanDetail || item.deliveryOutcome === "posted")) {
           if (!deps.queueRepo.transitionLog.listForQitem(requestId).some((t) => t.transitionNote?.startsWith("approval "))) {
             deps.queueRepo.update({ qitemId: requestId, actorSession: "daemon@kernel", transitionNote: `approval ${answer} by ${item.destinationSession} for ${item.summary ?? "the request"}` });
           }

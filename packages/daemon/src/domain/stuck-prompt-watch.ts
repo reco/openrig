@@ -341,7 +341,7 @@ export async function actOnPromptAnswers(repo: QueueRepository, deps: AnswerDeps
     const choice = row?.humanAnswers?.answer;
     if (!row || (choice !== "allow" && choice !== "deny")) continue;
     // A card split over its thread: its buttons count only once every part, the full dialog included, is in Slack.
-    if (row.humanDetail && !repo.humanNotificationPostedThisEpisode(qitem_id)) continue;
+    if (row.humanDetail && row.deliveryOutcome !== "posted") continue;
     const transitions = repo.transitionLog.listForQitem(qitem_id);
     if (transitions.some((t) => t.transitionNote?.startsWith("stuck-prompt answer:"))) continue;
     const created = transitions.find((t) => t.transitionNote === "created");
