@@ -61,7 +61,7 @@ const PLUGIN_MANIFESTS = [".claude-plugin/plugin.json", ".codex-plugin/plugin.js
 const GLOBAL_VENDOR_VERSION = ".openrig-vendor-version";
 /** What OpenRig last installed in a vendored tree: each file's sha256. A file that no longer matches
  *  (or was never recorded) was edited there, and an upgrade leaves it alone. */
-const VENDOR_MANIFEST = ".openrig-vendor-manifest.json";
+export const VENDOR_MANIFEST = ".openrig-vendor-manifest.json";
 
 interface VendorManifest { version: string; files: Record<string, string> }
 
@@ -158,19 +158,7 @@ export class PluginVendorService {
         // Equal versions make the installed bytes authoritative. Still repair
         // mode on byte-identical paths: this is metadata reconciliation, not a
         // rollback, and preserves the established executable-helper repair.
-        const identical: Record<string, string> = {};
-        for (const relPath of this.fs.listFiles(sourceDir)) {
-          const srcPath = nodePath.join(sourceDir, relPath);
-          const destPath = nodePath.join(targetDir, relPath);
-          const srcHash = hashContent(this.fs.readFile(srcPath));
-          if (this.fs.exists(destPath) && hashContent(this.fs.readFile(destPath)) === srcHash) {
-            this.preserveMode(srcPath, destPath);
-            identical[relPath] = srcHash;
-          }
-        }
-        // An install from before the manifest gets one now: only files identical to this version
-        // count as OpenRig's; any other file there is a local edit from here on.
-        if (!this.readManifest(targetDir)) this.writeManifest(targetDir, { version: sourceVersion, files: identical });
+        this.recordUntouched(sourceDir, targetDir, sourceVersion);
         this.logger(`[plugin-vendor] bundled '${pluginName}' ${sourceVersion} equals installed ${targetVersion}; leaving installed bytes unchanged`);
         return;
       }
@@ -179,12 +167,28 @@ export class PluginVendorService {
     this.syncTree(sourceDir, targetDir, sourceVersion, `plugin '${pluginName}'`);
   }
 
+  /** At an equal version: repair mode on files identical to the bundle, and give a tree from before
+   *  the manifest one listing only those files, so any other file there counts as a local edit. */
+  private recordUntouched(sourceDir: string, targetDir: string, version: string): void {
+    const identical: Record<string, string> = {};
+    for (const relPath of this.fs.listFiles(sourceDir)) {
+      const srcPath = nodePath.join(sourceDir, relPath);
+      const destPath = nodePath.join(targetDir, relPath);
+      const srcHash = hashContent(this.fs.readFile(srcPath));
+      if (this.fs.exists(destPath) && hashContent(this.fs.readFile(destPath)) === srcHash) {
+        this.preserveMode(srcPath, destPath);
+        identical[relPath] = srcHash;
+      }
+    }
+    if (!this.readManifest(targetDir)) this.writeManifest(targetDir, { version, files: identical });
+  }
+
   private readManifest(targetDir: string): VendorManifest | null {
     const path = nodePath.join(targetDir, VENDOR_MANIFEST);
     if (!this.fs.exists(path)) return null;
     try {
       const parsed = JSON.parse(this.fs.readFile(path)) as VendorManifest;
-      return parsed && typeof parsed.files === "object" ? parsed : null;
+      return parsed?.files && typeof parsed.files === "object" ? parsed : null;
     } catch {
       return null;
     }
@@ -297,7 +301,9 @@ export class PluginVendorService {
         }
         const targetVersion = this.fs.readFile(versionMarker).trim();
         parseNumericVersion(targetVersion, versionMarker);
-        if (compareVersions(sourceVersion, targetVersion) <= 0) {
+        const order = compareVersions(sourceVersion, targetVersion);
+        if (order <= 0) {
+          if (order === 0) this.recordUntouched(sourceDir, targetDir, sourceVersion);
           this.logger(`[plugin-vendor] global skill '${skillName}' ${targetVersion} is equal/newer than bundled ${sourceVersion}; leaving it unchanged`);
           continue;
         }

@@ -150,6 +150,25 @@ describe("PluginVendorService — vendoring (HG-2.3)", () => {
       expect(fs._store[`${T}/skills/openrig-user/SKILL.md.pre-0.2.0`]).toBe("# my local edit of openrig-user");
     });
 
+    it("a global skill copy from before the manifest records it at an equal version, so its edit survives the next upgrade", () => {
+      const G = "/home/test/.claude/skills/openrig-skills";
+      const plugin = (v: string, skill: string) => ({ [`${T}/.claude-plugin/plugin.json`]: `{"name":"openrig-core","version":"${v}"}`, [`${T}/.codex-plugin/plugin.json`]: `{"name":"openrig-core","version":"${v}","description":"v"}`, [`${T}/skills/openrig-skills/SKILL.md`]: skill, [`${T}/skills/openrig-skills/ref.md`]: `ref ${v}` });
+      const fs = mockFs({ ...plugin("0.2.0", "# skills 0.2.0"), [`${G}/SKILL.md`]: "# my global edit", [`${G}/ref.md`]: "ref 0.2.0", [`${G}/.openrig-vendor-version`]: "0.2.0\n" });
+      service(fs).ensureSkillGlobally("openrig-core", "openrig-skills", ["/home/test/.claude/skills"]);
+      expect(Object.keys(JSON.parse(fs._store[`${G}/.openrig-vendor-manifest.json`]!).files)).toEqual(["ref.md"]);
+      Object.assign(fs._store, plugin("0.3.0", "# skills 0.3.0"));
+      service(fs).ensureSkillGlobally("openrig-core", "openrig-skills", ["/home/test/.claude/skills"]);
+      expect(fs._store[`${G}/SKILL.md`]).toBe("# my global edit");
+      expect(fs._store[`${G}/ref.md`]).toBe("ref 0.3.0");
+      expect(fs._store[`${G}/SKILL.md.pre-0.3.0`]).toBeUndefined();
+    });
+
+    it("a manifest whose files are not a map counts as none", async () => {
+      const fs = mockFs({ ...installed010, ...bundled020, [`${T}/.openrig-vendor-manifest.json`]: '{"version":"0.1.0","files":null}' });
+      await service(fs).ensureVendored("openrig-core");
+      expect(fs._store[`${T}/skills/openrig-user/SKILL.md.pre-0.2.0`]).toBe("# my local edit of openrig-user");
+    });
+
     it("a global skill copy edited in place is kept when the plugin version advances", () => {
       const fs = mockFs({ ...bundled020, [`${T}/.claude-plugin/plugin.json`]: '{"name":"openrig-core","version":"0.2.0"}', [`${T}/.codex-plugin/plugin.json`]: '{"name":"openrig-core","version":"0.2.0","description":"v"}', [`${T}/skills/openrig-skills/SKILL.md`]: "# openrig-skills index 0.2.0" });
       service(fs).ensureSkillGlobally("openrig-core", "openrig-skills", ["/home/test/.claude/skills"]);

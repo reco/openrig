@@ -43,6 +43,8 @@ describe("GET /api/skills/audit on a clean-install fixture (#802)", () => {
       mkdirSync(copy, { recursive: true });
       writeFileSync(join(copy, "SKILL.md"), SKILL);
       writeFileSync(join(copy, ".openrig-vendor-version"), "0.1.4\n");
+      writeFileSync(join(copy, ".openrig-vendor-manifest.json"), "{}\n");
+      writeFileSync(join(copy, "SKILL.md.pre-0.1.4"), "# earlier bytes kept by an upgrade\n");
     }
   });
   afterEach(() => { rmSync(root, { recursive: true, force: true }); });
