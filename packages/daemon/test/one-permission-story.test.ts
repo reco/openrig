@@ -6,6 +6,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { TEAM_CLAUDE_ASK, operationalLaunchArgs } from "../src/adapters/kernel-authority.js";
 import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
@@ -19,7 +20,9 @@ import {
   ruleDecision, saveAlwaysRule, seedApprovalRules, type ApprovalRule,
 } from "../src/domain/approval-rules.js";
 
-const registry = { ok: true as const, entities: [{ entityId: "reco", class: "human" as const, displayName: "reco", address: "reco@external", connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:X", role: "primary" as const, handle: "U1" }], prefs: { deliveryClass: "A" as const } }] };
+const denyCheck = createRequire(import.meta.url)("../assets/plugins/openrig-core/hooks/scripts/deny-check.cjs") as {
+  decisionOutput: (reply: unknown) => unknown; commandOf: (input: unknown) => string | null };
+const registry ={ ok: true as const, entities: [{ entityId: "reco", class: "human" as const, displayName: "reco", address: "reco@external", connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:X", role: "primary" as const, handle: "U1" }], prefs: { deliveryClass: "A" as const } }] };
 const bash = (command: string, sessionName = "dev@rig") => ({ sessionName, toolName: "Bash", toolInput: { command } });
 
 describe("one permission story", () => {
@@ -132,6 +135,27 @@ describe("one permission story", () => {
     const native = claudePermissionRules(rules, "dev@rig").deny;
     expect(native).toEqual(expect.arrayContaining(["Bash(git *--upload-pack*)", "Bash(git *--upl=*)", "Bash(git *--u *)", "Bash(git push *--f)", "Bash(git *--ext-d=*)"]));
     expect(native).not.toContain("Bash(git *--upload-=*)");
+    for (const command of ["git push -f", "git push origin feat -f", "git --no-pager push --force", "git --git-dir=.git push -f", "git -P push --force", "git 'push' --force",
+      "git push origin +feat", "git push origin HEAD:main", "git push origin :main", "git push origin HEAD:refs/heads/main", "git push origin main -v", "git push --mirror", "git push -uf origin x",
+      "git clone -c core.sshCommand=x ssh://h/r", "git -P -c core.sshCommand=x fetch", "git -C . -c core.pager=x log"])
+      expect(ruleDecision(rules, bash(command))?.effect, command).toBe("deny");
+    for (const command of ["git push origin feat", "git push -u origin feat", "git --no-pager log", "git -C . status", "git clone ssh://h/r dir"])
+      expect(ruleDecision(rules, bash(command))?.effect, command).toBe("allow");
+  });
+
+  it("the deny check answers only a deny, with the rule's message, for the hook that runs before every Bash call", () => {
+    const db = createDb();
+    migrate(db, ALL_MIGRATIONS);
+    const s = makeApprovalService({ queueRepo: new QueueRepository(db, new EventBus(db), { loadHumanRegistry: () => registry }), optedIn: () => [], approver: () => null, verifySeat: () => true,
+      rules: () => [...DEFAULT_APPROVAL_RULES, { effect: "allow", match: "Bash(git *)" }] });
+    expect(s.denyByRule(bash("git push --forc origin x"))).toBe("Denied by the OpenRig approval rule Bash(git push *--force*): no force-push");
+    expect(s.denyByRule(bash("git status"))).toBeNull();
+    expect(s.denyByRule(bash("make something"))).toBeNull();
+    db.close();
+    expect(denyCheck.decisionOutput({ ok: true, deny: true, message: "Denied by rule X" })).toEqual({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "Denied by rule X" } });
+    expect(denyCheck.decisionOutput({ ok: true, deny: false })).toBeNull();
+    expect(denyCheck.decisionOutput(null)).toBeNull();
+    expect(denyCheck.commandOf({ tool_input: { command: ["git", "push"] } })).toBe("git push");
   });
 
   it("allow rules look through literal leading assignments, except one that changes what runs; deny sees through all", () => {

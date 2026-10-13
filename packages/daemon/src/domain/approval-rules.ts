@@ -192,14 +192,31 @@ function denyForm(segment: string): string {
     s = s.replace(/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/, "").replace(/^(?:sudo|env|command|exec|nohup|time|nice)\s+/, "");
   }
   s = s.replace(/^\S*\//, "");
-  if (!s.startsWith("git ")) return s;
-  // git's global -C <dir> goes, and -c<x> reads as -c <x>, so `git push * main` and `git -c *` see the command.
+  return s.startsWith("git ") ? gitDenyForm(s) : s;
+}
+
+/** git spelled the way its deny rules name it: global options other than -c gone, -c<x> as -c <x>; for clone and
+ *  ls-remote a -u as --upload-pack and a clone's -c as a global one; for push a forcing spelling (+refspec, a short
+ *  cluster with f, --mirror) as --force and each refspec's destination branch as a last word. */
+function gitDenyForm(command: string): string {
+  let s = command;
   for (let prev = ""; prev !== s;) {
     prev = s;
-    s = s.replace(/^git -C ?\S+ /, "git ").replace(/^git -c(?=\S)/, "git -c ");
+    s = s.replace(/^git (?:-C ?|--(?:git-dir|work-tree|namespace|super-prefix) )\S+ /, "git ").replace(/^git -c(?=\S)/, "git -c ")
+      .replace(/^git (?!-c\b|--config-env|--exec-path)-{1,2}[A-Za-z][\w-]*(?:=\S*)? /, "git ");
   }
-  // clone and ls-remote take their upload-pack command as -u, alone or in a cluster of short options.
-  return /^git (?:clone|ls-remote) /.test(s) && / -[A-Za-z]*u/.test(s) ? `${s} --upload-pack` : s;
+  const [, sub = "", rest = ""] = /^git (\S+)(.*)$/.exec(s) ?? [];
+  const words = rest.trim().split(" ");
+  if (sub === "clone" || sub === "ls-remote") {
+    if (words.some((w) => /^-[A-Za-z]*u/.test(w))) s += " --upload-pack";
+    if (sub === "clone" && words.some((w) => /^(?:-[A-Za-z]*c|--con)/.test(w))) s = `git -c ${s.slice(4)}`;
+  }
+  if (sub === "push") {
+    if (words.some((w) => w.startsWith("+") || /^-[A-Za-z]*f/.test(w) || /^--mi/.test(w))) s += " --force";
+    const branches = words.filter((w) => !w.startsWith("-")).slice(1).map((w) => w.replace(/^\+/, "").split(":").pop()!.replace(/^refs\/heads\//, ""));
+    if (branches.length) s += ` ${branches.join(" ")}`;
+  }
+  return s;
 }
 
 /** Every simple command a deny rule must see, wherever it sits in a compound command: split everywhere, and

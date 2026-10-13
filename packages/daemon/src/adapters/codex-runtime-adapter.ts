@@ -205,7 +205,9 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     // The Slack approval hook ships beside the relay; Codex reads no plugin hooks/codex.json.
     const approvalPath = nodePath.join(nodePath.dirname(relay), "approval-request.cjs");
     const approval = this.fs.exists(approvalPath) ? approvalPath : null;
-    const withHooks = upsertCodexActivityHooks(existing, relay, approval);
+    const denyCheckPath = nodePath.join(nodePath.dirname(relay), "deny-check.cjs");
+    const denyCheck = this.fs.exists(denyCheckPath) ? denyCheckPath : null;
+    const withHooks = upsertCodexActivityHooks(existing, relay, approval, denyCheck);
     if (withHooks !== existing) {
       this.fs.mkdirp(nodePath.dirname(configPath));
       this.fs.writeFile(configPath, withHooks);
@@ -217,7 +219,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     // — without a blanket native trust keystroke. If native identity/hash semantics
     // change, the remaining review is surfaced for a decision. Idempotent
     // + non-clobbering; only touches our 4 keys. See applyCodexActivityHookTrust for the RTFM.
-    const trusted = this.applyCodexActivityHookTrust(withHooks, configPath, relay, approval);
+    const trusted = this.applyCodexActivityHookTrust(withHooks, configPath, relay, approval, denyCheck);
     if (trusted !== withHooks) {
       this.fs.mkdirp(nodePath.dirname(configPath));
       this.fs.writeFile(configPath, trusted);
@@ -234,7 +236,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
    * string is the value Codex deserializes from our TOML literal `'node "<relay>"'` — i.e.
    * `node "<relay>"` WITHOUT the outer TOML quote delimiters. Timeout=5, matcher/status None.
    */
-  private applyCodexActivityHookTrust(content: string, configPath: string, relay: string, approval: string | null): string {
+  private applyCodexActivityHookTrust(content: string, configPath: string, relay: string, approval: string | null, denyCheck: string | null = null): string {
     let keySource = configPath;
     try {
       keySource = fs.realpathSync.native(configPath);
@@ -250,6 +252,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     }
     if (approval) {
       const { key, hash } = computeCodexHookTrust("PermissionRequest", { keySource, command: `node "${approval}"`, timeoutSec: CODEX_APPROVAL_HOOK_TIMEOUT_SEC, handlerIndex: 1 });
+      next = upsertCodexHookTrust(next, key, hash);
+    }
+    if (denyCheck) {
+      const { key, hash } = computeCodexHookTrust("PreToolUse", { keySource, command: `node "${denyCheck}"`, timeoutSec: 5 });
       next = upsertCodexHookTrust(next, key, hash);
     }
     return next;
@@ -1044,11 +1050,12 @@ function canonicalizeJsonValue(value: unknown): unknown {
   return value;
 }
 
-const CODEX_HOOK_EVENT_KEY_LABEL: Record<(typeof OPENRIG_ACTIVITY_HOOK_EVENTS)[number], string> = {
+const CODEX_HOOK_EVENT_KEY_LABEL: Record<(typeof OPENRIG_ACTIVITY_HOOK_EVENTS)[number] | "PreToolUse", string> = {
   SessionStart: "session_start",
   UserPromptSubmit: "user_prompt_submit",
   Stop: "stop",
   PermissionRequest: "permission_request",
+  PreToolUse: "pre_tool_use",
 };
 
 export interface CodexHookTrustInput {
@@ -1074,7 +1081,7 @@ export interface CodexHookTrustInput {
  * PROVISIONAL-until-VM-read-back caveat.
  */
 export function computeCodexHookTrust(
-  event: (typeof OPENRIG_ACTIVITY_HOOK_EVENTS)[number],
+  event: (typeof OPENRIG_ACTIVITY_HOOK_EVENTS)[number] | "PreToolUse",
   input: CodexHookTrustInput,
 ): { key: string; hash: string } {
   const label = CODEX_HOOK_EVENT_KEY_LABEL[event];
@@ -1219,14 +1226,16 @@ const OPENRIG_ACTIVITY_HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "Stop"
 /** Just above the longest approval deadline (an hour); the daemon ends the wait, as for Claude seats. */
 const CODEX_APPROVAL_HOOK_TIMEOUT_SEC = 3660;
 
-function upsertCodexActivityHooks(content: string, relayPath: string, approvalPath: string | null = null): string {
+function upsertCodexActivityHooks(content: string, relayPath: string, approvalPath: string | null = null, denyCheckPath: string | null = null): string {
   const command = `'node "${relayPath}"'`;
   const approvalHandler = approvalPath
     ? `\n\n[[hooks.PermissionRequest.hooks]]\ntype = "command"\ncommand = 'node "${approvalPath}"'\ntimeout = ${CODEX_APPROVAL_HOOK_TIMEOUT_SEC}`
     : "";
+  // The deny check: the human's deny rules, through the daemon's matcher, before every shell command.
+  const denyCheck = denyCheckPath ? `\n\n[[hooks.PreToolUse]]\n[[hooks.PreToolUse.hooks]]\ntype = "command"\ncommand = 'node "${denyCheckPath}"'\ntimeout = 5` : "";
   const stanzas = OPENRIG_ACTIVITY_HOOK_EVENTS
     .map((ev) => `[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${command}\ntimeout = 5${ev === "PermissionRequest" ? approvalHandler : ""}`)
-    .join("\n\n");
+    .join("\n\n") + denyCheck;
   const block = `${OPENRIG_ACTIVITY_HOOKS_BEGIN}\n${stanzas}\n${OPENRIG_ACTIVITY_HOOKS_END}\n`;
 
   let next = upsertCodexFeaturesHooksEnabled(content);

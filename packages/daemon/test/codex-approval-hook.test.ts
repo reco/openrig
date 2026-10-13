@@ -12,6 +12,7 @@ import type { TmuxAdapter } from "../src/adapters/tmux.js";
 const SCRIPTS = path.resolve(__dirname, "../assets/plugins/openrig-core/hooks/scripts");
 const RELAY = path.join(SCRIPTS, "activity-relay.cjs");
 const APPROVAL = path.join(SCRIPTS, "approval-request.cjs");
+const DENY_CHECK = path.join(SCRIPTS, "deny-check.cjs");
 const tmux = { sendText: vi.fn(async () => ({ ok: true as const })) } as unknown as TmuxAdapter;
 
 function mockFs(files: Record<string, string>): CodexAdapterFsOps & { _store: Record<string, string> } {
@@ -35,6 +36,14 @@ describe("Codex Slack approval hook projection", () => {
     const group = cfg.slice(cfg.indexOf("[[hooks.PermissionRequest]]"));
     expect(group).toContain(`command = 'node "${RELAY}"'\ntimeout = 5\n\n[[hooks.PermissionRequest.hooks]]\ntype = "command"\ncommand = 'node "${APPROVAL}"'\ntimeout = 3660`);
     expect(cfg).toContain('[hooks.state."/home/test/.codex/config.toml:permission_request:0:1"]');
+  });
+
+  it("adds the deny check as a PreToolUse hook with its trust record", () => {
+    const fs = mockFs({ [RELAY]: "", [DENY_CHECK]: "" });
+    new CodexRuntimeAdapter({ tmux, fsOps: fs, activityRelayPath: RELAY }).ensureCodexActivityHooks();
+    const cfg = fs._store["/home/test/.codex/config.toml"]!;
+    expect(cfg).toContain(`[[hooks.PreToolUse]]\n[[hooks.PreToolUse.hooks]]\ntype = "command"\ncommand = 'node "${DENY_CHECK}"'\ntimeout = 5`);
+    expect(cfg).toContain('[hooks.state."/home/test/.codex/config.toml:pre_tool_use:0:0"]');
   });
 
   it("projects no approval handler when the script is not shipped", () => {
@@ -87,6 +96,8 @@ describe.skipIf(!bin)("native Codex (>= 0.161) loads the projected hooks as trus
         { command: `node "${RELAY}"`, timeoutSec: 5, trustStatus: "trusted" },
         { command: `node "${APPROVAL}"`, timeoutSec: 3660, trustStatus: "trusted" },
       ]);
+      expect(hooks.filter((h) => h.eventName === "preToolUse").map((h) => ({ command: h.command, trustStatus: h.trustStatus })))
+        .toEqual([{ command: `node "${DENY_CHECK}"`, trustStatus: "trusted" }]);
       expect(hooks.every((h) => h.trustStatus === "trusted")).toBe(true);
     } finally { rmSync(codexHome, { recursive: true, force: true }); }
   }, 20_000);

@@ -63,6 +63,8 @@ export interface ApprovalService {
   verify: (sessionName: string, seatToken: string | null) => Promise<boolean>;
   /** A rule's answer for this request, before any human is asked; null when no rule matches. */
   byRule: (input: ApprovalRequest) => { decision: ApprovalDecision; message: string } | null;
+  /** A deny rule's message for this request, checked before the runtime's own rules; null when none denies it. */
+  denyByRule: (input: ApprovalRequest) => string | null;
   start: (input: ApprovalRequest) => Promise<string | null>;
   /** Only the seat that asked may wait on its request. */
   wait: (requestId: string, sessionName: string, sliceMs: number) => Promise<ApprovalWait>;
@@ -168,18 +170,27 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
     try { deps.saveRule({ effect, match, seats: seat, note: `saved from Slack for ${seat}`, ...exact }); return match; }
     catch (e) { log(`always rule ${match} not saved: ${(e as Error).message}`); return null; }
   };
+  const hitFor = (input: ApprovalRequest) => {
+    try { return ruleDecision(deps.rules?.() ?? [], input); } catch (e) {
+      log(`approval rules not applied: ${(e as Error).message}`);
+      return null;
+    }
+  };
+  const ruleMessage = (hit: NonNullable<ReturnType<typeof ruleDecision>>) =>
+    `${hit.effect === "deny" ? "Denied" : "Allowed"} by the OpenRig approval rule ${hit.rule.match}${hit.rule.note ? `: ${hit.rule.note}` : ""}`;
   const service: ApprovalService = {
     verify: async (sessionName, seatToken) => deps.verifySeat(sessionName, seatToken),
     byRule(input) {
-      let rules: readonly ApprovalRule[];
-      try { rules = deps.rules?.() ?? []; } catch (e) {
-        log(`approval rules not applied: ${(e as Error).message}`);
-        return null;
-      }
-      const hit = ruleDecision(rules, input);
+      const hit = hitFor(input);
       if (!hit) return null;
       log(`${hit.effect} by rule ${hit.rule.match}${hit.rule.seats ? ` for ${hit.rule.seats}` : ""}: ${input.sessionName} ${input.toolName} ${approvalText(input.toolName, input.toolInput).split("\n")[0]!.slice(0, 200)}`);
-      return { decision: hit.effect, message: `${hit.effect === "deny" ? "Denied" : "Allowed"} by the OpenRig approval rule ${hit.rule.match}${hit.rule.note ? `: ${hit.rule.note}` : ""}` };
+      return { decision: hit.effect, message: ruleMessage(hit) };
+    },
+    denyByRule(input) {
+      const hit = hitFor(input);
+      if (hit?.effect !== "deny") return null;
+      log(`deny by rule ${hit.rule.match} before the runtime's own rules: ${input.sessionName} ${approvalText(input.toolName, input.toolInput).split("\n")[0]!.slice(0, 200)}`);
+      return ruleMessage(hit);
     },
     async start(input) {
       if (!deps.optedIn().includes(input.sessionName)) return null;

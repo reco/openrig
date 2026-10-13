@@ -1023,13 +1023,17 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       const scriptsDir = nodePath.dirname(this.activityRelayPath!);
       const guardSource = nodePath.join(scriptsDir, "simple-command-guard.cjs");
       if (this.fs.exists(guardSource)) {
-        for (const name of ["plain-command.cjs", "simple-command-guard.cjs"]) {
+        // The deny check: the human's deny rules, through the daemon's matcher, before Claude's own allow rules.
+        const scripts = ["plain-command.cjs", "simple-command-guard.cjs", "deny-check.cjs"].filter((name) => this.fs.exists(nodePath.join(scriptsDir, name)));
+        for (const name of scripts) {
           const source = nodePath.join(scriptsDir, name), dest = nodePath.join(nodePath.dirname(relayDest), name);
           if (!this.fs.exists(dest) || this.fs.readFile(dest) !== this.fs.readFile(source)) this.fs.copyFile(source, dest);
           this.preserveMode(source, dest);
         }
         const groups = Array.isArray(hooks["PreToolUse"]) ? (hooks["PreToolUse"] as unknown[]) : [];
-        groups.push({ matcher: "Bash", hooks: [{ type: "command", command: `node ${shellQuote(nodePath.join(nodePath.dirname(relayDest), "simple-command-guard.cjs"))}`, timeout: 5 }] });
+        for (const name of scripts.filter((n) => n !== "plain-command.cjs")) {
+          groups.push({ matcher: "Bash", hooks: [{ type: "command", command: `node ${shellQuote(nodePath.join(nodePath.dirname(relayDest), name))}`, timeout: 5 }] });
+        }
         hooks["PreToolUse"] = groups;
       }
     }
@@ -1066,6 +1070,7 @@ const LEGACY_OWNED_RELAY_SUFFIX = "/.openrig/hooks/scripts/activity-relay.cjs";
 const LEGACY_OWNED_APPROVAL_SUFFIX = "/.openrig/hooks/scripts/approval-request.cjs";
 const OWNED_APPROVAL_RELATIVE_PATH = CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH.replace(/activity-relay\.cjs$/, "approval-request.cjs");
 const OWNED_GUARD_RELATIVE_PATH = CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH.replace(/activity-relay\.cjs$/, "simple-command-guard.cjs");
+const OWNED_DENY_CHECK_RELATIVE_PATH = CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH.replace(/activity-relay\.cjs$/, "deny-check.cjs");
 /** Just above the longest approval deadline (MAX_APPROVAL_TIMEOUT_SECONDS); the daemon ends the wait. */
 const APPROVAL_HOOK_TIMEOUT_SEC = 3660;
 /** sha256 of every approval-request.cjs this package has shipped: a project copy matching one is ours to update. */
@@ -1122,7 +1127,8 @@ function isOwnedRelayCommand(cmd: string | undefined): boolean {
     || decoded.endsWith(`/${CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH}`)
     || decoded.endsWith(LEGACY_OWNED_APPROVAL_SUFFIX)
     || decoded.endsWith(`/${OWNED_APPROVAL_RELATIVE_PATH}`)
-    || decoded.endsWith(`/${OWNED_GUARD_RELATIVE_PATH}`);
+    || decoded.endsWith(`/${OWNED_GUARD_RELATIVE_PATH}`)
+    || decoded.endsWith(`/${OWNED_DENY_CHECK_RELATIVE_PATH}`);
 }
 
 /** Decode ONE POSIX single-quoted shell token as produced by shellQuote (outer `'…'` with an

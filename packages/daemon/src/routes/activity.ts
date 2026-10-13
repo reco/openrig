@@ -511,6 +511,22 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+// A seat's PreToolUse hook asks before every Bash call whether a deny rule refuses it, so the human's denies hold
+// even where the runtime's own rules would allow the command without a prompt.
+activityRoutes.post("/deny-check", async (c) => {
+  const expectedToken = c.get("activityHookToken" as never) as string | undefined;
+  const approvals = c.get("approvalService" as never) as import("../domain/approvals.js").ApprovalService | undefined;
+  if (!expectedToken || !approvals) return c.json({ ok: true, deny: false });
+  if (c.req.header("authorization") !== `Bearer ${expectedToken}`) return c.json({ ok: false, code: "activity_hook_unauthorized" }, 401);
+  let body: Record<string, unknown>;
+  try { body = await c.req.json() as Record<string, unknown>; } catch { return c.json({ ok: false, code: "invalid_json" }, 400); }
+  const sessionName = stringOrNull(body.sessionName);
+  const command = stringOrNull(body.command);
+  if (!sessionName || !command) return c.json({ ok: false, code: "missing_fields" }, 400);
+  const message = approvals.denyByRule({ sessionName, toolName: "Bash", toolInput: { command } });
+  return c.json({ ok: true, deny: message !== null, ...(message ? { message } : {}) });
+});
+
 // A seat's PermissionRequest hook asks its human in Slack (opt-in seats only) and waits for the answer.
 activityRoutes.post("/approvals", async (c) => {
   const expectedToken = c.get("activityHookToken" as never) as string | undefined;
