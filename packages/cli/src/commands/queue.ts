@@ -633,6 +633,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--link <kind:ref>", "Link this request to its outcome, kind:ref with kind pr|issue|qitem (repeatable). The request's Slack thread closes once every linked outcome is finished (PR merged or closed, issue closed, qitem done or canceled)", collectLink, [] as string[])
     .option("--confirm <reading>", "A one-click answer that resolves with exactly this text. On a decision: the approve button's call to action, at most 75 characters (e.g. \"Build it\", \"Write the issue\"). On an update with --reply-to <decision>: your reading of their answer, shown with a Confirm button")
     .option("--human-questions-file <path>", "#193: JSON array of 1-4 questions for a decision, each {id, question, options: [{id, label, recommended?}]} with 2-4 options; Slack shows them as buttons")
+    .option("--human-merge <ref>", "owner/repo#<number>@<head sha>: the daemon builds a Merge / Not now card for this pull request from GitHub; on Merge it re-checks the gates and merges exactly that head. No --body needed.")
     .option("--attach <path>", "Attach an image or PDF (at most 10 MB, a regular file, no symlink) to the Slack post; repeatable. It is uploaded into the post's thread.", (v: string, acc: string[] = []) => { acc.push(v); return acc; })
     .option("--evidence-ref <path>", "OPR.0.4.4.19 FR-5: pointer to the durable artifact a human judges (e.g. a PROOF.md path). Required by the daemon when the item is human-routed; optional otherwise.")
     .option("--host <id>", QUEUE_HOST_OPTION_HELP)
@@ -659,6 +660,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       replyTo?: string;
       humanQuestionsFile?: string;
       confirm?: string;
+      humanMerge?: string;
       link?: string[];
       summary?: string;
       evidenceRef?: string;
@@ -687,7 +689,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       // OPR.0.3.2.21.FR-4(a) — resolve a LOCAL body BEFORE contacting the daemon
       // so a missing/ambiguous body fails fast and locally.
       let resolvedBody = "";
-      if (opts.bodyContext === undefined) {
+      if (opts.bodyContext === undefined && opts.humanMerge === undefined) {
         try {
           resolvedBody = await resolveQueueBody({ body: opts.body, bodyFile: opts.bodyFile });
         } catch (err) {
@@ -806,7 +808,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
         // stderr survives an interrupted wait without adding a second JSON
         // document to stdout. This is a request identity, NOT a commit receipt.
         console.error(`Queue create request ID: ${qitemId} (not proof of persistence). ${recovery}`);
-        if (isHumanSeatSessionRef(hostResolved.destination) && opts.humanIntent === undefined && opts.confirm === undefined && humanQuestions === undefined) {
+        if (isHumanSeatSessionRef(hostResolved.destination) && opts.humanIntent === undefined && opts.confirm === undefined && humanQuestions === undefined && opts.humanMerge === undefined) {
           console.error("Warning: no --human-intent, so this posts as a decision with a Confirm button. For information, status or an answer use --human-intent update (no buttons, no acknowledgement needed).");
         }
         const res = await client.post<Record<string, unknown>>("/api/queue/create", {
@@ -819,6 +821,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
           replyTo: opts.replyTo,
           humanQuestions,
           humanConfirm: opts.confirm,
+          ...(opts.humanMerge !== undefined ? { humanMerge: opts.humanMerge } : {}),
           ...(opts.link?.length ? { links: opts.link } : {}),
           summary: opts.summary,
           evidenceRef: opts.evidenceRef,

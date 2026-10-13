@@ -2260,6 +2260,21 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           sendKey: async (session, key) => { const r = await tmuxAdapter.sendKeys(session, [key]); if (!r.ok) throw new Error(r.message ?? "send failed"); },
         }).catch((e) => console.log(`[stuck-prompt] answer pass failed: ${(e as Error).message}`)).finally(() => { answering = false; });
       }, 3_000).unref();
+      // Merge / Not now on a merge card the daemon built: the daemon re-checks the gates and merges.
+      const { actOnMergeAnswers, defaultGh } = await import("./domain/human-merge.js");
+      const { loadConfig: loadSlackConfigForMerge } = await import("./domain/gateway/slack/config.js");
+      const { loadHumanRegistry: loadRegistryForMerge } = await import("./domain/gateway/human-registry.js");
+      let merging = false;
+      setInterval(() => {
+        if (merging || !db.open) return;
+        merging = true;
+        void actOnMergeAnswers(queueRepoInstance, {
+          gh: defaultGh,
+          smokeDestination: () => { try { return loadSlackConfigForMerge(OPENRIG_HOME).mergeSmokeDestination ?? null; } catch { return null; } },
+          approver: () => { const r = loadRegistryForMerge(OPENRIG_HOME); return r.ok ? r.entities.find((e) => e.role !== "requester")?.address ?? null : null; },
+          log: (m) => console.log(`[human-merge] ${m}`),
+        }).catch((e) => console.log(`[human-merge] pass failed: ${(e as Error).message}`)).finally(() => { merging = false; });
+      }, 5_000).unref();
     }
     const watchdogScheduler = new WatchdogScheduler({
       jobsRepo: watchdogJobsRepoInstance,
