@@ -67,8 +67,9 @@ function plainParts(command) {
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 /** Variables that only carry data to the program: a few inert names, and names ending in a data suffix. */
 const DATA = /^(?:CI|NODE_ENV|DEBUG|TZ|LANG|LC_[A-Z]+|FORCE_COLOR|NO_COLOR|TERM|[A-Z][A-Z0-9_]*_(?:URI|URL|HOST|PORT|USER|DB|NAME|KEY|TOKEN))=/;
-/** Those of them a toolchain reads to choose what it fetches, loads or runs (any case). */
-const RUN_CHANGING = /^(?:LD_|DYLD_|GIT_|SSH_|NPM_|NODE_(?!ENV=)|PNPM_|YARN_|PIP_|UV_|PYTHON|CARGO_|RUST|GO|DOCKER_|XDG_)/i;
+/** Those of them a toolchain reads to choose what it fetches, loads or runs, or the rig CLI reads as its identity
+ *  or daemon (any case). */
+const RUN_CHANGING = /^(?:OPENRIG_|RIGGED_|LD_|DYLD_|GIT_|SSH_|NPM_|NODE_(?!ENV=)|PNPM_|YARN_|PIP_|UV_|PYTHON|CARGO_|RUST|GO|DOCKER_|XDG_)/i;
 
 /** A part's words after its leading NAME=value assignments; null when one of them is not plain data. */
 function afterAssignments(words) {

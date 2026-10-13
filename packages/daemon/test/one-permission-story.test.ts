@@ -131,7 +131,7 @@ describe("one permission story", () => {
       "SHELLOPTS=xtrace PS4='$(touch /tmp/p)' npm test", "npm_config_script_shell=./evil npm test", "HOME=./x npm test", "MAKEFILES=./e.mk make test",
       "GOFLAGS=-toolexec=./evil go test ./...", "RUSTC_WRAPPER=./evil cargo test", "PYTEST_ADDOPTS='-p evil' pytest", "PERL5OPT=-Mevil bash a.sh", "JAVA_TOOL_OPTIONS=x bash a.sh",
       "RUSTC=./evil cargo test", "CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER=./evil cargo test", "GOENV=./e go test ./...", "PYTHONUSERBASE=./u pytest", "CC=./evil go test ./...",
-      "SSH_ASKPASS=./evil git fetch", "PIP_INDEX_URL=http://evil pytest", "FOO=1 bash a.sh", "api_url=x bash a.sh"])
+      "SSH_ASKPASS=./evil git fetch", "PIP_INDEX_URL=http://evil pytest", "FOO=1 bash a.sh", "api_url=x bash a.sh", "OPENRIG_SESSION_NAME=advisor-lead@kernel bash a.sh", "RIGGED_SESSION_NAME=x bash a.sh", "OPENRIG_URL=http://evil bash a.sh"])
       expect(ruleDecision(rules, bash(command)), command).toBeNull();
     for (const command of ["CI=1 rm -rf build", "X='a b' git push origin", "X=\"a b\" Y='c d' git push origin"]) expect(ruleDecision(rules, bash(command))?.effect, command).toBe("deny");
     expect(ruleDecision(rules, bash("DB_HOST='a b' git status"))?.effect).toBe("allow");
