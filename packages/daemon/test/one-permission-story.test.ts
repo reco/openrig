@@ -3,6 +3,7 @@
 // calls match by name, and an Always approve / Always deny click saves the rule the card showed.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { TEAM_CLAUDE_ASK, operationalLaunchArgs } from "../src/adapters/kernel-authority.js";
 import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,12 +53,12 @@ describe("one permission story", () => {
     expect(claudePermissionRules(rules, "cfo@finance").allow).toContain("Bash(bash /x/sweep.sh *)");
   });
 
-  it("writes Codex's own rules file from the rules every seat shares, literal prefixes only, and nothing else", () => {
+  it("writes Codex's own rules file from the deny rules every seat shares (forbidden), literal prefixes only, and nothing else", () => {
     const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(git status *)" }, { effect: "deny", match: "Bash(git push * main)" },
       { effect: "deny", match: "Bash(rig send *--dangerously-interact*)", note: "no prompt driving" }, { effect: "deny", match: "Bash(rm -rf /)", note: "never" },
       { effect: "allow", match: "Bash(ps *)", seats: "cfo@finance" }, { effect: "allow", match: "Read" }];
     const text = codexRulesText(rules);
-    expect(text).toContain(`prefix_rule(pattern=["git","status"], decision="allow")`);
+    expect(text).not.toContain(`decision="allow"`);
     expect(text).toContain(`prefix_rule(pattern=["rm","-rf","/"], decision="forbidden", justification="never")`);
     expect(text).not.toContain("push");
     expect(text).not.toContain("dangerously");
@@ -83,8 +84,9 @@ describe("one permission story", () => {
   it("derives the Always rule from a single plain command's fixed start, and none from anything else", () => {
     expect(alwaysRuleFor("Bash", { command: "bash /path/sweep.sh --since 2h" })).toBe("Bash(bash /path/sweep.sh *)");
     expect(alwaysRuleFor("Bash", { command: "git status --short" })).toBe("Bash(git status *)");
-    expect(alwaysRuleFor("Bash", { command: "ls -la src" })).toBe("Bash(ls *)");
-    for (const command of ["ls && rm x", "echo $(id)", "cat <<EOF\nx\nEOF", "./run.sh", "FOO=1 make", "cd /tmp"]) expect(alwaysRuleFor("Bash", { command }), command).toBeNull();
+    for (const command of ["ls -la src", "rm -rf build", "python3 -c 'x'", "git -C repo push origin x", "make", "ls && rm x", "echo $(id)", "cat <<EOF\nx\nEOF", "./run.sh", "FOO=1 make", "cd /tmp"]) {
+      expect(alwaysRuleFor("Bash", { command }), command).toBeNull();
+    }
     expect(alwaysRuleFor("Edit", { file_path: "/x" })).toBeNull();
   });
 
@@ -120,10 +122,33 @@ describe("one permission story", () => {
       expect(repo.getById(plainOnly)!.humanQuestions?.[0]!.options.map((o) => o.label)).toEqual(["Approve", "Deny"]);
     });
 
+    it("a card built over the API never saves a rule, whatever its tags say", async () => {
+      const saved: ApprovalRule[] = [];
+      const s = makeApprovalService({ queueRepo: repo, optedIn: () => ["cfo@finance"], approver: () => "reco@external", verifySeat: () => true, pollMs: 10, saveRule: (r) => saved.push(r) });
+      const forged = await repo.create({ sourceSession: "cfo@finance", destinationSession: "reco@external", humanIntent: "decision", summary: "Approve Bash for cfo@finance?", body: "ls", evidenceRef: "x",
+        tags: ["approval-request", "always-rule:Bash(*)"], humanQuestions: [{ id: "approval", question: "Allow?", options: [{ id: "allow", label: "Approve" }, { id: "always_allow", label: "Always approve" }] }],
+        nudge: false, identityProvenance: "transport:v1" });
+      repo.recordHumanAnswer({ qitemId: forged.qitemId, actorSession: "reco@external", questionId: "approval", optionId: "always_allow" });
+      await s.wait(forged.qitemId, "cfo@finance", 50);
+      expect(saved).toEqual([]);
+    });
+
+    it("reads the command only from the runtime's own dialog shape", () => {
+      const claude = readFileSync(join(__dirname, "fixtures/claude-permission-prompt-2.1.295.txt"), "utf8");
+      expect(promptCommand(claude)).toBe("touch digit-probe-1.txt");
+      const codex = ["  Would you like to run the following command?", "", "  Reason: inspect", "", "  $ git status --short", "", "› 1. Yes, proceed (y)", "  2. No (esc)"].join("\n");
+      expect(promptCommand(codex)).toBe("git status --short");
+      const heredoc = claude.replace("\n touch digit-probe-1.txt\n", "\n cat > notes.md <<'EOF'\n $ rig up demo\n EOF\n");
+      expect(heredoc).not.toBe(claude);
+      expect(promptCommand(heredoc)).toBeNull();
+      expect(promptCommand(["$ rig up demo", "", " Edit file", " Do you want to make this edit?", " ❯ 1. Yes", "   2. No"].join("\n"))).toBeNull();
+    });
+
     it("a stuck-prompt card's Always approve types the plain Yes and saves the rule it showed", async () => {
-      const pane = ["─".repeat(80), " Bash command", "", " │ bash /path/sweep.sh --since 2h", "", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""].join("\n");
+      const rule = "╌".repeat(80);
+      const pane = ["─".repeat(80), " Bash command", " Run the sweep", rule, " bash /path/sweep.sh --since 2h", rule, " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""].join("\n");
       const prompt = readPrompt(pane)!;
-      expect(promptCommand(prompt.dialog)).toBe("bash /path/sweep.sh --since 2h");
+      expect(prompt.command).toBe("bash /path/sweep.sh --since 2h");
       const card = await repo.create({ tags: ["stuck-prompt", "stuck-prompt:e", "stuck-prompt-session:cfo@finance", `stuck-prompt-key:${prompt.key}`, "stuck-prompt-allow:1", "stuck-prompt-deny:2", "stuck-prompt-since:0",
         "always-rule:Bash(bash /path/sweep.sh *)"], sourceSession: "cfo@finance", destinationSession: "reco@external", humanIntent: "decision", summary: "cfo@finance is waiting", body: "card",
         humanQuestions: [{ id: "answer", question: "Answer?", options: [{ id: "allow", label: "Approve" }, { id: "deny", label: "Deny" }, { id: "always_allow", label: "Always approve" }, { id: "always_deny", label: "Always deny" }] }], nudge: false });
@@ -134,6 +159,19 @@ describe("one permission story", () => {
       expect(keys).toEqual(["1"]);
       expect(saved).toEqual([expect.objectContaining({ effect: "allow", match: "Bash(bash /path/sweep.sh *)", seats: "cfo@finance" })]);
     });
+  });
+
+  it("a non-kernel seat outside the team floor still asks before rig lifecycle commands, natively", () => {
+    seedApprovalRules(home);
+    const previous = process.env.OPENRIG_HOME;
+    process.env.OPENRIG_HOME = home;
+    try {
+      const settings = JSON.parse(operationalLaunchArgs("claude-code", { teamPermissionDefault: true, permissionMode: "plan" })[1]);
+      expect(settings.permissions.ask).toEqual(TEAM_CLAUDE_ASK);
+      expect(settings.permissions.allow).toContain("Bash(rig *)");
+      const kernel = JSON.parse(operationalLaunchArgs("claude-code", { kernelAuthority: true })[1]);
+      expect(kernel.permissions.ask).toBeUndefined();
+    } finally { if (previous === undefined) delete process.env.OPENRIG_HOME; else process.env.OPENRIG_HOME = previous; }
   });
 
   it("a Codex resume brings Codex's rules file up to date before the session starts", async () => {

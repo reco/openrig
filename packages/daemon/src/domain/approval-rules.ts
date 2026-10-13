@@ -48,7 +48,7 @@ export function readApprovalRules(home: string): ApprovalRule[] {
 /** The rules a new home starts with: read-only inspection, git read verbs, test runners and the rig CLI,
  *  plus the safety denies. Written only when the home has no rules file; a user's file is never touched. */
 export const DEFAULT_APPROVAL_RULES: readonly ApprovalRule[] = [
-  ...["Read", "Glob", "Grep"].map((match) => ({ effect: "allow" as const, match })),
+  ...["Read", "Glob", "Grep", "Skill"].map((match) => ({ effect: "allow" as const, match })),
   ...["ls", "cat", "head", "tail", "wc", "grep", "jq", "sqlite3 -readonly -safe", "pwd",
     "git status", "git log", "git diff", "git show", "git branch", "git rev-parse", "git fetch", "git blame", "git ls-files",
     "npm test", "npm run test", "pnpm test", "pnpm run test", "npx vitest", "npx jest", "pytest", "go test", "cargo test", "make test",
@@ -74,9 +74,9 @@ export function alwaysRuleFor(toolName: string, toolInput: unknown): string | nu
   const parts = command === null ? null : plain.plainParts(command);
   if (!parts || parts.length !== 1 || !allowable(parts[0]!)) return null;
   const words = parts[0]!.split(" ");
-  if (words[0] === "cd") return null;
-  const start = words.length > 1 && !words[1]!.startsWith("-") && PLAIN_WORD.test(words[1]!) ? words.slice(0, 2) : words.slice(0, 1);
-  return `Bash(${start.join(" ")} *)`;
+  // Two fixed words (a script, a subcommand): a bare executable would allow everything it can do.
+  if (words[0] === "cd" || words.length < 2 || words[1]!.startsWith("-") || !PLAIN_WORD.test(words[1]!)) return null;
+  return `Bash(${words.slice(0, 2).join(" ")} *)`;
 }
 
 /** Saves a rule from an Always click: added once, scoped to `seats`, never rewriting other rules. */
@@ -235,15 +235,16 @@ function codexPrefix(match: string): string[] | null {
 
 export const CODEX_RULES_FILE = "openrig.rules";
 
-/** The rules every seat shares, as Codex execpolicy: allow is allow, deny is forbidden. Codex reads every
- *  *.rules file in its home for every session, so a rule scoped to some seats, or a pattern Codex cannot
- *  express as a literal prefix, stays with the daemon's prompt-time check only. */
+/** The deny rules every seat shares, as Codex execpolicy `forbidden`. A Codex `allow` would run the command
+ *  outside Codex's sandbox without asking, so allow rules stay with the daemon's prompt-time check. Codex
+ *  reads every *.rules file in its home for every session, so a rule scoped to some seats, or a pattern Codex
+ *  cannot express as a literal prefix, stays with the daemon too. */
 export function codexRulesText(rules: readonly ApprovalRule[]): string {
-  const lines = rules.filter((r) => !r.seats || r.seats === "*").flatMap((r) => {
+  const lines = rules.filter((r) => r.effect === "deny" && (!r.seats || r.seats === "*")).flatMap((r) => {
     const prefix = codexPrefix(r.match);
     if (!prefix) return [];
     const note = r.note ? `, justification=${JSON.stringify(r.note)}` : "";
-    return [`prefix_rule(pattern=${JSON.stringify(prefix)}, decision="${r.effect === "deny" ? "forbidden" : "allow"}"${note})`];
+    return [`prefix_rule(pattern=${JSON.stringify(prefix)}, decision="forbidden"${note})`];
   });
   return `# Written by OpenRig from ${APPROVAL_RULES_FILE} at each Codex launch; edits here are replaced.\n${lines.join("\n")}\n`;
 }

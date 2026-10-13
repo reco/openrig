@@ -129,7 +129,8 @@ describe("Claude team command permissions", () => {
     vi.mocked(existsSync).mockReturnValueOnce(false);
     const args = operationalLaunchArgs("claude-code", { teamPermissionDefault: true });
     expect(JSON.parse(args[1])).toEqual({ permissions: { allow: defaults.allow, ask: TEAM_CLAUDE_ASK, deny: defaults.deny } });
-    expect(JSON.parse(operationalLaunchArgs("claude-code", { teamPermissionDefault: true, permissionMode: "plan" })[1])).toEqual({ permissions: defaults });
+    expect(JSON.parse(operationalLaunchArgs("claude-code", { teamPermissionDefault: true, permissionMode: "plan" })[1]))
+      .toEqual({ permissions: { allow: defaults.allow, ask: TEAM_CLAUDE_ASK, deny: defaults.deny } });
   });
 
   it("executes the launch-provided hook via stdin without changing its input or settings", () => {

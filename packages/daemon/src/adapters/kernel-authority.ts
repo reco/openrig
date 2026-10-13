@@ -37,9 +37,10 @@ function claudeCommandSettings(rules: { allow: string[]; deny: string[] }, ask: 
 }
 
 /** One --settings flag carries the seat's rules, merged into a settings flag already present. */
-function withRules(args: string[], rules: { allow: string[]; deny: string[] }): string[] {
+function withRules(args: string[], rules: { allow: string[]; deny: string[] }, ask: string[]): string[] {
   if (!rules.allow.length && !rules.deny.length) return args;
-  const permissions = { ...(rules.allow.length ? { allow: rules.allow } : {}), ...(rules.deny.length ? { deny: rules.deny } : {}) };
+  const permissions = { ...(rules.allow.length ? { allow: rules.allow } : {}), ...(rules.allow.length && ask.length ? { ask } : {}),
+    ...(rules.deny.length ? { deny: rules.deny } : {}) };
   const at = args.indexOf("--settings");
   if (at === -1) return [...args, "--settings", JSON.stringify({ permissions })];
   const settings = JSON.parse(args[at + 1]!) as { permissions?: Record<string, unknown> };
@@ -60,7 +61,8 @@ export function operationalLaunchArgs(runtime: string, choice: LaunchChoice): st
     && (!choice.launchPosture || choice.launchPosture === "floor")) {
     return claudeCommandSettings(rules, TEAM_CLAUDE_ASK);
   }
-  return withRules(choice.kernelAuthority ? [] : nonInterruptiveArgs(runtime, choice), rules);
+  // Any other non-kernel seat still asks before rig lifecycle commands, natively (ask beats allow).
+  return withRules(choice.kernelAuthority ? [] : nonInterruptiveArgs(runtime, choice), rules, choice.kernelAuthority ? [] : TEAM_CLAUDE_ASK);
 }
 
 export function operationalLaunchArg(runtime: string, choice: LaunchChoice): string {

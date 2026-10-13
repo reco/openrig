@@ -35,6 +35,8 @@ export interface StuckPrompt {
   dialog?: string;
   /** The dialog's start is off screen: it cannot be shown in full, so the card has no buttons. */
   dialogCut?: boolean;
+  /** The single shell command the dialog asks to run, read from the runtime's own dialog shape. */
+  command?: string | null;
   /** A seat asked for this card before the prompt had waited five minutes, and why. */
   requestedBy?: string;
   requestReason?: string;
@@ -104,7 +106,7 @@ export function promptChoices(pane: string): PromptChoices | undefined {
 
 /** What the pane shows now: the prompt's reason, fingerprint, question and choices, or null when
  *  it is not at a prompt. The same reading names an episode and checks it before an answer. */
-export function readPrompt(pane: string): { reason: string; key: string; promptLine: string; choices?: PromptChoices; dialog: string; dialogCut: boolean } | null {
+export function readPrompt(pane: string): { reason: string; key: string; promptLine: string; choices?: PromptChoices; dialog: string; dialogCut: boolean; command: string | null } | null {
   const seen = classifyPaneActivity(pane);
   if (seen.state !== "attention" || !PROMPT_REASONS.has(seen.reason ?? "")) return null;
   const evidence = String(seen.evidence ?? "");
@@ -114,7 +116,29 @@ export function readPrompt(pane: string): { reason: string; key: string; promptL
   const dialogCut = !topKnown;
   // A dialog too long for the card shows in full in the card's thread, so its buttons stay; one whose
   // start is off screen cannot be shown in full, so it gets none.
-  return { reason: seen.reason!, key, promptLine: questionLine(pane, evidence), choices: dialogCut ? undefined : promptChoices(pane), dialog, dialogCut };
+  return { reason: seen.reason!, key, promptLine: questionLine(pane, evidence), choices: dialogCut ? undefined : promptChoices(pane), dialog, dialogCut,
+    command: dialogCut ? null : promptCommand(pane) };
+}
+
+const DASHED_RULE = /^[╌┄]{20,}$/;
+
+/** The single shell command the prompt on screen asks to run, read only from the runtime's own dialog
+ *  shape: Claude's Bash dialog shows it alone between two dashed rules above "Do you want to proceed?",
+ *  Codex shows it as the `$ ` line after "Would you like to run the following command?". Null otherwise. */
+export function promptCommand(pane: string): string | null {
+  const lines = pane.split("\n").map((l) => l.trim());
+  const asked = lines.lastIndexOf("Do you want to proceed?");
+  if (asked > 0 && DASHED_RULE.test(lines[asked - 1]!)) {
+    const open = lines.slice(0, asked - 1).map((l) => DASHED_RULE.test(l)).lastIndexOf(true);
+    const header = open > 0 ? lines.slice(0, open).lastIndexOf("Bash command") : -1;
+    const body = open >= 0 ? lines.slice(open + 1, asked - 1).filter(Boolean) : [];
+    return header >= 0 && body.length === 1 ? body[0]! : null;
+  }
+  const codex = lines.lastIndexOf("Would you like to run the following command?");
+  if (codex < 0) return null;
+  const run = lines.slice(codex + 1).find((l) => l.startsWith("$ "));
+  const options = lines.slice(codex + 1).findIndex((l) => /^[❯›]?\s*1\./.test(l));
+  return run && (options < 0 || lines.indexOf(run, codex) < codex + 1 + options) ? run.slice(2).trim() : null;
 }
 
 export interface StuckPromptWatchDeps {
@@ -226,7 +250,7 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
         if (episode.notifiedAt !== undefined || now() - episode.since < wait) continue;
         episode.notifiedAt = now();
         try {
-          await deps.notify({ session, reason: prompt.reason, promptLine, attach: `tmux attach -t ${session}`, episodeId: episodeIdOf(session, key), since: episode.since, key, dialog: prompt.dialog, dialogCut: prompt.dialogCut,
+          await deps.notify({ session, reason: prompt.reason, promptLine, attach: `tmux attach -t ${session}`, episodeId: episodeIdOf(session, key), since: episode.since, key, dialog: prompt.dialog, dialogCut: prompt.dialogCut, command: prompt.command,
             ...(prompt.choices ? { choices: prompt.choices } : {}), waitingMinutes: Math.floor((now() - episode.since) / 60_000) });
         } catch (e) {
           episode.notifiedAt = undefined;
@@ -247,7 +271,7 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
       const since = episode?.key === prompt.key ? episode.since : now();
       open.set(session, { key: prompt.key, since, notifiedAt: now() });
       const result = await deps.notify({ session, reason: prompt.reason, promptLine: prompt.promptLine, attach: `tmux attach -t ${session}`,
-        episodeId: episodeIdOf(session, prompt.key), since, key: prompt.key, dialog: prompt.dialog, choices: prompt.choices,
+        episodeId: episodeIdOf(session, prompt.key), since, key: prompt.key, dialog: prompt.dialog, choices: prompt.choices, command: prompt.command,
         waitingMinutes: Math.floor((now() - since) / 60_000), requestedBy: request.by, requestReason: maskSecrets(request.reason).slice(0, 300) })
         .catch((e: Error) => { if (episode) open.set(session, episode); else open.delete(session); throw e; });
       if (result && "qitemId" in result) return { outcome: "posted", qitemId: result.qitemId };
@@ -266,17 +290,6 @@ export interface AnswerDeps {
   onSent?: (session: string) => void;
   /** Saves the rule of an Always approve / Always deny click. */
   saveRule?: (rule: { effect: "allow" | "deny"; match: string; seats: string; note: string }) => void;
-}
-
-/** The single command a prompt dialog asks to run: Codex's `$ <command>` line, or Claude's one framed
- *  command line under its Bash header; null when it is not exactly one line. */
-export function promptCommand(dialog: string): string | null {
-  const lines = dialog.split("\n");
-  const codex = lines.filter((l) => l.startsWith("$ "));
-  if (codex.length === 1) return codex[0]!.slice(2).trim();
-  if (!lines.some((l) => /^Bash command$/.test(l.trim()))) return null;
-  const framed = lines.filter((l) => /^[│┃]\s/.test(l));
-  return framed.length === 1 ? framed[0]!.replace(/^[│┃]\s+/, "").trim() : null;
 }
 
 /** Type the chosen option's key, read off the screen now, only while the pane still shows the

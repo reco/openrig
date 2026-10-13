@@ -146,9 +146,12 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
     deps.queueRepo.update({ qitemId: requestId, actorSession: "daemon@kernel", state: "canceled", transitionNote: `approval expired: ${why}` });
   };
   /** The rule the card showed, saved for the asking seat; null when the card offered none or saving failed. */
-  const saveAlways = (tags: string[] | null | undefined, effect: ApprovalDecision, seat: string): string | null => {
+  const saveAlways = (qitemId: string, tags: string[] | null | undefined, effect: ApprovalDecision, seat: string): string | null => {
     const match = tags?.find((t) => t.startsWith(ALWAYS_RULE_TAG))?.slice(ALWAYS_RULE_TAG.length);
     if (!match || !deps.saveRule) return null;
+    // Only a card this service built may save a rule: a row created over the API carries an identity provenance.
+    const created = deps.queueRepo.transitionLog.listForQitem(qitemId).find((t) => t.transitionNote === "created");
+    if (!created || created.identityProvenance !== null) return null;
     try { deps.saveRule({ effect, match, seats: seat, note: `saved from Slack for ${seat}` }); return match; }
     catch (e) { log(`always rule ${match} not saved: ${(e as Error).message}`); return null; }
   };
@@ -224,7 +227,7 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
         // A card split over its thread: its buttons count only once every part, the full input included, is in Slack.
         if ((answer === "allow" || answer === "deny") && (!item.humanDetail || item.deliveryOutcome === "posted")) {
           if (!deps.queueRepo.transitionLog.listForQitem(requestId).some((t) => t.transitionNote?.startsWith("approval "))) {
-            const saved = clicked !== answer ? saveAlways(item.tags, answer, sessionName) : null;
+            const saved = clicked !== answer ? saveAlways(requestId, item.tags, answer, sessionName) : null;
             deps.queueRepo.update({ qitemId: requestId, actorSession: "daemon@kernel",
               transitionNote: `approval ${answer} by ${item.destinationSession} for ${item.summary ?? "the request"}${saved ? `; saved ${answer} rule ${saved}` : ""}` });
           }

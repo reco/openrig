@@ -172,7 +172,6 @@ import { materializeBuiltinPolicyReference } from "./domain/builtin-policy-refer
 import { ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, readActivityEndpointFile } from "./domain/activity-endpoint.js";
 import { makeCodexPriorPolicyReader } from "./domain/codex-prior-policy.js";
 import { alwaysRuleFor, projectCodexRules, saveAlwaysRule, seedApprovalRules } from "./domain/approval-rules.js";
-import { promptCommand } from "./domain/stuck-prompt-watch.js";
 import {
   getCompatibleOpenRigPath,
   getDefaultOpenRigPath,
@@ -2241,8 +2240,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
             return;
           }
           // Answerable from Slack: the seat is the source, so the answer's reply row reaches it.
-          const command = p.dialog ? promptCommand(p.dialog) : null;
-          const always = command ? alwaysRuleFor("Bash", { command }) : null;
+          const always = p.command ? alwaysRuleFor("Bash", { command: p.command }) : null;
           const card = await queueRepoInstance.create({
             tags: ["stuck-prompt", `stuck-prompt:${p.episodeId}`, `stuck-prompt-session:${p.session}`, `stuck-prompt-key:${p.key}`,
               `stuck-prompt-allow:${p.choices.allow.key}`, `stuck-prompt-deny:${p.choices.deny.key}`, `stuck-prompt-since:${p.since}`,
