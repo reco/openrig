@@ -446,7 +446,7 @@ export class SessionRegistry {
       // An in-process conversation change (/clear, /resume) sent by the very process the launch path
       // recorded, still recorded now: argv keeps naming its launch token, and only that process may.
       const same = evidence.sameProcess;
-      const recorded = this.recordedLaunchProcess(sessionId);
+      const recorded = same ? this.recordedLaunchProcess(sessionId) : null;
       if (written && evidence.currentGeneration && same && recorded && same.token !== token.trim()
         && recorded.pid === same.pid && recorded.startedAt === same.startedAt && recorded.token === same.token) {
         this.db.prepare("UPDATE sessions SET resume_rotated_from = ?, resume_rotated_process = ? WHERE id = ?").run(same.token,
