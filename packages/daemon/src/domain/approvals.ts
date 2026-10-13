@@ -63,7 +63,8 @@ export interface ApprovalService {
   verify: (sessionName: string, seatToken: string | null) => Promise<boolean>;
   /** A rule's answer for this request, before any human is asked; null when no rule matches. */
   byRule: (input: ApprovalRequest) => { decision: ApprovalDecision; message: string } | null;
-  /** A deny rule's message for this request, checked before the runtime's own rules; null when none denies it. */
+  /** A deny rule's message for this request, checked before the runtime's own rules; null when none denies it.
+   *  Throws when the rules cannot be read. */
   denyByRule: (input: ApprovalRequest) => string | null;
   start: (input: ApprovalRequest) => Promise<string | null>;
   /** Only the seat that asked may wait on its request. */
@@ -187,7 +188,8 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
       return { decision: hit.effect, message: ruleMessage(hit) };
     },
     denyByRule(input) {
-      const hit = hitFor(input);
+      // Unreadable rules throw: the hook then refuses what it cannot check, rather than every deny going quiet.
+      const hit = ruleDecision(deps.rules?.() ?? [], input);
       if (hit?.effect !== "deny") return null;
       log(`deny by rule ${hit.rule.match} before the runtime's own rules: ${input.sessionName} ${approvalText(input.toolName, input.toolInput).split("\n")[0]!.slice(0, 200)}`);
       return ruleMessage(hit);

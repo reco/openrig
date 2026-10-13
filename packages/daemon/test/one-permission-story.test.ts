@@ -137,9 +137,13 @@ describe("one permission story", () => {
     expect(native).not.toContain("Bash(git *--upload-=*)");
     for (const command of ["git push -f", "git push origin feat -f", "git --no-pager push --force", "git --git-dir=.git push -f", "git -P push --force", "git 'push' --force",
       "git push origin +feat", "git push origin HEAD:main", "git push origin :main", "git push origin HEAD:refs/heads/main", "git push origin main -v", "git push --mirror", "git push -uf origin x",
-      "git clone -c core.sshCommand=x ssh://h/r", "git -P -c core.sshCommand=x fetch", "git -C . -c core.pager=x log"])
+      "git clone -c core.sshCommand=x ssh://h/r", "git -P -c core.sshCommand=x fetch", "git -C . -c core.pager=x log",
+      "git --exec-path=/opt/git-core push --force origin x", "git --config-env=a.b=HOME push -f", "git --attr-source HEAD push --force", "git --config-env a.b=HOME log",
+      "git push origin --all", "git push origin --branches", "git push origin 'refs/heads/*:refs/heads/*'", "git push --receive-pack=./evil . x", "git push --exec=./evil . x",
+      "git push --rece=./evil . x", "git rebase --exec ./evil main"])
       expect(ruleDecision(rules, bash(command))?.effect, command).toBe("deny");
-    for (const command of ["git push origin feat", "git push -u origin feat", "git --no-pager log", "git -C . status", "git clone ssh://h/r dir"])
+    for (const command of ["git push origin feat", "git push -u origin feat", "git --no-pager log", "git -C . status", "git clone ssh://h/r dir", "git --exec-path",
+      "git push --recurse-submodules=check origin feat", "git log --exclude=x --all"])
       expect(ruleDecision(rules, bash(command))?.effect, command).toBe("allow");
   });
 
@@ -151,11 +155,14 @@ describe("one permission story", () => {
     expect(s.denyByRule(bash("git push --forc origin x"))).toBe("Denied by the OpenRig approval rule Bash(git push *--force*): no force-push");
     expect(s.denyByRule(bash("git status"))).toBeNull();
     expect(s.denyByRule(bash("make something"))).toBeNull();
+    expect(() => makeApprovalService({ queueRepo: new QueueRepository(db, new EventBus(db), { loadHumanRegistry: () => registry }), optedIn: () => [], approver: () => null,
+      verifySeat: () => true, rules: () => { throw new Error("rule 3 is invalid"); } }).denyByRule(bash("git push"))).toThrow("rule 3 is invalid");
     db.close();
     expect(denyCheck.decisionOutput({ ok: true, deny: true, message: "Denied by rule X" })).toEqual({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "Denied by rule X" } });
     expect(denyCheck.decisionOutput({ ok: true, deny: false })).toBeNull();
-    expect(denyCheck.decisionOutput(null)).toBeNull();
-    expect(denyCheck.commandOf({ tool_input: { command: ["git", "push"] } })).toBe("git push");
+    expect(denyCheck.decisionOutput(null, "ls -la")).toBeNull();
+    for (const command of ["git push origin x", "cd a && /usr/bin/git status", "FOO=1 git log"])
+      expect(denyCheck.decisionOutput(null, command), command).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny" } });    expect(denyCheck.commandOf({ tool_input: { command: ["git", "push"] } })).toBe("git push");
   });
 
   it("allow rules look through literal leading assignments, except one that changes what runs; deny sees through all", () => {

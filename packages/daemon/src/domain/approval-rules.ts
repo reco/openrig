@@ -195,25 +195,32 @@ function denyForm(segment: string): string {
   return s.startsWith("git ") ? gitDenyForm(s) : s;
 }
 
-/** git spelled the way its deny rules name it: global options other than -c gone, -c<x> as -c <x>; for clone and
- *  ls-remote a -u as --upload-pack and a clone's -c as a global one; for push a forcing spelling (+refspec, a short
- *  cluster with f, --mirror) as --force and each refspec's destination branch as a last word. */
+/** git spelled the way its deny rules name it: global options gone, except those that override config or the
+ *  programs git runs (--config-env, --exec-path=), which read as -c like -c<x>; for clone and ls-remote a -u as
+ *  --upload-pack and a clone's -c as a global one; any --receive-pack or --exec as --upload-pack (each runs a
+ *  command); for push a forcing spelling (+refspec, a short cluster with f, --mirror) as --force, and each refspec's
+ *  destination branch as a last word, main for one that pushes every branch (--all, --branches, a pattern). */
 function gitDenyForm(command: string): string {
   let s = command;
   for (let prev = ""; prev !== s;) {
     prev = s;
-    s = s.replace(/^git (?:-C ?|--(?:git-dir|work-tree|namespace|super-prefix) )\S+ /, "git ").replace(/^git -c(?=\S)/, "git -c ")
-      .replace(/^git (?!-c\b|--config-env|--exec-path)-{1,2}[A-Za-z][\w-]*(?:=\S*)? /, "git ");
+    s = s.replace(/^git (?:-C ?|--(?:git-dir|work-tree|namespace|super-prefix|attr-source) )\S+ /, "git ")
+      .replace(/^git (?:--config-env[= ]|--exec-path=|-c(?=\S))/, "git -c ")
+      .replace(/^git (?!-c\b)-{1,2}[A-Za-z][\w-]*(?:=\S*)? /, "git ");
   }
   const [, sub = "", rest = ""] = /^git (\S+)(.*)$/.exec(s) ?? [];
   const words = rest.trim().split(" ");
+  const option = (w: string, name: string, min: number) => { const p = /^--([a-z-]+)(?:=|$)/.exec(w)?.[1]; return !!p && p.length >= min && name.startsWith(p); };
+  if (words.some((w) => option(w, "receive-pack", 4) || option(w, "exec", 3))) s += " --upload-pack";
   if (sub === "clone" || sub === "ls-remote") {
     if (words.some((w) => /^-[A-Za-z]*u/.test(w))) s += " --upload-pack";
     if (sub === "clone" && words.some((w) => /^(?:-[A-Za-z]*c|--con)/.test(w))) s = `git -c ${s.slice(4)}`;
   }
   if (sub === "push") {
     if (words.some((w) => w.startsWith("+") || /^-[A-Za-z]*f/.test(w) || /^--mi/.test(w))) s += " --force";
-    const branches = words.filter((w) => !w.startsWith("-")).slice(1).map((w) => w.replace(/^\+/, "").split(":").pop()!.replace(/^refs\/heads\//, ""));
+    const refspecs = words.filter((w) => !w.startsWith("-")).slice(1);
+    const branches = refspecs.map((w) => w.replace(/^\+/, "").split(":").pop()!.replace(/^refs\/heads\//, ""));
+    if (words.some((w) => option(w, "all", 2) || option(w, "branches", 2)) || refspecs.some((w) => w.includes("*"))) branches.push("main");
     if (branches.length) s += ` ${branches.join(" ")}`;
   }
   return s;

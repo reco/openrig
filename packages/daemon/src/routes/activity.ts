@@ -523,7 +523,11 @@ activityRoutes.post("/deny-check", async (c) => {
   const sessionName = stringOrNull(body.sessionName);
   const command = stringOrNull(body.command);
   if (!sessionName || !command) return c.json({ ok: false, code: "missing_fields" }, 400);
-  const message = approvals.denyByRule({ sessionName, toolName: "Bash", toolInput: { command } });
+  let message: string | null;
+  try { message = approvals.denyByRule({ sessionName, toolName: "Bash", toolInput: { command } }); } catch (e) {
+    console.log(`[approvals] deny check for ${sessionName} failed: ${(e as Error).message}`);
+    return c.json({ ok: false, code: "rules_unreadable" }, 503);
+  }
   return c.json({ ok: true, deny: message !== null, ...(message ? { message } : {}) });
 });
 
