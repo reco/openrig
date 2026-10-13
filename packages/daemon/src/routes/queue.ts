@@ -514,7 +514,7 @@ export function queueRoutes(): Hono {
       } catch (e) {
         return c.json({ error: `could not read ${mergeRef.repo}#${mergeRef.number} from GitHub: ${(e as Error).message}`, code: "human_merge_unreadable" }, 502);
       }
-      Object.assign(body, { humanIntent: "decision", humanQuestions: [merge.MERGE_QUESTION], body: card.body, summary: card.summary, evidenceRef: card.evidenceRef,
+      Object.assign(body, { humanIntent: "decision", humanQuestions: [merge.MERGE_QUESTION], body: card.body, summary: card.summary, evidenceRef: card.evidenceRef, humanDetail: null,
         tags: [...(body.tags ?? []).filter((t) => !t.startsWith("human-merge")), ...card.tags] });
     }
     const refusal = createInputRefusal(c, sourceSession, body);
@@ -570,7 +570,7 @@ export function queueRoutes(): Hono {
       if (mergeRef) {
         const { CARD_NOTE, formatMergeRef } = await import("../domain/human-merge.js");
         // An id reused for a row the seat wrote itself returns that row: it never becomes a merge card.
-        const built = item.body === body.body && JSON.stringify(item.humanQuestions) === JSON.stringify(body.humanQuestions)
+        const built = item.body === body.body && item.summary === body.summary && !item.humanDetail && JSON.stringify(item.humanQuestions) === JSON.stringify(body.humanQuestions)
           && body.tags!.every((t) => item.tags?.includes(t)) && item.destinationSession === body.destinationSession;
         if (!built) return c.json({ error: `qitem id ${item.qitemId} already names a different row`, code: "invalid_human_merge" }, 409);
         if (!getRepo(c).transitionLog.listForQitem(item.qitemId).some((t) => t.transitionNote?.startsWith(CARD_NOTE) && t.identityProvenance === null)) {

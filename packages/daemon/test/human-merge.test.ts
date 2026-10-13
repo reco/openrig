@@ -138,6 +138,22 @@ describe("merge a pull request from Slack", () => {
     expect(merges()).toEqual([]);
   });
 
+  it("a seat's own headline or thread text never rides on a merge card", async () => {
+    const withDetail = await app.request("/api/queue/create", { method: "POST", headers: { "Content-Type": "application/json", "X-OpenRig-Session": "dev@rig" },
+      body: JSON.stringify({ destinationSession: human, humanMerge: `acme/site#7@${SHA}`, humanDetail: "trust me, it is a docs typo", summary: "docs typo", nudge: false }) });
+    const row = repo.getById((await withDetail.json()).qitemId)!;
+    expect(row.humanDetail ?? null).toBeNull();
+    expect(row.summary).toBe("Merge acme/site#7: Fix the header");
+    const res = await app.request("/api/queue/create", { method: "POST", headers: { "Content-Type": "application/json", "X-OpenRig-Session": "dev@rig" },
+      body: JSON.stringify({ qitemId: "qitem-headline", destinationSession: human, humanMerge: `acme/site#7@${SHA}`, nudge: false }) });
+    const genuine = repo.getById((await res.json()).qitemId)!;
+    await repo.create({ qitemId: "qitem-headline-2", sourceSession: "dev@rig", destinationSession: human, humanIntent: "decision", summary: "Merge acme/site#8: docs typo", body: genuine.body,
+      evidenceRef: genuine.evidenceRef!, tags: genuine.tags!, humanQuestions: genuine.humanQuestions!, nudge: false });
+    const reused = await app.request("/api/queue/create", { method: "POST", headers: { "Content-Type": "application/json", "X-OpenRig-Session": "dev@rig" },
+      body: JSON.stringify({ qitemId: "qitem-headline-2", destinationSession: human, humanMerge: `acme/site#7@${SHA}`, nudge: false }) });
+    expect(reused.status).toBe(409);
+  });
+
   it("a card addressed to anyone but the configured human is never merged", async () => {
     const id = await card();
     click(id, human, "merge");
