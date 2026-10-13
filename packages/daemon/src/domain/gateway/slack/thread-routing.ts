@@ -36,7 +36,7 @@ export function makeThreadRouteResolver(opts: {
   /** A thread the human started routes to the seat but correlates to no request. */
   isHumanStarted?: (conversationId: string) => boolean;
   /** The newest still-open decision a seat posted into this thread (not its root), with its seat. */
-  newestOpenDecision?: (threadTs: string, channel: string | undefined) => { conversationId: string; seat: string } | null;
+  newestOpenDecision?: (threadTs: string, channel: string | undefined, slackUser: string) => { conversationId: string; seat: string } | null;
   log?: (msg: string) => void;
 }): (ev: SlackEvent & { thread_ts?: string }) => InboundRoute {
   const log = opts.log ?? (() => {});
@@ -65,7 +65,9 @@ export function makeThreadRouteResolver(opts: {
       }
       // A reply typed in a thread that holds a newer open decision posted into it answers that
       // decision, not the thread's root; only with none open does it fall back to the root.
-      const threaded = ev.type !== "reaction_added" ? opts.newestOpenDecision?.(threadTs, ev.channel) : null;
+      // Only a person's real message (it has its own ts and sender): a click's or ✅'s lookup of a root keeps the root.
+      const typed = ev.type === "message" && !!(ev as { ts?: string }).ts && !!ev.user;
+      const threaded = typed ? opts.newestOpenDecision?.(threadTs, ev.channel, ev.user!) : null;
       if (threaded) {
         log(`inbound thread_ts=${threadTs} -> ${threaded.seat} (newest open decision ${threaded.conversationId} in the thread)`);
         return {
