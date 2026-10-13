@@ -101,7 +101,8 @@ function commandSegments(command: string): string[] {
 
 /** An allow rule takes only plain words, single-spaced: no quoting, expansion, operators, assignment or executable path. */
 const PLAIN_COMMAND = /^[\w\-.:@%+,/=]+(?: [\w\-.:@%+,/=]+)*$/;
-const allowable = (command: string) => PLAIN_COMMAND.test(command) && !/[=/]/.test(command.split(" ")[0]!);
+const allowable = (command: string) => PLAIN_COMMAND.test(command) && !/[=/]/.test(command.split(" ")[0]!)
+  && !(command.startsWith("cd ") && command.split(/[ /]/).includes(".."));
 
 function hits(rule: ApprovalRule, req: RuleRequest): boolean {
   if (rule.seats && !globMatches(rule.seats, req.sessionName)) return false;
@@ -126,11 +127,11 @@ const CHANGE_DIR = /^cd [\w\-.:@%+,/=]+$/;
 function plainParts(command: string): string[] | null {
   if (!/(?:&&|\|\||;|\|)/.test(command)) return null;
   const parts = command.trim().split(OPERATOR);
-  return parts.every((p) => CHANGE_DIR.test(p) || allowable(p)) ? parts : null;
+  return parts.every((p) => (CHANGE_DIR.test(p) && !p.split(/[ /]/).includes("..")) || allowable(p)) ? parts : null;
 }
 
 /** Deny wins over allow; no hit leaves the request to the human. A plain command is allowed by a matching rule;
- *  a chain of plain commands only when every command in it (a cd aside) is. */
+ *  a chain of plain commands only when every command in it is, a cd included (and a cd never climbs with ..). */
 export function ruleDecision(rules: readonly ApprovalRule[], req: RuleRequest): RuleHit | null {
   const deny = rules.find((r) => r.effect === "deny" && hits(r, req));
   if (deny) return { effect: "deny", rule: deny };
@@ -138,7 +139,7 @@ export function ruleDecision(rules: readonly ApprovalRule[], req: RuleRequest): 
   const command = commandOf(req.toolInput);
   const parts = command === null ? null : plainParts(command);
   if (parts) {
-    const covering = parts.filter((p) => !CHANGE_DIR.test(p)).map((p) => allowOf({ ...req, toolInput: { command: p } }));
+    const covering = parts.map((p) => allowOf({ ...req, toolInput: { command: p } }));
     return covering.length && covering.every(Boolean) ? { effect: "allow", rule: covering[covering.length - 1]! } : null;
   }
   const allow = allowOf(req);

@@ -40,9 +40,12 @@ describe("approval rules", () => {
     expect(effect(rules, bash("ps & rm x"))).toBeNull();
   });
 
-  it("allows a chain of plain commands when every part is allowed, a cd aside, and denies on any denied part", () => {
-    const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(git *)" }, { effect: "allow", match: "Bash(npm test *)" }, { effect: "allow", match: "Bash(grep *)" }, { effect: "deny", match: "Bash(git push *)" }];
+  it("allows a chain of plain commands when every part is allowed, a cd included, and denies on any denied part", () => {
+    const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(git *)" }, { effect: "allow", match: "Bash(npm test *)" }, { effect: "allow", match: "Bash(grep *)" }, { effect: "deny", match: "Bash(git push *)" }, { effect: "allow", match: "Bash(cd /Users/reco/dev/*)" }];
     expect(effect(rules, bash("cd /Users/reco/dev/x && npm test"))).toBe("allow");
+    expect(effect(rules, bash("cd ~ && npm test"))).toBeNull();
+    expect(effect(rules, bash("cd /Users/reco/other && npm test"))).toBeNull();
+    expect(effect(rules, bash("cd /Users/reco/dev/../.. && npm test"))).toBeNull();
     expect(effect(rules, bash("git status && git log --oneline -3"))).toBe("allow");
     expect(effect(rules, bash("git log | grep fix"))).toBe("allow");
     expect(effect(rules, bash("git fetch; git status || git branch"))).toBe("allow");
