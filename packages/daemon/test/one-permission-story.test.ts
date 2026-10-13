@@ -91,7 +91,8 @@ describe("one permission story", () => {
     expect(alwaysRuleFor("Bash", { command: "cat notes.md" })).toBe("Bash(cat notes.md *)");
     expect(alwaysRuleFor("Bash", { command: "gh api repos/o/r/pulls" })).toBe("Bash(gh api *)");
     expect(alwaysRuleFor("Bash", { command: "npm run build extra more" })).toBe("Bash(npm run build *)");
-    for (const command of ["kill 1234", "head -5 x", "timeout 30 pytest", "find . -name x", "env FOO=1 make", "sudo apt install x", "xargs rm", "curl https://deploy:ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/x/y",
+    for (const command of ["kill 1234", "head -5 x", "rm build", "rmdir out", "kill node", "pkill node", "killall node", "mv a.txt b.txt",
+      "chmod 600 key", "chown reco x.txt", "dd if=/dev/zero of=x", "timeout 30 pytest", "find . -name x", "env FOO=1 make", "sudo apt install x", "xargs rm", "curl https://deploy:ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/x/y",
       "ls -la src", "rm -rf build", "python3 -c 'x'", "git -C repo push origin x", "make", "ls && rm x", "echo $(id)", "cat <<EOF\nx\nEOF", "./run.sh", "FOO=1 make", "cd /tmp"]) {
       expect(alwaysRuleFor("Bash", { command }), command).toBeNull();
     }

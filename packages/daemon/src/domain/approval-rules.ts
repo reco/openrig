@@ -66,8 +66,9 @@ export const DEFAULT_APPROVAL_RULES: readonly ApprovalRule[] = [
   ...["/", "~", "~/", "$HOME"].map((target) => ({ effect: "deny" as const, match: `Bash(rm -rf ${target})`, note: "never delete home or root" })),
 ];
 
-/** Commands that run another command, or whose second word does not bound what they do. */
-const WRAPPERS = new Set(["cd", "env", "sudo", "timeout", "nice", "nohup", "time", "xargs", "watch", "command", "exec", "find"]);
+/** Commands that run another command, whose second word does not bound what they do, or that destroy. */
+const WRAPPERS = new Set(["cd", "env", "sudo", "timeout", "nice", "nohup", "time", "xargs", "watch", "command", "exec", "find",
+  "rm", "rmdir", "kill", "pkill", "killall", "mv", "chmod", "chown", "dd"]);
 
 const SUBCOMMAND = /^[a-z][a-z0-9-]*$/;
 
