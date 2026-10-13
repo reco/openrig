@@ -35,6 +35,8 @@ export function makeThreadRouteResolver(opts: {
   isAgentSeat?: (seat: string) => boolean;
   /** A thread the human started routes to the seat but correlates to no request. */
   isHumanStarted?: (conversationId: string) => boolean;
+  /** The newest still-open decision a seat posted into this thread (not its root), with its seat. */
+  newestOpenDecision?: (threadTs: string, channel: string | undefined, slackUser: string) => { conversationId: string; seat: string } | null;
   log?: (msg: string) => void;
 }): (ev: SlackEvent & { thread_ts?: string }) => InboundRoute {
   const log = opts.log ?? (() => {});
@@ -60,6 +62,20 @@ export function makeThreadRouteResolver(opts: {
             routeClass: "existing-thread",
           };
         }
+      }
+      // A reply typed in a thread that holds a newer open decision posted into it answers that
+      // decision, not the thread's root; only with none open does it fall back to the root.
+      // Only a person's real message (it has its own ts and sender): a click's or ✅'s lookup of a root keeps the root.
+      const typed = ev.type !== "reaction_added" && !!(ev as { ts?: string }).ts && !!ev.user;
+      const threaded = typed ? opts.newestOpenDecision?.(threadTs, ev.channel, ev.user!) : null;
+      if (threaded) {
+        log(`inbound thread_ts=${threadTs} -> ${threaded.seat} (newest open decision ${threaded.conversationId} in the thread)`);
+        return {
+          destination: threaded.seat,
+          tags: [...BASE_TAGS, "thread", `reply-to:${threaded.conversationId}`, `thread-ts:${threadTs}`],
+          correlationQitemId: threaded.conversationId,
+          routeClass: "existing-thread",
+        };
       }
       // A thread with no agent behind it (the daemon's own alerts, other machinery, or a seat that is
       // its own human, left by the Confirm self-loop): its replies go where an unrouted message goes.

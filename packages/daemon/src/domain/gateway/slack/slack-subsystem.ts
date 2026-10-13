@@ -377,6 +377,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     const registry = registrySurface.loadHumanRegistry(opts.home);
     return item && registry.ok ? resolveRegisteredHumanAddress(item.blockedOn || item.destinationSession, registry.entities) : null;
   };
+  const resolveSender = makeInboundSenderResolver(registrySurface, opts.home);
   const isConfiguredChannel = (channel: string) => channels.some((c) => c.id === channel) || (cfg.channelMap ?? []).some((e) => e.channel === channel);
   // A new root goes to the configured channel its row names, else to the channel whose seat is
   // posting; replies stay in their thread's channel.
@@ -1036,7 +1037,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       seen: inboundSeen,
       deadLetter: dead,
       destination: cfg.inboundDestination,
-      resolveSender: makeInboundSenderResolver(registry, opts.home),
+      resolveSender,
       // S10 — deterministic thread routing: mapped thread → exactly the mapped seat; unmapped
       // or human-initiated → the configured orchestrator slot as an unrouted-signal row.
       resolveRoute: makeThreadRouteResolver({ map: threadMap, unroutedDestination: cfg.inboundDestination, log,
@@ -1045,6 +1046,18 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         // session here; a real rig that happens to use such a name does.
         isAgentSeat: (seat) => !(/^daemon@kernel$|@host$|@system$|^system:/.test(seat))
           || !!opts.queueRepo.db.prepare("SELECT 1 FROM sessions WHERE session_name = ? LIMIT 1").get(seat),
+        newestOpenDecision: (threadTs, channel, slackUser) => {
+          const root = threadMap.resolveByThread(threadTs);
+          const who = resolveSender(slackUser, channel);
+          if (!channel || !who.admitted) return null;
+          // Only a decision asked of this person: another human's decision in the thread leaves the root's.
+          for (const part of threadMap.partsInThread(threadTs, channel)) {
+            if (part.conversationId === root?.conversationId) continue;
+            const item = opts.queueRepo.getById(part.conversationId);
+            if (item && item.humanIntent !== "update" && hasLiveHumanGate(item) && askedHumanOf(item.qitemId) === who.source) return part;
+          }
+          return null;
+        },
         isHumanStarted: (conversationId) => {
           const item = opts.queueRepo.getById(conversationId);
           const root = threadMap.resolveByConversation(conversationId);

@@ -765,6 +765,26 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(repo.getById(decisionId)?.state).toBe("pending");
     });
 
+    it("a typed answer in a thread resolves the newest open decision posted into it; with none open it falls back to the root", async () => {
+      const followUp = await repo.create({ ...request, summary: "Build the CSV export now?", body: "Spec is done.", humanIntent: "decision", replyTo: decisionId, humanConfirm: "Build it" });
+      await deliver(followUp.qitemId);
+      expect(posts.at(-1)?.thread_ts).toBe("1.1");
+      await say("answer: yes, build it", "3810.1");
+      await vi.waitFor(() => expect(repo.getById(followUp.qitemId)?.state).toBe("done"));
+      expect(repo.getById(decisionId)?.state).toBe("pending");
+      await say("answer: ship the schema migration", "3811.1");
+      await vi.waitFor(() => expect(repo.getById(decisionId)?.state).toBe("done"));
+    });
+
+    it("with a newer decision in the thread, a click or ✅ on the root's own card still answers the root, for the root's seat", async () => {
+      const followUp = await repo.create({ ...request, summary: "Build the CSV export now?", body: "Spec is done.", humanIntent: "decision", replyTo: decisionId, humanConfirm: "Build it" });
+      await deliver(followUp.qitemId);
+      expect(await click(`or-confirm:${decisionId}`, "or-confirm", "1.1", "UFOUNDER", "3820.1", "1.1")).toMatchObject({ status: "accepted" });
+      await vi.waitFor(() => expect(repo.getById(decisionId)?.state).toBe("done"));
+      expect(repo.getById(followUp.qitemId)?.state).toBe("pending");
+      expect(toSeat().filter((q) => q.tags?.includes(`reply-to:${followUp.qitemId}`))).toEqual([]);
+    });
+
     it("option buttons in a thread record their answers on the decision they belong to", async () => {
       const followUp = await repo.create({ ...request, summary: "Which day?", body: "Pick one.", humanIntent: "decision", replyTo: decisionId,
         humanQuestions: [{ id: "day", question: "Launch day?", options: [{ id: "mon", label: "Mon" }, { id: "tue", label: "Tue" }] }] });
