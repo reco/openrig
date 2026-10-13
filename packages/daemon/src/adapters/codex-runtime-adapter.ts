@@ -370,12 +370,12 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const updatePrompt: UpdatePromptAttempt = { handled: false };
     const model = binding.model?.trim();
     const modelArg = model ? ` -m ${shellQuote(model)}` : "";
-    const effort = binding.effort?.trim();
+    const prior = opts.resumeToken && this.readPriorPolicy ? this.readPriorPolicy(opts.resumeToken) : null;
+    if (prior && !prior.ok) return { ok: false, error: priorPolicyRefusal(opts.resumeToken!, prior.reason) };
+    const effort = binding.effort?.trim() || (prior ? prior.policy.effort ?? undefined : undefined);
     const effortArg = effort ? ` -c ${shellQuote(`model_reasoning_effort="${effort}"`)}` : "";
     const profile = binding.codexConfigProfile?.trim();
     const profileArg = profile ? ` -p ${shellQuote(profile)}` : "";
-    const prior = opts.resumeToken && this.readPriorPolicy ? this.readPriorPolicy(opts.resumeToken) : null;
-    if (prior && !prior.ok) return { ok: false, error: priorPolicyRefusal(opts.resumeToken!, prior.reason) };
     const posture = prior ? `${profileArg}${codexPriorPolicyArgs(prior.policy)}` : codexPostureArg(profileArg, process.env, binding.launchPosture);
     const appliedLaunch = prior ? observeCodexPriorPolicy(prior.policy) : observeCodexSandbox(posture);
     const postureArg = posture + operationalLaunchArg(this.runtime, binding);
@@ -459,7 +459,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const cmd = opts.resumeToken
       // 0.5.2-07 A2-3: the pod-aware RESUME path threads the SPEC model too (reverted before — the
       // grounding map assumed codex parity with the claude adapter, but only fresh emitted -m).
-      ? buildCodexResumeCore(opts.resumeToken, profile, false, queueStateDirArg.trim() || undefined, binding.launchPosture, model, `${postureArg}${networkArg}`, daemonOptOut, effort || (prior ? prior.policy.effort : null))
+      ? buildCodexResumeCore(opts.resumeToken, profile, false, queueStateDirArg.trim() || undefined, binding.launchPosture, model, `${postureArg}${networkArg}`, daemonOptOut, effort)
       : `codex${daemonArg}${postureArg}${networkArg} -C ${shellQuote(binding.cwd)}${gitDirArg}${queueStateDirArg}${modelArg}${effortArg}`;
 
     const textResult = await this.tmux.sendShellCommand(binding.tmuxSession, this.seatLaunchEnvironment

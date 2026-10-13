@@ -105,6 +105,7 @@ export class CodexResumeAdapter {
 
     const prior = this.options.readPriorPolicy && resumeType !== "codex_last" ? this.options.readPriorPolicy(resumeToken!) : null;
     if (prior && !prior.ok) return { ok: false, code: "resume_failed", message: priorPolicyRefusal(resumeToken!, prior.reason) };
+    if (prior) effort = effort?.trim() || prior.policy.effort;
     const profileArg = codexConfigProfile ? ` -p ${shellQuote(codexConfigProfile)}` : "";
     const posture = prior ? `${profileArg}${codexPriorPolicyArgs(prior.policy)}` : codexPostureArg(profileArg, process.env, resolvedPosture);
     const appliedLaunch = prior ? observeCodexPriorPolicy(prior.policy) : observeCodexSandbox(posture);
@@ -122,7 +123,7 @@ export class CodexResumeAdapter {
       model,
       `${postureArg}${networkArg}`,
       daemonSupport?.kind === "supported",
-      effort ?? (prior ? prior.policy.effort : null),
+      effort,
     );
 
     const launchEnv = [this.options.launchPath ? `PATH=${shellQuote(this.options.launchPath)}` : "", this.options.codexHome ? `CODEX_HOME=${shellQuote(this.options.codexHome)}` : ""].filter(Boolean);

@@ -18,7 +18,7 @@ export type CodexPriorPolicyResult = { ok: true; policy: CodexPriorPolicy } | { 
 
 const SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const APPROVALS = new Set(["untrusted", "on-failure", "on-request", "never"]);
-const CHUNK = 256 * 1024;
+export const ROLLOUT_CHUNK = 256 * 1024;
 const MAX_SCAN = 16 * 1024 * 1024;
 
 export function locateCodexRollout(threadId: string, codexHome?: string): string | null {
@@ -37,13 +37,15 @@ function newestTurnContext(rolloutPath: string): Record<string, unknown> | null 
   const fd = openSync(rolloutPath, "r");
   try {
     const size = fstatSync(fd).size;
-    let end = size, carry = "";
+    let end = size, carry = Buffer.alloc(0);
     while (end > 0 && size - end < MAX_SCAN) {
-      const start = Math.max(0, end - CHUNK);
-      const buf = Buffer.alloc(end - start);
-      readSync(fd, buf, 0, buf.length, start);
-      const lines = (buf.toString("utf8") + carry).split("\n");
-      carry = start > 0 ? lines.shift()! : "";
+      const start = Math.max(0, end - ROLLOUT_CHUNK);
+      const chunk = Buffer.alloc(end - start);
+      readSync(fd, chunk, 0, chunk.length, start);
+      const buf = Buffer.concat([chunk, carry]);
+      const firstNewline = start > 0 ? buf.indexOf(0x0a) : -1;
+      carry = firstNewline === -1 && start > 0 ? buf : buf.subarray(0, Math.max(0, firstNewline));
+      const lines = (firstNewline === -1 && start > 0 ? "" : buf.subarray(start > 0 ? firstNewline + 1 : 0).toString("utf8")).split("\n");
       for (let i = lines.length - 1; i >= 0; i--) {
         if (!lines[i]!.includes('"turn_context"')) continue;
         try {

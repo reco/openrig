@@ -6,7 +6,7 @@ import Database from "better-sqlite3";
 import { mockShellCommand } from "./helpers/shell-command-mock.js";
 import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { CodexRuntimeAdapter } from "../src/adapters/codex-runtime-adapter.js";
-import { makeCodexPriorPolicyReader, readCodexPriorPolicy, type CodexPriorPolicyResult } from "../src/domain/codex-prior-policy.js";
+import { ROLLOUT_CHUNK, makeCodexPriorPolicyReader, readCodexPriorPolicy, type CodexPriorPolicyResult } from "../src/domain/codex-prior-policy.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { NodeBinding } from "../src/domain/runtime-adapter.js";
 
@@ -44,6 +44,16 @@ describe("same-conversation Codex resume keeps the conversation's own policy", (
     expect(readCodexPriorPolicy(rollout).ok).toBe(false);
   });
 
+  it("reads a turn_context that straddles chunk boundaries, multi-byte path intact", () => {
+    const d = dir(), rollout = join(d, "rollout.jsonl");
+    const line = turn({ type: "workspace-write", writable_roots: ["/state/ümlaut-ü"], network_access: false }, "on-request", "xhigh");
+    for (let shift = 0; shift < 12; shift++) {
+      const padding = JSON.stringify({ type: "event_msg", payload: { pad: "x".repeat(ROLLOUT_CHUNK - line.length + shift) } });
+      writeFileSync(rollout, `${line}\n${padding}\n`);
+      expect(readCodexPriorPolicy(rollout), `shift ${shift}`).toEqual({ ok: true, policy: { sandbox: "workspace-write", approval: "on-request", effort: "xhigh", writableRoots: ["/state/ümlaut-ü"], networkAccess: false } });
+    }
+  });
+
   it("finds the rollout through Codex's own state database", () => {
     const home = dir(), rollout = join(home, "sessions", "r.jsonl");
     mkdirSync(join(home, "sessions"));
@@ -73,6 +83,12 @@ describe("same-conversation Codex resume keeps the conversation's own policy", (
     const t = tmux();
     await new CodexResumeAdapter(t, { readPriorPolicy: () => QUEUE_WORKER }).resume("s@r", "codex_id", "thread-1", "/ws", null, "floor", null, "low");
     expect(sent(t)[0]).toContain(`model_reasoning_effort="low"`);
+  });
+
+  it("a blank effort setting does not drop the prior effort", async () => {
+    const t = tmux();
+    await new CodexResumeAdapter(t, { readPriorPolicy: () => QUEUE_WORKER }).resume("s@r", "codex_id", "thread-1", "/ws", null, "floor", null, "  ");
+    expect(sent(t)[0]).toContain(`model_reasoning_effort="high"`);
   });
 
   it("refuses rather than apply defaults when the prior policy cannot be established", async () => {
