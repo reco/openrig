@@ -33,7 +33,7 @@ export function yoloEnabled(
 // path-dependent. NOTE the ON posture differs by harness: Claude/Codex = permission bypass; Pi =
 // full RESOURCE TRUST (--approve), which is not a permission policy. ──
 
-/** Claude launch posture flag: floor `--permission-mode auto` (permission rules first, then Claude's classifier), or the full bypass
+/** Claude launch posture flag: floor `--permission-mode acceptEdits`, or the full bypass
  *  (global YOLO, or a per-seat resolved full_bypass policy attachment). */
 export function claudePostureFlag(
   env: NodeJS.ProcessEnv = process.env,
@@ -47,7 +47,7 @@ export function claudePostureFlag(
   if (resolvedPosture === "auto") {
     return "--permission-mode auto";
   }
-  return yoloEnabled(env, resolvedPosture) ? "--dangerously-skip-permissions" : "--permission-mode auto";
+  return yoloEnabled(env, resolvedPosture) ? "--dangerously-skip-permissions" : "--permission-mode acceptEdits";
 }
 
 /**

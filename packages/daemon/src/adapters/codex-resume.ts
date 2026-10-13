@@ -35,6 +35,8 @@ interface CodexResumeOptions {
   readNetworkDefault?: CodexNetworkDefaultReader;
   /** The conversation's own prior sandbox/approval/effort; a same-conversation resume reproduces it or refuses. */
   readPriorPolicy?: CodexPriorPolicyReader;
+  /** Brings Codex's OpenRig rules file up to date before a session starts (Codex reads rules at start). */
+  projectRules?: () => void;
 }
 
 export class CodexResumeAdapter {
@@ -105,6 +107,7 @@ export class CodexResumeAdapter {
 
     const prior = this.options.readPriorPolicy && resumeType !== "codex_last" ? this.options.readPriorPolicy(resumeToken!) : null;
     if (prior && !prior.ok) return { ok: false, code: "resume_failed", message: priorPolicyRefusal(resumeToken!, prior.reason) };
+    this.options.projectRules?.();
     if (prior) effort = effort?.trim() || prior.policy.effort;
     const profileArg = codexConfigProfile ? ` -p ${shellQuote(codexConfigProfile)}` : "";
     const posture = prior ? `${profileArg}${codexPriorPolicyArgs(prior.policy)}` : codexPostureArg(profileArg, process.env, resolvedPosture);

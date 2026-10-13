@@ -89,6 +89,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   // real reader; absent keeps every invocation unchanged.
   private readNetworkDefault?: CodexNetworkDefaultReader;
   private readPriorPolicy?: CodexPriorPolicyReader;
+  private projectRules?: () => void;
   // Issue #121: git metadata dirs for the fresh-launch `--add-dir`s (a linked worktree's `.git` is a file).
   // Default = the real resolver; tests may inject a controlled one.
   private resolveGitAddDirs: CodexGitAddDirResolver;
@@ -119,9 +120,12 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     readNetworkDefault?: CodexNetworkDefaultReader;
     /** The conversation's own prior sandbox/approval/effort; a same-conversation resume reproduces it or refuses. */
     readPriorPolicy?: CodexPriorPolicyReader;
+    /** Brings Codex's OpenRig rules file up to date before a session starts (Codex reads rules at start). */
+    projectRules?: () => void;
     resolveGitAddDirs?: CodexGitAddDirResolver;
     prepareTeamWorkspace?: PrepareCodexTeamWorkspace;
   }) {
+    this.projectRules = deps.projectRules;
     this.tmux = deps.tmux;
     this.prepareTeamWorkspace = deps.prepareTeamWorkspace;
     this.seatLaunchEnvironment = deps.seatLaunchEnvironment;
@@ -372,6 +376,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const modelArg = model ? ` -m ${shellQuote(model)}` : "";
     const prior = opts.resumeToken && this.readPriorPolicy ? this.readPriorPolicy(opts.resumeToken) : null;
     if (prior && !prior.ok) return { ok: false, error: priorPolicyRefusal(opts.resumeToken!, prior.reason) };
+    this.projectRules?.();
     const effort = binding.effort?.trim() || (prior ? prior.policy.effort ?? undefined : undefined);
     const effortArg = effort ? ` -c ${shellQuote(`model_reasoning_effort="${effort}"`)}` : "";
     const profile = binding.codexConfigProfile?.trim();
