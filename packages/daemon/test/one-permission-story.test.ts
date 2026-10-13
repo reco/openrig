@@ -84,7 +84,8 @@ describe("one permission story", () => {
   it("derives the Always rule from a single plain command's fixed start, and none from anything else", () => {
     expect(alwaysRuleFor("Bash", { command: "bash /path/sweep.sh --since 2h" })).toBe("Bash(bash /path/sweep.sh *)");
     expect(alwaysRuleFor("Bash", { command: "git status --short" })).toBe("Bash(git status *)");
-    for (const command of ["ls -la src", "rm -rf build", "python3 -c 'x'", "git -C repo push origin x", "make", "ls && rm x", "echo $(id)", "cat <<EOF\nx\nEOF", "./run.sh", "FOO=1 make", "cd /tmp"]) {
+    for (const command of ["timeout 30 pytest", "find . -name x", "env FOO=1 make", "sudo apt install x", "xargs rm", "curl https://deploy:ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/x/y",
+      "ls -la src", "rm -rf build", "python3 -c 'x'", "git -C repo push origin x", "make", "ls && rm x", "echo $(id)", "cat <<EOF\nx\nEOF", "./run.sh", "FOO=1 make", "cd /tmp"]) {
       expect(alwaysRuleFor("Bash", { command }), command).toBeNull();
     }
     expect(alwaysRuleFor("Edit", { file_path: "/x" })).toBeNull();

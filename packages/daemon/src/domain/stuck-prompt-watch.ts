@@ -130,7 +130,10 @@ export function promptCommand(pane: string): string | null {
   const asked = lines.lastIndexOf("Do you want to proceed?");
   if (asked > 0 && DASHED_RULE.test(lines[asked - 1]!)) {
     const open = lines.slice(0, asked - 1).map((l) => DASHED_RULE.test(l)).lastIndexOf(true);
+    // The header must belong to this dialog: below its top border, not somewhere in the scrollback.
+    const top = open > 0 ? lines.slice(0, open).map((l) => DIALOG_BORDER.test(l)).lastIndexOf(true) : -1;
     const header = open > 0 ? lines.slice(0, open).lastIndexOf("Bash command") : -1;
+    if (top < 0 || header < top) return null;
     const body = open >= 0 ? lines.slice(open + 1, asked - 1).filter(Boolean) : [];
     return header >= 0 && body.length === 1 ? body[0]! : null;
   }
