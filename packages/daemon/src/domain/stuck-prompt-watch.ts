@@ -95,7 +95,8 @@ export function readPrompt(pane: string): { reason: string; key: string; promptL
   const key = createHash("sha256").update(`${seen.reason}|${body}`).digest("hex");
   const masked = maskSecrets(text);
   const dialogCut = !bordered || masked.length > PROMPT_DIALOG_CAP;
-  const dialog = masked.length > PROMPT_DIALOG_CAP ? `${masked.slice(0, PROMPT_DIALOG_CAP)}\n… (truncated)` : masked;
+  // The question and the command sit just above the options: a long dialog keeps its end.
+  const dialog = masked.length > PROMPT_DIALOG_CAP ? `… (earlier lines cut)\n${masked.slice(-PROMPT_DIALOG_CAP)}` : masked;
   // Answerable only when the human sees all of what they approve: the whole dialog, shown in full.
   return { reason: seen.reason!, key, promptLine: questionLine(pane, evidence), choices: dialogCut ? undefined : promptChoices(pane), dialog, dialogCut };
 }

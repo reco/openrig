@@ -292,7 +292,17 @@ describe("stuck-prompt watch", () => {
     const long = readPrompt(dialog(Array.from({ length: 40 }, (_, i) => `echo this is line number ${i} of a long generated deployment script`)))!;
     expect(long.dialogCut).toBe(true);
     expect(long.choices).toBeUndefined();
-    expect(long.dialog).toContain("(truncated)");
+    expect(long.dialog).toContain("(earlier lines cut)");
+    expect(long.dialog).toContain("line number 39");
+    expect(long.dialog).toContain("Do you want to proceed?");
+  });
+
+  it("an unbordered dialog under a long scrollback shows its question, not the top of the scrollback", () => {
+    const pane = [...Array.from({ length: 50 }, (_, i) => `⏺ Bash(rig queue show row-${i} --json) scrollback output line ${i} with enough text to fill`),
+      " Bash command", "   rm -rf build/cache", " Do you want to proceed?", " ❯ 1. Yes", "   2. No", ""].join("\n");
+    const shown = readPrompt(pane)!;
+    expect(shown.dialog).toContain("rm -rf build/cache");
+    expect(shown.dialog).toContain("Do you want to proceed?");
   });
 });
 
