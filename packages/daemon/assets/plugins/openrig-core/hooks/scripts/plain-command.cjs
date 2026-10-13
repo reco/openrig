@@ -64,4 +64,15 @@ function plainParts(command) {
   return parse(command.trim()).map((words) => words.map((w) => w.text).join(" "));
 }
 
-module.exports = { parse, complexity, plainParts };
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+/** Variables that change which program runs or what it loads at startup. */
+const RUN_CHANGING = /^(?:PATH|NODE_OPTIONS|NODE_PATH|LD_\w*|DYLD_\w*|BASH_ENV|ENV|PYTHONPATH|PYTHONSTARTUP|PERL5LIB|RUBYOPT|GIT_\w*|SHELL|IFS|PROMPT_COMMAND)=/;
+
+/** A part's words after its leading NAME=value assignments; null when one of them changes what runs. */
+function afterAssignments(words) {
+  let i = 0;
+  for (; i < words.length - 1 && ASSIGNMENT.test(words[i].text); i++) if (RUN_CHANGING.test(words[i].text)) return null;
+  return words.slice(i);
+}
+
+module.exports = { parse, complexity, plainParts, afterAssignments };

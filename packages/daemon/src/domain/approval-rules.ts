@@ -92,8 +92,9 @@ function fixedStart(words: readonly string[]): string[] {
  *  has no start that bounds what it does (a wrapper, a destructive verb, a bare executable, a compound). */
 function wildcardRule(command: string): string | null {
   const parts = plain.plainParts(command);
-  if (!parts || parts.length !== 1 || !allowable(parts[0]!)) return null;
-  const words = parts[0]!.split(" ");
+  const allowed = parts?.length === 1 ? allowForm(parts[0]!) : null;
+  if (allowed === null) return null;
+  const words = allowed.split(" ");
   const fixed = fixedStart(words);
   // Two fixed words (a script, a subcommand): a bare executable would allow everything it can do.
   if (WRAPPERS.has(words[0]!) || fixed.length < 2) return null;
@@ -195,22 +196,26 @@ function commandSegments(command: string): string[] {
 interface PlainCommand {
   parse: (command: string) => Array<Array<{ text: string; quoted: boolean }>> | null;
   plainParts: (command: string) => string[] | null;
+  afterAssignments: <W extends { text: string }>(words: W[]) => W[] | null;
 }
 const plain = createRequire(import.meta.url)("../../assets/plugins/openrig-core/hooks/scripts/plain-command.cjs") as PlainCommand;
 
 const PLAIN_WORD = /^[\w\-.:@%+,/=]+$/;
 
-/** An allow rule takes a simple part whose words are plain or quoted literals: no glob, tilde,
- *  assignment or executable path; a cd takes one plain directory and never climbs with "..". */
-function allowable(part: string): boolean {
-  const words = plain.parse(part);
-  if (!words || words.length !== 1) return false;
-  const [first, ...args] = words[0]!;
-  if (!first || first.quoted || !PLAIN_WORD.test(first.text) || /[=/]/.test(first.text)) return false;
+/** What an allow rule matches of a simple part: the part after its leading literal assignments, whose words are
+ *  plain or quoted literals: no glob, tilde, further assignment or executable path; a cd takes one plain directory
+ *  and never climbs with "..". Null when it has none, or an assignment changes what runs (PATH, NODE_OPTIONS...). */
+function allowForm(part: string): string | null {
+  const parsed = plain.parse(part);
+  if (!parsed || parsed.length !== 1) return null;
   // A partly quoted word's unquoted text still expands (braces, globs, a leading ~): it must be plain too.
-  if (!args.every((w) => { const bare = w.text.replace(/'[^']*'|"[^"]*"/g, ""); return bare === "" || PLAIN_WORD.test(bare); })) return false;
-  if (first.text !== "cd") return true;
-  return args.length === 1 && !args[0]!.quoted && !args[0]!.text.split("/").includes("..");
+  if (!parsed[0]!.every((w) => { const bare = w.text.replace(/'[^']*'|"[^"]*"/g, ""); return bare === "" || PLAIN_WORD.test(bare); })) return null;
+  const words = plain.afterAssignments(parsed[0]!);
+  if (!words) return null;
+  const [first, ...args] = words;
+  if (!first || first.quoted || !PLAIN_WORD.test(first.text) || /[=/]/.test(first.text)) return null;
+  if (first.text === "cd" && (args.length !== 1 || args[0]!.quoted || args[0]!.text.split("/").includes(".."))) return null;
+  return words.map((w) => w.text).join(" ");
 }
 
 function hits(rule: ApprovalRule, req: RuleRequest): boolean {
@@ -238,7 +243,8 @@ function hits(rule: ApprovalRule, req: RuleRequest): boolean {
     return globMatches(match.arg, posix.normalize(expandHome(arg.value)), true);
   }
   if (rule.effect === "deny") return commandSegments(command).some((s) => globMatches(match.arg!, s));
-  return allowable(command) && globMatches(match.arg, command);
+  const allowed = allowForm(command);
+  return allowed !== null && globMatches(match.arg, allowed);
 }
 
 /** Deny wins over allow; no hit leaves the request to the human. A command is allowed only when it is

@@ -120,6 +120,19 @@ describe("one permission story", () => {
     expect(ruleDecision([{ effect: "allow", match: "Edit(/y)", exact: true }], { sessionName: "dev@rig", toolName: "Edit", toolInput: { file_path: "/y/z" } })).toBeNull();
   });
 
+  it("allow rules look through literal leading assignments, except one that changes what runs; deny sees through all", () => {
+    const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(pnpm -C /Users/reco/dev/* *)" }, { effect: "allow", match: "Bash(bash *)" }, { effect: "allow", match: "Bash(node *)" },
+      { effect: "deny", match: "Bash(rm -rf *)" }, { effect: "allow", match: "Bash(rm *)" }];
+    for (const command of ["MONGODB_URI=x pnpm -C /Users/reco/dev/y test", "A='a b' B=\"c d\" pnpm -C /Users/reco/dev/y test", "CI=1 bash a.sh && FOO=2 node a.js"])
+      expect(ruleDecision(rules, bash(command))?.effect, command).toBe("allow");
+    for (const command of ["PATH=x bash a.sh", "NODE_OPTIONS=--require=x node a.js", "CI=1 LD_PRELOAD=x bash a.sh", "GIT_DIR=x bash a.sh", "DYLD_INSERT_LIBRARIES=x node a.js",
+      "X=~/a{b,c} bash a.sh", "X=$HOME bash a.sh", "\"X\"=1 bash a.sh", "X=1"])
+      expect(ruleDecision(rules, bash(command)), command).toBeNull();
+    expect(ruleDecision(rules, bash("CI=1 rm -rf build"))?.effect).toBe("deny");
+    expect(alwaysRuleFor("Bash", { command: "MONGODB_URI=x bash /p/sweep.sh --since 2h" })).toEqual({ match: "Bash(bash /p/sweep.sh *)", exact: false });
+    expect(alwaysRuleFor("Bash", { command: "PATH=x bash /p/sweep.sh" })).toEqual({ match: "Bash(PATH=x bash /p/sweep.sh)", exact: true });
+  });
+
   it("projects an exact rule to Claude only when Claude reads it literally", () => {
     const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(rm build)", exact: true }, { effect: "deny", match: "Bash(kill 1234)", exact: true },
       { effect: "allow", match: "Bash(rm -rf build/*)", exact: true }, { effect: "allow", match: "Bash(cat <<EOF\nx\nEOF)", exact: true },
