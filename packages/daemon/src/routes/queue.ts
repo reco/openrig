@@ -505,6 +505,9 @@ export function queueRoutes(): Hono {
       if (body.humanQuestions?.length || body.humanConfirm || body.humanIntent === "update" || body.replyTo) {
         return c.json({ error: "human_merge builds its own card: no questions, confirm, update intent or reply-to", code: "invalid_human_merge" }, 400);
       }
+      if (typeof body.hostId === "string" && !resolvesToLocalHost(body.hostId, getSelfHostId())) {
+        return c.json({ error: "human_merge runs on the local daemon only (its gh merges); create it without --host", code: "invalid_human_merge" }, 400);
+      }
       let card: Awaited<ReturnType<typeof merge.buildMergeCard>>;
       try {
         card = await merge.buildMergeCard((c.get("gh" as never) as import("../domain/human-merge.js").Gh | undefined) ?? merge.defaultGh, mergeRef);
@@ -566,7 +569,13 @@ export function queueRoutes(): Hono {
       if (body.links?.length) getRepo(c).addRequestLinks({ qitemId: item.qitemId, actorSession: item.sourceSession, links: body.links, identityProvenance: resolveRecordedProvenance(c, identity) });
       if (mergeRef) {
         const { CARD_NOTE, formatMergeRef } = await import("../domain/human-merge.js");
-        getRepo(c).update({ qitemId: item.qitemId, actorSession: "daemon@kernel", transitionNote: `${CARD_NOTE}${formatMergeRef(mergeRef)}` });
+        // An id reused for a row the seat wrote itself returns that row: it never becomes a merge card.
+        const built = item.body === body.body && JSON.stringify(item.humanQuestions) === JSON.stringify(body.humanQuestions)
+          && body.tags!.every((t) => item.tags?.includes(t)) && item.destinationSession === body.destinationSession;
+        if (!built) return c.json({ error: `qitem id ${item.qitemId} already names a different row`, code: "invalid_human_merge" }, 409);
+        if (!getRepo(c).transitionLog.listForQitem(item.qitemId).some((t) => t.transitionNote?.startsWith(CARD_NOTE) && t.identityProvenance === null)) {
+          getRepo(c).update({ qitemId: item.qitemId, actorSession: "daemon@kernel", transitionNote: `${CARD_NOTE}${formatMergeRef(mergeRef)}` });
+        }
       }
       const advisory = destinationAdvisory(c, item.destinationSession);
       return c.json({ ...item, ...(advisory ? { advisories: [advisory] } : {}) }, 201);

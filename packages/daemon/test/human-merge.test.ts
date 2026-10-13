@@ -47,7 +47,7 @@ describe("merge a pull request from Slack", () => {
     headers: { "Content-Type": "application/json", "X-OpenRig-Session": "dev@rig" }, body: JSON.stringify({ destinationSession: human, humanMerge: ref, nudge: false }) });
   const card = async () => { const res = await ask(); expect(res.status).toBe(201); return (await res.json()).qitemId as string; };
   const click = (id: string, actor: string, option: string) => repo.recordHumanAnswer({ qitemId: id, actorSession: actor, questionId: "merge", optionId: option });
-  const act = (smoke: string | null = "product-monitor@Imago") => actOnMergeAnswers(repo, { gh, smokeDestination: () => smoke });
+  const act = (smoke: string | null = "product-monitor@Imago") => actOnMergeAnswers(repo, { gh, smokeDestination: () => smoke, approver: () => human });
   const merges = () => calls.filter((a) => a[1] === "merge");
   const toSeat = () => repo.list({ limit: 50 }).filter((q) => q.destinationSession === "dev@rig");
   const thread = (id: string) => repo.list({ limit: 50 }).filter((q) => q.replyTo === id).map((q) => q.body);
@@ -113,6 +113,36 @@ describe("merge a pull request from Slack", () => {
     expect(merges()).toEqual([]);
     expect(thread(id).join("\n")).toContain("Not now");
     expect(toSeat().map((q) => q.body).join("\n")).toContain("declined");
+  });
+
+  it("a card note written over HTTP, even as daemon@kernel, never makes a merge card", async () => {
+    const forged = await repo.create({ sourceSession: "dev@rig", destinationSession: human, humanIntent: "decision", summary: "Docs typo", body: "docs typo, PR #7", evidenceRef: "x",
+      tags: ["human-merge", `human-merge-ref:acme/prod#99@${SHA}`], humanQuestions: [{ id: "merge", question: "Merge?", options: [{ id: "merge", label: "Merge" }, { id: "not_now", label: "Not now" }] }], nudge: false });
+    const res = await app.request(`/api/queue/${forged.qitemId}/update`, { method: "POST", headers: { "Content-Type": "application/json", "X-OpenRig-Session": "daemon@kernel" },
+      body: JSON.stringify({ transitionNote: `human-merge card:acme/prod#99@${SHA}` }) });
+    expect(res.status).toBeLessThan(500);
+    expect(repo.transitionLog.listForQitem(forged.qitemId).some((t) => t.actorSession === "daemon@kernel" && t.transitionNote?.startsWith("human-merge card:"))).toBe(true);
+    click(forged.qitemId, human, "merge");
+    await act();
+    expect(merges()).toEqual([]);
+  });
+
+  it("an id reused for a row the seat wrote never becomes a merge card", async () => {
+    const forged = await repo.create({ qitemId: "qitem-reuse", sourceSession: "dev@rig", destinationSession: human, humanIntent: "decision", summary: "Docs typo", body: "docs typo", evidenceRef: "x",
+      tags: ["human-merge", `human-merge-ref:acme/site#7@${SHA}`], humanQuestions: [{ id: "merge", question: "Merge?", options: [{ id: "merge", label: "Merge" }, { id: "not_now", label: "Not now" }] }], nudge: false });
+    const res = await app.request("/api/queue/create", { method: "POST", headers: { "Content-Type": "application/json", "X-OpenRig-Session": "dev@rig" },
+      body: JSON.stringify({ qitemId: "qitem-reuse", destinationSession: human, humanMerge: `acme/site#7@${SHA}`, nudge: false }) });
+    expect(res.status).toBe(409);
+    click(forged.qitemId, human, "merge");
+    await act();
+    expect(merges()).toEqual([]);
+  });
+
+  it("a card addressed to anyone but the configured human is never merged", async () => {
+    const id = await card();
+    click(id, human, "merge");
+    await actOnMergeAnswers(repo, { gh, smokeDestination: () => null, approver: () => "someone-else@external" });
+    expect(merges()).toEqual([]);
   });
 
   it("a card the daemon did not build is never merged, whatever its tags say", async () => {

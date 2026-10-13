@@ -114,6 +114,8 @@ export interface MergeDeps {
   gh: Gh;
   /** Where a successful merge sends its smoke-check row; null sends none. */
   smokeDestination: () => string | null;
+  /** The configured human who may approve (the registry's approver), as for permission approvals. */
+  approver: () => string | null;
   now?: () => number;
   log?: (msg: string) => void;
 }
@@ -131,9 +133,12 @@ export async function actOnMergeAnswers(repo: QueueRepository, deps: MergeDeps):
     if (!row || (choice !== "merge" && choice !== "not_now")) continue;
     const transitions = repo.transitionLog.listForQitem(qitem_id);
     if (transitions.some((t) => t.transitionNote?.startsWith(RESULT_NOTE))) continue;
-    const card = transitions.find((t) => t.actorSession === "daemon@kernel" && t.transitionNote?.startsWith(CARD_NOTE));
+    // Only the daemon's own in-process note counts (an HTTP write always carries an identity provenance),
+    // and only on a card addressed to the configured human.
+    const card = transitions.find((t) => t.actorSession === "daemon@kernel" && t.identityProvenance === null && t.transitionNote?.startsWith(CARD_NOTE));
     const ref = card ? parseMergeRef(card.transitionNote!.slice(CARD_NOTE.length)) : null;
     if (!ref || !row.tags?.includes(`${REF_TAG}${formatMergeRef(ref)}`)) continue;
+    if (row.destinationSession !== deps.approver()) continue;
     // Recorded before acting: a crash between the two never merges twice.
     repo.update({ qitemId: qitem_id, actorSession: "daemon@kernel", transitionNote: `${RESULT_NOTE} ${choice} pending` });
     const name = `${ref.repo}#${ref.number}`;
