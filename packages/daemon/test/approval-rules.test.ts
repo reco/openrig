@@ -24,7 +24,6 @@ describe("approval rules", () => {
     const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(ps *)" }, { effect: "allow", match: "Bash(lsof:*)" }];
     expect(effect(rules, bash("ps"))).toBe("allow");
     expect(effect(rules, bash("ps -o pid,ppid -p 42"))).toBe("allow");
-    expect(effect(rules, bash("/bin/ps aux"))).toBe("allow");
     expect(effect(rules, bash("lsof -nP -iTCP:7433"))).toBe("allow");
     expect(effect(rules, bash("psql -c 'drop table x'"))).toBeNull();
   });
@@ -37,6 +36,14 @@ describe("approval rules", () => {
     expect(effect(rules, bash("ps aux > /etc/x"))).toBeNull();
   });
 
+  it("never allows past an assignment, a wrapper, an executable path, quoting or odd spacing", () => {
+    const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(ps *)" }, { effect: "allow", match: "Bash(ls *)" }];
+    for (const command of ["PATH=/tmp/evil ps aux", "LD_PRELOAD=/tmp/x.so ps", "./ps aux", "/tmp/x/ps", "/bin/ps aux", "sudo ls /root", "env ls",
+      "ps  aux", "ps\taux", "ps 'aux'", "ps a\\ux", "ls *", "ls ~"]) {
+      expect(effect(rules, bash(command)), command).toBeNull();
+    }
+  });
+
   it("denies when any part of a command matches a deny rule, and deny beats allow", () => {
     const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(git *)" }, { effect: "deny", match: "Bash(git push *)", note: "advisor merges" }];
     expect(effect(rules, bash("git status"))).toBe("allow");
@@ -44,6 +51,19 @@ describe("approval rules", () => {
     expect(effect(rules, bash("git fetch && git push --force"))).toBe("deny");
     expect(effect(rules, bash("echo $(git push)"))).toBe("deny");
     expect(effect(rules, bash("FOO=1 sudo git push"))).toBe("deny");
+    for (const command of ["git  push origin main", "git 'push' origin main", "git p\\ush origin", "git \tpush", "/usr/bin/git push", "{ git push; }", "nice git push"]) {
+      expect(effect(rules, bash(command)), command).toBe("deny");
+    }
+  });
+
+  it("matches file paths after normalising them, never allows a path with .., and * stays within one directory", () => {
+    const rules: ApprovalRule[] = [{ effect: "allow", match: "Read(~/**)" }, { effect: "deny", match: "Read(~/.ssh/**)" }, { effect: "allow", match: "Edit(/srv/*.txt)" }];
+    const tool = (toolName: string, file_path: string) => ({ sessionName: "a@b", toolName, toolInput: { file_path } });
+    expect(effect(rules, tool("Read", `${process.env.HOME}/notes.md`))).toBe("allow");
+    expect(effect(rules, tool("Read", `${process.env.HOME}/x/../.ssh/id_rsa`))).toBe("deny");
+    expect(effect(rules, tool("Read", `${process.env.HOME}/x/../notes.md`))).toBeNull();
+    expect(effect(rules, tool("Edit", "/srv/a.txt"))).toBe("allow");
+    expect(effect(rules, tool("Edit", "/srv/sub/a.txt"))).toBeNull();
   });
 
   it("matches tools by name and file tools by path, scoped to seats", () => {
@@ -97,6 +117,7 @@ describe("approval rules", () => {
     const rules: ApprovalRule[] = [{ effect: "deny", match: "Bash(git push:*)" }, { effect: "deny", match: "WebFetch", seats: "*@Imago" }, { effect: "allow", match: "Bash(ps *)" }];
     expect(claudeDenyRules(rules, "dev-owner@openrig-dev")).toEqual(["Bash(git push *)"]);
     expect(claudeDenyRules(rules, "dev4-owner@Imago")).toEqual(["Bash(git push *)", "WebFetch"]);
+    expect(claudeDenyRules([{ effect: "deny", match: "Edit(/etc/**)" }, { effect: "deny", match: "mcp__slack__post(x)" }, { effect: "deny", match: "mcp__slack__*" }], null)).toEqual(["Edit(//etc/**)", "mcp__slack__*"]);
     vi.stubEnv("OPENRIG_HOME", home({ rules }));
     vi.stubEnv("OPENRIG_YOLO", "0");
     const settingsOf = (args: string[]) => args.flatMap((a, i) => args[i - 1] === "--settings" ? [JSON.parse(a)] : []);

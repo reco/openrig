@@ -1063,6 +1063,7 @@ export const PACKAGED_APPROVAL_HASHES = new Set([
   "4152246955b46253172cf2cdada892798daf921a509ceb46e3d12d526e7fef1c",
   "a64f7b31db73be70962314cc310d2882c534d522b3ca4f373114c1cdbb5a1415",
   "9a12547e7e1c0aff4d19659fd4ff6719975c8d27c429551891f72d5f0ad77960",
+  "7f95648701d0e7246c3cbca259dcfd3c80b4094e0b5f20ab567406eed2cad4ca",
 ]);
 
 function hookCommand(hook: unknown): string | undefined {

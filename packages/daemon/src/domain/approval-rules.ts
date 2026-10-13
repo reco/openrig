@@ -1,6 +1,6 @@
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 
 export type RuleEffect = "allow" | "deny";
 
@@ -58,13 +58,14 @@ function parseMatch(match: string): { tool: string; arg: string | null } | null 
   return { tool: m[1]!, arg: m[2] === undefined ? null : m[2].trim().replace(/:\*$/, " *") };
 }
 
-function globRegex(glob: string): RegExp {
-  const expanded = glob.replace(/^~(?=\/|$)/, homedir());
-  const body = expanded.split(/(\*+)/).map((part) => part.startsWith("*") ? ".*" : part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("");
+function globRegex(glob: string, path = false): RegExp {
+  const expanded = path ? expandHome(glob) : glob;
+  const body = expanded.split(/(\*+)/).map((part) => part.startsWith("*") ? (path && part === "*" ? "[^/]*" : ".*") : part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("");
   return new RegExp(`^${body.replace(/ \.\*$/, "(?: .*)?")}$`, "s");
 }
 
-const globMatches = (glob: string, value: string) => globRegex(glob).test(value);
+const globMatches = (glob: string, value: string, path = false) => globRegex(glob, path).test(value);
+const expandHome = (p: string) => p.replace(/^~(?=\/|$)/, homedir());
 
 function commandOf(toolInput: unknown): string | null {
   const command = (toolInput as { command?: unknown } | null)?.command;
@@ -73,29 +74,34 @@ function commandOf(toolInput: unknown): string | null {
   return null;
 }
 
-function argOf(toolInput: unknown): string {
+const PATH_KEYS = ["file_path", "notebook_path", "path"];
+
+function argOf(toolInput: unknown): { value: string; path: boolean } {
   const input = (toolInput ?? {}) as Record<string, unknown>;
-  for (const key of ["file_path", "notebook_path", "path", "url", "query", "pattern"]) {
-    if (typeof input[key] === "string") return input[key] as string;
+  for (const key of [...PATH_KEYS, "url", "query", "pattern"]) {
+    if (typeof input[key] === "string") return { value: input[key] as string, path: PATH_KEYS.includes(key) };
   }
-  return JSON.stringify(toolInput ?? {});
+  return { value: JSON.stringify(toolInput ?? {}), path: false };
 }
 
-function stripLaunchers(segment: string): string {
-  let s = segment.trim();
+/** A deny rule sees through quoting, spacing, assignments, wrappers and the executable's directory. */
+function denyForm(segment: string): string {
+  let s = segment.replace(/['"\\]/g, "").replace(/\s+/g, " ").trim();
   for (let prev = ""; prev !== s;) {
     prev = s;
-    s = s.replace(/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/, "").replace(/^(?:sudo|env|command|exec|nohup|time)\s+/, "");
+    s = s.replace(/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/, "").replace(/^(?:sudo|env|command|exec|nohup|time|nice)\s+/, "");
   }
   return s.replace(/^\S*\//, "");
 }
 
-const COMPOUND = /[;&|\n`$()<>]/;
-
 /** Every simple command a deny rule must see, wherever it sits in a compound command. */
 function commandSegments(command: string): string[] {
-  return command.split(/[;&|\n`()<>]+|\$\(/).map(stripLaunchers).filter(Boolean);
+  return command.split(/[;&|\n`(){}<>]+|\$\(/).map(denyForm).filter(Boolean);
 }
+
+/** An allow rule takes only plain words, single-spaced: no quoting, expansion, operators, assignment or executable path. */
+const PLAIN_COMMAND = /^[\w\-.:@%+,/=]+(?: [\w\-.:@%+,/=]+)*$/;
+const allowable = (command: string) => PLAIN_COMMAND.test(command) && !/[=/]/.test(command.split(" ")[0]!);
 
 function hits(rule: ApprovalRule, req: RuleRequest): boolean {
   if (rule.seats && !globMatches(rule.seats, req.sessionName)) return false;
@@ -103,12 +109,17 @@ function hits(rule: ApprovalRule, req: RuleRequest): boolean {
   if (!globMatches(match.tool, req.toolName)) return false;
   if (match.arg === null) return true;
   const command = commandOf(req.toolInput);
-  if (command === null) return globMatches(match.arg, argOf(req.toolInput));
+  if (command === null) {
+    const arg = argOf(req.toolInput);
+    if (!arg.path) return globMatches(match.arg, arg.value);
+    if (rule.effect === "allow" && arg.value.split("/").includes("..")) return false;
+    return globMatches(match.arg, posix.normalize(expandHome(arg.value)), true);
+  }
   if (rule.effect === "deny") return commandSegments(command).some((s) => globMatches(match.arg!, s));
-  return !COMPOUND.test(command) && globMatches(match.arg, stripLaunchers(command));
+  return allowable(command) && globMatches(match.arg, command);
 }
 
-/** Deny wins over allow; no hit leaves the request to the human. A compound or expanding command is never allowed by rule. */
+/** Deny wins over allow; no hit leaves the request to the human. Only a plain single command is allowed by rule. */
 export function ruleDecision(rules: readonly ApprovalRule[], req: RuleRequest): RuleHit | null {
   const deny = rules.find((r) => r.effect === "deny" && hits(r, req));
   if (deny) return { effect: "deny", rule: deny };
@@ -116,8 +127,14 @@ export function ruleDecision(rules: readonly ApprovalRule[], req: RuleRequest): 
   return allow ? { effect: "allow", rule: allow } : null;
 }
 
-/** The deny rules for one seat, in Claude's own permission syntax, so its runtime refuses them even without the daemon. */
+/** The deny rules for one seat in Claude's own permission syntax, so its runtime refuses them even without the daemon.
+ *  Claude reads a filesystem-absolute path as //path, and ignores an MCP rule with a pattern (the daemon still applies it). */
 export function claudeDenyRules(rules: readonly ApprovalRule[], sessionName: string | null): string[] {
   return rules.filter((r) => r.effect === "deny" && (!r.seats || (sessionName !== null && globMatches(r.seats, sessionName))))
-    .map((r) => { const m = parseMatch(r.match)!; return m.arg === null ? m.tool : `${m.tool}(${m.arg})`; });
+    .flatMap((r) => {
+      const m = parseMatch(r.match)!;
+      if (m.arg === null) return [m.tool];
+      if (m.tool.startsWith("mcp__")) return [];
+      return [`${m.tool}(${m.tool !== "Bash" && m.arg.startsWith("/") ? `/${m.arg}` : m.arg})`];
+    });
 }
