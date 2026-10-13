@@ -68,6 +68,8 @@ export interface SlackWireOpts {
   fetchImpl?: FetchImpl;
   wsFactory?: (url: string) => WsLike;
   outboundIntervalMs?: number;
+  /** Sweep outbound at once on a queue change that produced a human notification (default true); false = poll only. */
+  outboundKick?: boolean;
   inboundRetryIntervalMs?: number;
   inboundMaxConnects?: number;
   registry?: RegistrySurface;
@@ -375,7 +377,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     const registry = registrySurface.loadHumanRegistry(opts.home);
     return item && registry.ok ? resolveRegisteredHumanAddress(item.blockedOn || item.destinationSession, registry.entities) : null;
   };
-  const isConfiguredChannel = (channel: string) => channels.some((c) => c.id === channel);
+  const isConfiguredChannel = (channel: string) => channels.some((c) => c.id === channel) || (cfg.channelMap ?? []).some((e) => e.channel === channel);
   // A new root goes to the configured channel its row names, else to the channel whose seat is
   // posting; replies stay in their thread's channel.
   const SLACK_CHANNEL_TAG = "slack-channel:";
@@ -388,7 +390,6 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const channelForPost = (p: OutboundPostPayload, threadTs: string | undefined): string =>
     (threadTs ? threadMap.resolveByThread(threadTs)?.channel : undefined)
       ?? taggedChannel(p)
-      ?? resolveOutboundChannel(cfg, p.sourceSession)
       ?? channels.find((c) => c.inboundDestination === p.sourceSession)?.id ?? cfg.channel!;
 
   // OPR.0.5.6.14 — a failed post writes the transport-failed ledger transition so the
@@ -444,9 +445,15 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   };
 
   // #822: a person's inbound reply records the item it answers as replyTo. If its seat parks
-  // that row on the person, the park is a decision and opens its own root, so only an update's
-  // replyTo steers where a post goes.
-  const threadReplyTo = (p: OutboundPostPayload): string | null => (p.humanIntent === "update" ? p.replyTo ?? null : null);
+  // that row on the person, the park is a decision and opens its own root. A decision a seat
+  // itself created with --reply-to (fork: an action button in an earlier request's thread) and
+  // every update steer where the post goes.
+  const threadReplyTo = (p: OutboundPostPayload): string | null => {
+    if (!p.replyTo) return null;
+    if (p.humanIntent === "update") return p.replyTo;
+    const row = opts.queueRepo.getById(p.qitemId);
+    return row && !isHumanSeatSessionRef(row.sourceSession) ? p.replyTo : null;
+  };
 
   // #96 — where a replyTo update posts. Walks back through earlier threaded updates (which
   // open no root of their own) to the item that owns the root.
@@ -478,7 +485,6 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         // #192: with a channel map a root in another channel than this attempt's cannot carry the post.
         if (cfg.channelMap?.length && root.channel !== channel) return { kind: "fallback", reason: "root-other-channel", threadTs: root.threadTs };
         if (!isConfiguredChannel(root.channel) && !isHumanStartedRoot(root)) return { kind: "fallback", reason: "root-other-channel", threadTs: root.threadTs };
-        if (root.human !== (p.destinationSession ?? "")) return { kind: "fallback", reason: "root-other-human", threadTs: root.threadTs };
         if (root.seat !== (p.sourceSession ?? "") && !humanWroteHere(item, root, p.sourceSession ?? "")) return { kind: "fallback", reason: "root-other-seat", threadTs: root.threadTs };
         return { kind: "thread", threadTs: root.threadTs };
       }
@@ -678,10 +684,13 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     ? subsystemSlackDeliver({
         botToken: bot!,
         channel: cfg.channel!,
-        // #192: a reply-to update whose choice is already recorded with a channel posts there; otherwise
-        // the post follows its thread's channel, else its tag, the map, its seat's channel or the default.
+        // #192: with a channel map, a reply-to update whose choice is already recorded posts in that
+        // choice's channel (the default for a choice recorded before any map existed), everything else
+        // follows the map. Without a map (the fork's channels), a post follows its thread's channel,
+        // else its slack-channel tag, its seat's channel or the default.
         resolveChannel: (p, threadTs) => {
           const recorded = threadReplyTo(p) ? opts.queueRepo.replyToChoiceFor(p.qitemId) : null;
+          if (cfg.channelMap?.length) return recorded ? recorded.channel ?? cfg.channel! : resolveOutboundChannel(cfg, p.sourceSession) ?? cfg.channel!;
           return recorded?.channel ?? channelForPost(p, threadTs);
         },
         pinChannel: Boolean(cfg.channelMap?.length),
@@ -990,7 +999,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       driver.start();
       unsubscribeOutbound = opts.queueRepo.events.subscribe((event) => {
         if ((event.type === "queue.created" || event.type === "queue.updated" || event.type === "queue.handed_off")
-          && opts.queueRepo.transitionLog.latestOwnerNotificationForQitem(event.qitemId)) driver.kick();
+          && opts.outboundKick !== false && opts.queueRepo.transitionLog.latestOwnerNotificationForQitem(event.qitemId)) driver.kick();
         // A canceled request (an expired approval included) closes now, not at the next sweep, so its
         // card loses its buttons while the human may still be looking at it.
         const change = event as { type: string; qitemId: string; fromState?: string; toState?: string };
@@ -1039,7 +1048,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         isHumanStarted: (conversationId) => {
           const item = opts.queueRepo.getById(conversationId);
           const root = threadMap.resolveByConversation(conversationId);
-          return !!item && !!root && entityOf(item.sourceSession) === entityOf(root.human);
+          // A human's own message the seat later parked on that human is a real question: it correlates.
+          return !!item && !!root && entityOf(item.sourceSession) === entityOf(root.human) && !hasLiveHumanGate(item);
         } }),
       resolveHumanReply: opts.resolveHumanReply && (async (input) => {
         // Only the human the item waits on may resolve it (its park's blocked_on, or a direct request's destination).

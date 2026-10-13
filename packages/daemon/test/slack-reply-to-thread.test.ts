@@ -303,15 +303,15 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       expect(new ThreadSeatMap(db).resolveByThread("1.1")?.conversationId).toBe(decision.qitemId);
     });
 
-    it("#822: a top-level message records no thread, so its answer still posts top-level", async () => {
+    it("#822 (fork): a top-level message records no thread, and its answer opens that message's own thread", async () => {
       const humanReply = await connectInbound();
       await humanReply(undefined, "904.1");
       const inbound = inboundRow("904.1")!;
       expect(inbound.replyTo).toBeNull();
       const answer = await repo.create({ ...request, humanIntent: "update", body: "On it.", replyTo: inbound.qitemId });
       await deliver(answer.qitemId);
-      expect(posts.at(-1)?.thread_ts).toBeUndefined();
-      expect(repo.getById(answer.qitemId)?.replyToFallback).toBe(`root-missing (qitem ${inbound.qitemId})`);
+      expect(posts.at(-1)?.thread_ts).toBe("904.1");
+      expect(repo.getById(answer.qitemId)?.replyToFallback).toBeNull();
     });
 
     it("#822: a reply's seat parking it on the person still asks in a fresh root, and the answer there resolves the park", async () => {

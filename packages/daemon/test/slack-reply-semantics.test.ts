@@ -141,7 +141,8 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       await start(true, undefined, { feedbackReactions: { up: ["rr-thumbsup", "rr-plus1"], down: ["rr-thumbsdown", "rr-minus1"] } });
       expect(await react("1.1", { reaction: "rr-plus1" })).toMatchObject({ status: "accepted", reason: "feedback-+1" });
       expect(await react("1.1", { reaction: "rr-minus1::skin-tone-3" })).toMatchObject({ status: "accepted", reason: "feedback--1" });
-      expect(await react("1.1", { reaction: "+1" })).not.toMatchObject({ status: "accepted" });
+      // Not a configured rating emoji: no feedback (it reaches the seat as a plain reaction row).
+      expect(await react("1.1", { reaction: "+1" })).not.toMatchObject({ reason: "feedback-+1" });
       expect(toSeat().filter((q) => q.tags?.includes("human-feedback"))).toHaveLength(1);
     });
 
@@ -158,7 +159,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(asks[0]?.summary).toContain("👎");
       expect(asks[0]?.body).toContain("Record ONE short lesson");
       expect(asks[0]?.body).toContain(`--reply-to ${decisionId}`);
-      expect(await react("1.1", { reaction: "-1", user: "UOTHER" })).not.toMatchObject({ status: "accepted" });
+      expect(await react("1.1", { reaction: "-1", user: "UOTHER" })).not.toMatchObject({ reason: "feedback--1" });
     });
 
     it("a clarifying question reaches the owning seat and leaves the decision open", async () => {
@@ -400,7 +401,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(JSON.stringify(posts.at(-1)?.blocks)).toContain("🚀 Build it");
       expect(String(posts.at(-1)?.text)).not.toContain("react ✅");
       expect(String(posts.at(-1)?.text)).not.toContain("answer:");
-      expect(await react(root)).toMatchObject({ status: "ignored" });
+      expect(await react(root)).not.toMatchObject({ reason: "answered-by-reaction" });
       expect(repo.getById(cta.qitemId)?.state).toBe("pending");
       expect(await click(`or-confirm:${cta.qitemId}`, "or-confirm", root, "UFOUNDER", "3200.1", root)).toMatchObject({ status: "accepted" });
       expect(repo.getById(cta.qitemId)?.state).toBe("done");
@@ -451,17 +452,18 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(decisions).toEqual(["Ship the schema migration, hold the data one."]);
     });
 
-    it("✅ on the root of a decision with buttons does nothing", async () => {
-      expect(await react("1.1")).toMatchObject({ status: "ignored" });
+    it("✅ on the root of a decision with buttons decides nothing; it reaches the seat as a reaction row", async () => {
+      expect(await react("1.1")).toMatchObject({ status: "accepted", reason: "reaction" });
       expect(decisions).toEqual([]);
+      expect(toSeat().filter((q) => q.tags?.includes("human-reaction"))).toHaveLength(1);
     });
 
 
     it("ignores other emoji, other people's ✅, and ✅ on someone else's message", async () => {
       await say("Which one?", "2032.1");
-      expect(await react("1.1", { reaction: "eyes" })).toMatchObject({ status: "ignored" });
-      expect(await react("1.1", { user: "UOTHER" })).not.toMatchObject({ status: "accepted" });
-      expect(await react("2032.1", { user: "UOTHER" })).not.toMatchObject({ status: "accepted" });
+      expect(await react("1.1", { reaction: "eyes" })).not.toMatchObject({ reason: "answered-by-reaction" });
+      expect(await react("1.1", { user: "UOTHER" })).not.toMatchObject({ reason: "answered-by-reaction" });
+      expect(await react("2032.1", { user: "UOTHER" })).not.toMatchObject({ reason: "answered-by-reaction" });
       expect(await react("9999.1")).toMatchObject({ status: "ignored" });
       expect(repo.getById(decisionId)?.state).toBe("pending");
     });
@@ -745,8 +747,8 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
     it("a feedback replay after a failed continuation records the feedback once", async () => {
       const create = repo.create.bind(repo);
       vi.spyOn(repo, "create").mockImplementationOnce(async () => { throw new Error("database is locked"); }).mockImplementation(create);
-      expect(await react("1.1", { reaction: "-1", envelopeId: "e-fb1" })).toMatchObject({ status: "handler-failed" });
-      expect(await react("1.1", { reaction: "-1", envelopeId: "e-fb2" })).not.toMatchObject({ status: "handler-failed" });
+      expect(await react("1.1", { reaction: "-1", envelopeId: "e-fb1" })).toMatchObject({ status: "dead-lettered" });
+      expect(await react("1.1", { reaction: "-1", envelopeId: "e-fb2" })).not.toMatchObject({ status: "dead-lettered" });
       await vi.waitFor(() => expect(repo.list({ limit: 100 }).filter((q) => q.tags?.includes("human-feedback"))).toHaveLength(1));
       expect(repo.transitionLog.listForQitem(decisionId).filter((t) => t.transitionNote?.startsWith("human-feedback "))).toHaveLength(1);
     });

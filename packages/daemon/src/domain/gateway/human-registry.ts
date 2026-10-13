@@ -828,6 +828,8 @@ export function resolveRegisteredHumanAddress(
     : parsed.kind === "canonical"
       ? parsed.member
       : null;
-  if (!identity) return null;
-  return entities.find((entity) => entity.entityId === identity)?.address ?? null;
+  // A human seat ref like `human-founder@kernel` names its entity by the whole local part.
+  const local = sessionRef.split("@")[0];
+  return entities.find((entity) => entity.entityId === local)?.address
+    ?? (identity ? entities.find((entity) => entity.entityId === identity)?.address ?? null : null);
 }

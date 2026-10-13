@@ -421,7 +421,7 @@ describe("Claude activity-hook — REAL SHIPPED-spec resolver -> planner -> adap
 
 describe("Slack approval hook projection", () => {
   const APPROVAL_SRC = "/assets/plugins/openrig-core/hooks/scripts/approval-request.cjs";
-  const APPROVAL_DEST = "/project/.openrig/hooks/scripts/approval-request.cjs";
+  const APPROVAL_DEST = `${STATE_DIR}/state/claude-activity-hooks/approval-request.cjs`;
   const shipped = readFileSync(pathResolve(__dirname, "../assets/plugins/openrig-core/hooks/scripts/approval-request.cjs"), "utf8");
   const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 
