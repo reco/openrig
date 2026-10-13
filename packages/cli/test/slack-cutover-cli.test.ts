@@ -113,6 +113,22 @@ describe("S10 CLI cutover — admin verbs route to the daemon", () => {
     process.exitCode = 0;
   });
 
+  it("verify checks membership in the notifications channel too", async () => {
+    const { deps } = makeDeps();
+    const base = await deps.surface!();
+    const logs: string[] = [];
+    await run(slackCommand({ ...deps, log: (m) => logs.push(m), surface: async () => ({
+      ...base,
+      loadConfig: () => ({ ...base.loadConfig(), notificationsChannel: "C3" }),
+      resolveSecret: () => "xoxb-EXAMPLE-fake",
+      verifyScopes: async () => ({ ok: true, granted: ["chat:write"], missing: [] }),
+      verifyChannelMembership: async (_token: string, channel: string) => ({ ok: true, isMember: channel === "C1" }),
+    }) as never }), ["verify", "--json"]);
+    expect(JSON.parse(logs[0]!)).toMatchObject({ ready: false, channels: [{ channel: "C1", member: { isMember: true } }, { channel: "C3", matches: ["notifications"], member: { isMember: false } }] });
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+
   it("`rig slack enable` POSTs /api/gateway/slack/enable and prints the honest online-status", async () => {
     const { deps, logs, posts } = makeDeps();
     await run(slackCommand(deps), ["enable"]);

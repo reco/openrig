@@ -312,13 +312,18 @@ export function slackCommand(deps: SlackDeps = {}): Command {
         reason: opts.reason, action: "verify", subject: "slack", before: { digest: channelStateDigest(cfg) },
         run: async () => {
           const scope = s.bot ? await surface.verifyScopes(s.bot, cfg.requiredScopes, deps.fetchImpl) : null;
-          // #192: membership in every channel the connector uses — the default, each mapped one and each
-          // extra channel with its own inbound seat.
+          // #192: membership in every channel the connector uses — the default, each mapped one, each
+          // extra channel with its own inbound seat, and the notifications channel.
           const used = surface.mappedChannels(cfg);
           for (const extra of cfg.extraChannels ?? []) {
             const known = used.find((c) => c.channel === extra.id);
             if (known) known.matches.push(`inbound ${extra.inboundDestination}`);
             else used.push({ channel: extra.id, isDefault: false, matches: [`inbound ${extra.inboundDestination}`] });
+          }
+          if (cfg.notificationsChannel) {
+            const known = used.find((c) => c.channel === cfg.notificationsChannel);
+            if (known) known.matches.push("notifications");
+            else used.push({ channel: cfg.notificationsChannel, isDefault: false, matches: ["notifications"] });
           }
           const channels = [];
           for (const c of s.bot ? used : []) {
