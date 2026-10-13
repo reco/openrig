@@ -211,7 +211,8 @@ function gitDenyForm(command: string): string {
   const [, sub = "", rest = ""] = /^git (\S+)(.*)$/.exec(s) ?? [];
   const words = rest.trim().split(" ");
   const option = (w: string, name: string, min: number) => { const p = /^--([a-z-]+)(?:=|$)/.exec(w)?.[1]; return !!p && p.length >= min && name.startsWith(p); };
-  if (words.some((w) => option(w, "receive-pack", 4) || option(w, "exec", 3))) s += " --upload-pack";
+  const transport = ["push", "fetch", "archive", "send-pack"].includes(sub);
+  if (words.some((w) => option(w, "receive-pack", 4) || (transport && option(w, "exec", 3)))) s += " --upload-pack";
   if (sub === "clone" || sub === "ls-remote") {
     if (words.some((w) => /^-[A-Za-z]*u/.test(w))) s += " --upload-pack";
     if (sub === "clone" && words.some((w) => /^(?:-[A-Za-z]*c|--con)/.test(w))) s = `git -c ${s.slice(4)}`;

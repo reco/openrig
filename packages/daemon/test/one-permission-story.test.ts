@@ -140,10 +140,10 @@ describe("one permission story", () => {
       "git clone -c core.sshCommand=x ssh://h/r", "git -P -c core.sshCommand=x fetch", "git -C . -c core.pager=x log",
       "git --exec-path=/opt/git-core push --force origin x", "git --config-env=a.b=HOME push -f", "git --attr-source HEAD push --force", "git --config-env a.b=HOME log",
       "git push origin --all", "git push origin --branches", "git push origin 'refs/heads/*:refs/heads/*'", "git push --receive-pack=./evil . x", "git push --exec=./evil . x",
-      "git push --rece=./evil . x", "git rebase --exec ./evil main"])
+      "git push --rece=./evil . x", "git archive --remote=r --exec=./evil HEAD"])
       expect(ruleDecision(rules, bash(command))?.effect, command).toBe("deny");
     for (const command of ["git push origin feat", "git push -u origin feat", "git --no-pager log", "git -C . status", "git clone ssh://h/r dir", "git --exec-path",
-      "git push --recurse-submodules=check origin feat", "git log --exclude=x --all"])
+      "git push --recurse-submodules=check origin feat", "git log --exclude=x --all", "git rebase --exec 'pnpm test' main"])
       expect(ruleDecision(rules, bash(command))?.effect, command).toBe("allow");
   });
 
