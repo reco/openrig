@@ -25,6 +25,7 @@ import {
   type ResolveHomeDirByPid,
 } from "../domain/codex-thread-id.js";
 import { assessNativeResumeProbe, buildCodexResumeCore, hasCodexUpdateHeader, type NativeResumeProbeResult } from "../domain/native-resume-probe.js";
+import { codexPriorPolicyArgs, observeCodexPriorPolicy, priorPolicyRefusal, type CodexPriorPolicyReader } from "../domain/codex-prior-policy.js";
 import { legacyCodexWithSharedDaemonMessage, unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
 import { codexNetworkDefaultArg, type CodexNetworkDefaultReader } from "../domain/codex-network-default.js";
 import { resolveCodexGitAddDirs, type CodexGitAddDirResolver } from "../domain/codex-git-add-dirs.js";
@@ -87,6 +88,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   // #275: Codex's own answer on whether the plain floor may get network access. Startup wires the
   // real reader; absent keeps every invocation unchanged.
   private readNetworkDefault?: CodexNetworkDefaultReader;
+  private readPriorPolicy?: CodexPriorPolicyReader;
   // Issue #121: git metadata dirs for the fresh-launch `--add-dir`s (a linked worktree's `.git` is a file).
   // Default = the real resolver; tests may inject a controlled one.
   private resolveGitAddDirs: CodexGitAddDirResolver;
@@ -115,6 +117,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     /** A shared Codex app-server daemon is running (a Codex without --no-daemon may attach to it). */
     sharedDaemonRunning?: () => boolean;
     readNetworkDefault?: CodexNetworkDefaultReader;
+    /** The conversation's own prior sandbox/approval/effort; a same-conversation resume reproduces it or refuses. */
+    readPriorPolicy?: CodexPriorPolicyReader;
     resolveGitAddDirs?: CodexGitAddDirResolver;
     prepareTeamWorkspace?: PrepareCodexTeamWorkspace;
   }) {
@@ -127,6 +131,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.detectDaemonSupport = deps.detectDaemonSupport;
     this.sharedDaemonRunning = deps.sharedDaemonRunning;
     this.readNetworkDefault = deps.readNetworkDefault;
+    this.readPriorPolicy = deps.readPriorPolicy;
     this.resolveGitAddDirs = deps.resolveGitAddDirs ?? resolveCodexGitAddDirs;
     this.activityRelayPath = deps.activityRelayPath;
     this.listProcesses = deps.listProcesses ?? defaultListProcesses;
@@ -369,8 +374,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const effortArg = effort ? ` -c ${shellQuote(`model_reasoning_effort="${effort}"`)}` : "";
     const profile = binding.codexConfigProfile?.trim();
     const profileArg = profile ? ` -p ${shellQuote(profile)}` : "";
-    const posture = codexPostureArg(profileArg, process.env, binding.launchPosture);
-    const appliedLaunch = observeCodexSandbox(posture);
+    const prior = opts.resumeToken && this.readPriorPolicy ? this.readPriorPolicy(opts.resumeToken) : null;
+    if (prior && !prior.ok) return { ok: false, error: priorPolicyRefusal(opts.resumeToken!, prior.reason) };
+    const posture = prior ? `${profileArg}${codexPriorPolicyArgs(prior.policy)}` : codexPostureArg(profileArg, process.env, binding.launchPosture);
+    const appliedLaunch = prior ? observeCodexPriorPolicy(prior.policy) : observeCodexSandbox(posture);
     const postureArg = posture + operationalLaunchArg(this.runtime, binding);
 
     // OPR.0.3.4.7 — profile-LOAD probe before launch/resume. A legacy
@@ -386,10 +393,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         };
       }
     }
-    const teamWorkspaceArg = binding.teamPermissionDefault && !profile
+    const teamWorkspaceArg = !prior && binding.teamPermissionDefault && !profile
       && appliedLaunch.state === "observed" && appliedLaunch.value === "workspace-write"
       ? codexTeamWorkspaceArg(this.prepareTeamWorkspace, opts.name) : "";
-    const queueStateDirArg = teamWorkspaceArg || this.buildQueueStateAddDirArg(opts.name);
+    const queueStateDirArg = prior ? "" : teamWorkspaceArg || this.buildQueueStateAddDirArg(opts.name);
     // #69: one daemon-support decision for this launch, for the Codex the seat pane runs
     // (its cwd, the launch PATH), applied to fresh, fork and resume.
     const daemonSupport = this.detectDaemonSupport ? await this.detectDaemonSupport(binding.cwd) : undefined;
@@ -402,7 +409,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const daemonOptOut = daemonSupport?.kind === "supported";
     const daemonArg = daemonOptOut ? " --no-daemon" : "";
     // #275: on the plain floor, network access unless Codex reports an opt-out or policy.
-    const networkArg = await codexNetworkDefaultArg(this.readNetworkDefault, appliedLaunch, binding.cwd, opts.name);
+    const networkArg = prior ? "" : await codexNetworkDefaultArg(this.readNetworkDefault, appliedLaunch, binding.cwd, opts.name);
 
     // Fork branch: `codex fork <parent_thread_id>`. Captures the NEW thread id
     // post-fork. Parent thread id is NOT persisted onto the new seat record
@@ -452,7 +459,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const cmd = opts.resumeToken
       // 0.5.2-07 A2-3: the pod-aware RESUME path threads the SPEC model too (reverted before — the
       // grounding map assumed codex parity with the claude adapter, but only fresh emitted -m).
-      ? buildCodexResumeCore(opts.resumeToken, profile, false, queueStateDirArg.trim() || undefined, binding.launchPosture, model, `${postureArg}${networkArg}`, daemonOptOut, effort)
+      ? buildCodexResumeCore(opts.resumeToken, profile, false, queueStateDirArg.trim() || undefined, binding.launchPosture, model, `${postureArg}${networkArg}`, daemonOptOut, effort || (prior ? prior.policy.effort : null))
       : `codex${daemonArg}${postureArg}${networkArg} -C ${shellQuote(binding.cwd)}${gitDirArg}${queueStateDirArg}${modelArg}${effortArg}`;
 
     const textResult = await this.tmux.sendShellCommand(binding.tmuxSession, this.seatLaunchEnvironment

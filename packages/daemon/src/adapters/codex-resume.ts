@@ -5,6 +5,7 @@ import type { TmuxAdapter } from "./tmux.js";
 import type { SeatLaunchEnvironment } from "../domain/seat-launch-environment.js";
 import type { ResumeResult } from "./claude-resume.js";
 import { assessNativeResumeProbe, buildCodexResumeCore } from "../domain/native-resume-probe.js";
+import { codexPriorPolicyArgs, observeCodexPriorPolicy, priorPolicyRefusal, type CodexPriorPolicyReader } from "../domain/codex-prior-policy.js";
 import { runSyncSite } from "../domain/sync-site-wrap.js";
 import { shellQuote } from "./shell-quote.js";
 import { codexPostureArg } from "./yolo-mode.js";
@@ -32,6 +33,8 @@ interface CodexResumeOptions {
   sharedDaemonRunning?: () => boolean;
   /** #275: Codex's own answer on the plain floor's network default; absent keeps the existing invocation. */
   readNetworkDefault?: CodexNetworkDefaultReader;
+  /** The conversation's own prior sandbox/approval/effort; a same-conversation resume reproduces it or refuses. */
+  readPriorPolicy?: CodexPriorPolicyReader;
 }
 
 export class CodexResumeAdapter {
@@ -100,12 +103,14 @@ export class CodexResumeAdapter {
       return { ok: false, code: "resume_failed", message: legacyCodexWithSharedDaemonMessage() };
     }
 
+    const prior = this.options.readPriorPolicy && resumeType !== "codex_last" ? this.options.readPriorPolicy(resumeToken!) : null;
+    if (prior && !prior.ok) return { ok: false, code: "resume_failed", message: priorPolicyRefusal(resumeToken!, prior.reason) };
     const profileArg = codexConfigProfile ? ` -p ${shellQuote(codexConfigProfile)}` : "";
-    const posture = codexPostureArg(profileArg, process.env, resolvedPosture);
-    const appliedLaunch = observeCodexSandbox(posture);
+    const posture = prior ? `${profileArg}${codexPriorPolicyArgs(prior.policy)}` : codexPostureArg(profileArg, process.env, resolvedPosture);
+    const appliedLaunch = prior ? observeCodexPriorPolicy(prior.policy) : observeCodexSandbox(posture);
     const postureArg = posture + operationalLaunchArg("codex", { kernelAuthority, teamPermissionDefault, nonInterruptive, launchPosture: resolvedPosture });
-    const networkArg = await codexNetworkDefaultArg(this.options.readNetworkDefault, appliedLaunch, cwd, tmuxSessionName);
-    const workspaceArg = teamPermissionDefault && !codexConfigProfile?.trim()
+    const networkArg = prior ? "" : await codexNetworkDefaultArg(this.options.readNetworkDefault, appliedLaunch, cwd, tmuxSessionName);
+    const workspaceArg = !prior && teamPermissionDefault && !codexConfigProfile?.trim()
       && appliedLaunch.state === "observed" && appliedLaunch.value === "workspace-write"
       ? codexTeamWorkspaceArg(this.options.prepareTeamWorkspace, tmuxSessionName) : "";
     const cmd = buildCodexResumeCore(
@@ -117,7 +122,7 @@ export class CodexResumeAdapter {
       model,
       `${postureArg}${networkArg}`,
       daemonSupport?.kind === "supported",
-      effort,
+      effort ?? (prior ? prior.policy.effort : null),
     );
 
     const launchEnv = [this.options.launchPath ? `PATH=${shellQuote(this.options.launchPath)}` : "", this.options.codexHome ? `CODEX_HOME=${shellQuote(this.options.codexHome)}` : ""].filter(Boolean);
