@@ -1001,9 +1001,14 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       // Slack approvals: the PermissionRequest hook that waits for the human's Approve / Deny.
       const approvalSource = nodePath.join(nodePath.dirname(this.activityRelayPath!), "approval-request.cjs");
       if (this.fs.exists(approvalSource)) {
-        const approvalDest = nodePath.join(nodePath.dirname(relayDest), "approval-request.cjs");
-        // A copy someone edited in place (a local policy) is kept; only a shipped version is replaced.
-        if (!this.fs.exists(approvalDest) || PACKAGED_APPROVAL_HASHES.has(hashContent(this.fs.readFile(approvalDest)))) {
+        // A project's own copy from before the shared hook dir that someone edited in place (a local
+        // policy) stays in use for that project; a shipped copy there gives way to the shared one.
+        const projectCopy = nodePath.join(cwd, ".openrig", "hooks", "scripts", "approval-request.cjs");
+        const keepProjectCopy = this.fs.exists(projectCopy) && !PACKAGED_APPROVAL_HASHES.has(hashContent(this.fs.readFile(projectCopy)));
+        const approvalDest = keepProjectCopy ? projectCopy : nodePath.join(nodePath.dirname(relayDest), "approval-request.cjs");
+        if (keepProjectCopy) {
+          console.error(`[openrig] kept the locally edited ${projectCopy}; it does not get the shipped approval-request.cjs updates`);
+        } else if (!this.fs.exists(approvalDest) || PACKAGED_APPROVAL_HASHES.has(hashContent(this.fs.readFile(approvalDest)))) {
           this.fs.copyFile(approvalSource, approvalDest);
           this.preserveMode(approvalSource, approvalDest);
         } else if (hashContent(this.fs.readFile(approvalDest)) !== hashContent(this.fs.readFile(approvalSource))) {

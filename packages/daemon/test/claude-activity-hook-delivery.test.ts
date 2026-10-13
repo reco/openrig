@@ -439,6 +439,21 @@ describe("Slack approval hook projection", () => {
     expect(hook.timeout).toBe(3660);
   });
 
+  it("a project's own pre-move copy someone edited in place stays in use there; a shipped one gives way to the shared copy", async () => {
+    const PROJECT_COPY = "/project/.openrig/hooks/scripts/approval-request.cjs";
+    const edited = shipped.replace("async function main", "// local rm policy\nasync function main");
+    const fs = enableFs({ [APPROVAL_SRC]: shipped, [PROJECT_COPY]: edited });
+    fs._store["/project/.claude/settings.local.json"] = JSON.stringify({ hooks: { PermissionRequest: [{ hooks: [{ type: "command", command: `node ${shellQuote(PROJECT_COPY)}`, timeout: 3660 }] }] } });
+    await makeAdapter(fs).project(plan([activityEntry()]), binding());
+    expect(fs._store[PROJECT_COPY]).toBe(edited);
+    const commands = allCommands(readSettings(fs));
+    expect(commands.filter((c: string) => c.includes("approval-request.cjs"))).toEqual([`node ${shellQuote(PROJECT_COPY)}`]);
+
+    const shippedFs = enableFs({ [APPROVAL_SRC]: shipped, [PROJECT_COPY]: shipped });
+    await makeAdapter(shippedFs).project(plan([activityEntry()]), binding());
+    expect(allCommands(readSettings(shippedFs)).filter((c: string) => c.includes("approval-request.cjs"))).toEqual([`node ${shellQuote(APPROVAL_DEST)}`]);
+  });
+
   it("keeps a project copy someone edited in place, and still points the hook at it", async () => {
     const edited = shipped.replace("async function main", "// local policy\nasync function main");
     const fs = enableFs({ [APPROVAL_SRC]: shipped, [APPROVAL_DEST]: edited });
