@@ -171,6 +171,8 @@ import { OPENRIG_HOME } from "./openrig-compat.js";
 import { materializeBuiltinPolicyReference } from "./domain/builtin-policy-reference.js";
 import { ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, readActivityEndpointFile } from "./domain/activity-endpoint.js";
 import { makeCodexPriorPolicyReader } from "./domain/codex-prior-policy.js";
+import { alwaysRuleFor, projectCodexRules, saveAlwaysRule, seedApprovalRules } from "./domain/approval-rules.js";
+import { promptCommand } from "./domain/stuck-prompt-watch.js";
 import {
   getCompatibleOpenRigPath,
   getDefaultOpenRigPath,
@@ -628,10 +630,17 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const claudeResume = new ClaudeResumeAdapter(tmuxAdapter, { claudeManagedLaunch, seatLaunchEnvironment });
   // #275: one reader for both Codex launch adapters, with the PATH, HOME and CODEX_HOME a seat session gets.
   const readCodexNetworkDefault = codexNetworkDefaultReader({ launchPath: process.env.PATH, home: daemonHome, codexHome });
+  // One permission story: a home without rules starts with OpenRig's defaults, and every Codex session
+  // starts with the shared rules as its own execpolicy file.
+  try { if (seedApprovalRules(OPENRIG_HOME)) console.log("[approvals] wrote the default approval rules"); }
+  catch (e) { console.log(`[approvals] default rules not written: ${(e as Error).message}`); }
+  const projectCodexRulesNow = () => {
+    try { projectCodexRules(OPENRIG_HOME, codexHome); } catch (e) { console.log(`[approvals] Codex rules not updated: ${(e as Error).message}`); }
+  };
   const prepareTeamWorkspace = (sessionName: string) => prepareCodexTeamWorkspace(sessionName,
     new ContextPackSettingsStore().resolveConfig().workspaceRoot,
     process.env.OPENRIG_SHARED_DOCS_ROOT?.trim() || nodePath.join(daemonHome, ".openrig", "shared-docs"), daemonHome);
-  const codexResume = new CodexResumeAdapter(tmuxAdapter, { prepareTeamWorkspace, seatLaunchEnvironment, codexHome: configuredCodexHome, launchPath: process.env.PATH, detectDaemonSupport: codexDaemonSupportProbe(process.env.PATH, undefined, configuredCodexHome), sharedDaemonRunning: () => sharedCodexDaemonRunning(codexHome), readNetworkDefault: readCodexNetworkDefault, readPriorPolicy: makeCodexPriorPolicyReader(codexHome) });
+  const codexResume = new CodexResumeAdapter(tmuxAdapter, { prepareTeamWorkspace, seatLaunchEnvironment, codexHome: configuredCodexHome, launchPath: process.env.PATH, detectDaemonSupport: codexDaemonSupportProbe(process.env.PATH, undefined, configuredCodexHome), sharedDaemonRunning: () => sharedCodexDaemonRunning(codexHome), readNetworkDefault: readCodexNetworkDefault, readPriorPolicy: makeCodexPriorPolicyReader(codexHome), projectRules: projectCodexRulesNow });
   // OPR.0.4.6.PI1 — the Pi seat-state root + the compiled runner entry (daemon
   // dist). Shared by the Pi runtime adapter, the resume adapter, and the
   // resume-token capture sidecar reader.
@@ -788,7 +797,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter, readFile: (p: string) => fs.readFileSync(p, "utf-8") });
   const runtimeSettings = new ContextPackSettingsStore().resolveConfig();
   const claudeAdapter = new ClaudeCodeAdapter({ tmux: tmuxAdapter, seatLaunchEnvironment, claudeManagedLaunch, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), copyFile: (src: string, dest: string) => fs.copyFileSync(src, dest), listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, readdir: (dir: string) => fs.readdirSync(dir), statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m), homedir: os.homedir() }, stateDir: OPENRIG_HOME, collectorAssetPath: nodePath.resolve(import.meta.dirname, "../assets/claude-statusline-context.cjs"), autoDriveProviderPrompts: runtimeSettings.recoveryAutoDriveProviderPrompts, activityRelayPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs"), claudeHooksManifestPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/claude.json"), recordProjection: (targetPath: string, content: string) => projectionManifestStore.record({ targetPath, lastHash: hashContent(content), writtenAt: new Date().toISOString() }) });
-  const codexAdapter = new CodexRuntimeAdapter({ prepareTeamWorkspace, tmux: tmuxAdapter, seatLaunchEnvironment, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m), homedir: daemonHome }, codexHome: configuredCodexHome, launchPath: process.env.PATH, detectDaemonSupport: codexDaemonSupportProbe(process.env.PATH, undefined, configuredCodexHome), sharedDaemonRunning: () => sharedCodexDaemonRunning(codexHome), readNetworkDefault: readCodexNetworkDefault, readPriorPolicy: makeCodexPriorPolicyReader(codexHome), activityRelayPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs") });
+  const codexAdapter = new CodexRuntimeAdapter({ prepareTeamWorkspace, tmux: tmuxAdapter, seatLaunchEnvironment, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m), homedir: daemonHome }, codexHome: configuredCodexHome, launchPath: process.env.PATH, detectDaemonSupport: codexDaemonSupportProbe(process.env.PATH, undefined, configuredCodexHome), sharedDaemonRunning: () => sharedCodexDaemonRunning(codexHome), readNetworkDefault: readCodexNetworkDefault, readPriorPolicy: makeCodexPriorPolicyReader(codexHome), projectRules: projectCodexRulesNow, activityRelayPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs") });
   // OPR.0.4.6.PI1 — the RPC-first Pi adapter (runner-in-a-pane). Same fsOps
   // shape as the Codex adapter; seat isolation roots under piStateRoot.
   const piAdapter = new PiRuntimeAdapter({ tmux: tmuxAdapter, seatLaunchEnvironment, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m) }, stateRoot: piStateRoot, runnerEntryPath: piRunnerEntryPath });
@@ -1389,7 +1398,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     activityHookToken: resolvedActivityHookToken,
     approvalService: await (async () => {
       const { makeApprovalService } = await import("./domain/approvals.js");
-      const { readApprovalRules } = await import("./domain/approval-rules.js");
+      const { readApprovalRules, saveAlwaysRule } = await import("./domain/approval-rules.js");
       const { ensureSeatTokenSecret, seatTokenProvesOccupant } = await import("./domain/seat-token.js");
       const { loadConfig: loadSlackConfig } = await import("./domain/gateway/slack/config.js");
       const { loadHumanRegistry } = await import("./domain/gateway/human-registry.js");
@@ -1398,6 +1407,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         optedIn: () => { try { return loadSlackConfig(OPENRIG_HOME).approvalSeats; } catch { return []; } },
         timeoutMs: () => { try { return loadSlackConfig(OPENRIG_HOME).approvalTimeoutSeconds * 1000; } catch { return 1_800_000; } },
         rules: () => readApprovalRules(OPENRIG_HOME),
+        saveRule: (rule) => saveAlwaysRule(OPENRIG_HOME, rule),
         approver: () => { const r = loadHumanRegistry(OPENRIG_HOME); return r.ok ? r.entities.find((e) => e.role !== "requester")?.address ?? null : null; },
         verifySeat: async (sessionName, presented) => {
           const row = db.prepare("SELECT node_id FROM sessions WHERE session_name = ? ORDER BY id DESC LIMIT 1").get(sessionName) as { node_id: string } | undefined;
@@ -2231,16 +2241,20 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
             return;
           }
           // Answerable from Slack: the seat is the source, so the answer's reply row reaches it.
+          const command = p.dialog ? promptCommand(p.dialog) : null;
+          const always = command ? alwaysRuleFor("Bash", { command }) : null;
           const card = await queueRepoInstance.create({
             tags: ["stuck-prompt", `stuck-prompt:${p.episodeId}`, `stuck-prompt-session:${p.session}`, `stuck-prompt-key:${p.key}`,
-              `stuck-prompt-allow:${p.choices.allow.key}`, `stuck-prompt-deny:${p.choices.deny.key}`, `stuck-prompt-since:${p.since}`],
+              `stuck-prompt-allow:${p.choices.allow.key}`, `stuck-prompt-deny:${p.choices.deny.key}`, `stuck-prompt-since:${p.since}`,
+              ...(always ? [`always-rule:${always}`] : [])],
             sourceSession: p.session,
             destinationSession: human.address,
             humanIntent: "decision",
             summary,
-            body: promptCardBody(p),
+            body: promptCardBody(p) + (always ? `\nAlways approve / Always deny also saves \`${always}\` for ${p.session}.` : ""),
             humanDetail: promptCardDetail(p),
-            humanQuestions: [{ id: "answer", question: `Answer ${p.session}'s prompt?`, options: [{ id: "allow", label: "Approve" }, { id: "deny", label: "Deny" }] }],
+            humanQuestions: [{ id: "answer", question: `Answer ${p.session}'s prompt?`, options: [{ id: "allow", label: "Approve" }, { id: "deny", label: "Deny" },
+              ...(always ? [{ id: "always_allow", label: "Always approve" }, { id: "always_deny", label: "Always deny" }] : [])] }],
             nudge: false,
           });
           return { qitemId: card.qitemId };
@@ -2257,6 +2271,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           capture: (session) => tmuxAdapter.capturePaneContent(session, STUCK_PROMPT_CAPTURE_LINES),
           inMode: (session) => tmuxAdapter.isPaneInMode(session),
           onSent: (session) => deps.stuckPromptWatch?.forget(session),
+          saveRule: (rule) => saveAlwaysRule(OPENRIG_HOME, rule),
           sendKey: async (session, key) => { const r = await tmuxAdapter.sendKeys(session, [key]); if (!r.ok) throw new Error(r.message ?? "send failed"); },
         }).catch((e) => console.log(`[stuck-prompt] answer pass failed: ${(e as Error).message}`)).finally(() => { answering = false; });
       }, 3_000).unref();

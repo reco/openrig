@@ -264,6 +264,19 @@ export interface AnswerDeps {
   /** The pane is in copy-mode or a chooser: a key would not reach the program. */
   inMode: (session: string) => Promise<boolean>;
   onSent?: (session: string) => void;
+  /** Saves the rule of an Always approve / Always deny click. */
+  saveRule?: (rule: { effect: "allow" | "deny"; match: string; seats: string; note: string }) => void;
+}
+
+/** The single command a prompt dialog asks to run: Codex's `$ <command>` line, or Claude's one framed
+ *  command line under its Bash header; null when it is not exactly one line. */
+export function promptCommand(dialog: string): string | null {
+  const lines = dialog.split("\n");
+  const codex = lines.filter((l) => l.startsWith("$ "));
+  if (codex.length === 1) return codex[0]!.slice(2).trim();
+  if (!lines.some((l) => /^Bash command$/.test(l.trim()))) return null;
+  const framed = lines.filter((l) => /^[│┃]\s/.test(l));
+  return framed.length === 1 ? framed[0]!.replace(/^[│┃]\s+/, "").trim() : null;
 }
 
 /** Type the chosen option's key, read off the screen now, only while the pane still shows the
@@ -338,7 +351,8 @@ export async function actOnPromptAnswers(repo: QueueRepository, deps: AnswerDeps
   }
   for (const { qitem_id } of rows) {
     const row = repo.getById(qitem_id);
-    const choice = row?.humanAnswers?.answer;
+    const clicked = row?.humanAnswers?.answer;
+    const choice = clicked === "always_allow" ? "allow" : clicked === "always_deny" ? "deny" : clicked;
     if (!row || (choice !== "allow" && choice !== "deny")) continue;
     // A card split over its thread: its buttons count only once every part, the full dialog included, is in Slack.
     if (row.humanDetail && row.deliveryOutcome !== "posted") continue;
@@ -350,6 +364,12 @@ export async function actOnPromptAnswers(repo: QueueRepository, deps: AnswerDeps
     if (!created || created.identityProvenance !== null || !session || session !== row.sourceSession || !expected) continue;
     // Recorded before typing: a crash between the two never types the answer twice.
     repo.update({ qitemId: qitem_id, actorSession: "daemon@kernel", transitionNote: `stuck-prompt answer: ${choice} pending` });
+    // Always approve / Always deny also saves the rule the card showed, for this seat.
+    const always = clicked !== choice ? tagValue(row.tags, "always-rule") : undefined;
+    if (always && deps.saveRule) {
+      try { deps.saveRule({ effect: choice, match: always, seats: session, note: `saved from Slack for ${session}` }); }
+      catch (e) { repo.update({ qitemId: qitem_id, actorSession: "daemon@kernel", transitionNote: `always rule ${always} not saved: ${(e as Error).message}` }); }
+    }
     const since = Number(tagValue(row.tags, "stuck-prompt-since") ?? 0);
     const result = (answeredAt.get(`${session}|${expected}`) ?? -1) >= since ? { outcome: "moved-on" as const }
       : await answerPrompt(deps, session, expected, choice).catch((e: Error) => ({ outcome: `failed: ${e.message}` as const, key: undefined }));

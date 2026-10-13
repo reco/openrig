@@ -10,7 +10,10 @@ import type { QueueRepository } from "./queue-repository.js";
 import { maskSecrets } from "./credential-mask.js";
 import { SLACK_SECTION_CAP, escapeSlackText, redactSecrets } from "./gateway/slack/message.js";
 import { dialogExcerpt } from "./stuck-prompt-watch.js";
-import { ruleDecision, type ApprovalRule } from "./approval-rules.js";
+import { alwaysRuleFor, ruleDecision, type ApprovalRule } from "./approval-rules.js";
+
+/** On a card that offers Always approve / Always deny: the exact rule it shows, saved on that click. */
+export const ALWAYS_RULE_TAG = "always-rule:";
 
 export type ApprovalDecision = "allow" | "deny";
 export type ApprovalWait = ApprovalDecision | "pending" | "expired";
@@ -37,6 +40,8 @@ export interface ApprovalServiceDeps {
   timeoutMs?: () => number;
   /** The human's allow/deny rules, read at each request. */
   rules?: () => readonly ApprovalRule[];
+  /** Saves a rule from an Always approve / Always deny click. */
+  saveRule?: (rule: ApprovalRule) => void;
   pollMs?: number;
   now?: () => number;
   log?: (msg: string) => void;
@@ -140,6 +145,13 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
     // the prompt went (request-lifecycle closeRequest).
     deps.queueRepo.update({ qitemId: requestId, actorSession: "daemon@kernel", state: "canceled", transitionNote: `approval expired: ${why}` });
   };
+  /** The rule the card showed, saved for the asking seat; null when the card offered none or saving failed. */
+  const saveAlways = (tags: string[] | null | undefined, effect: ApprovalDecision, seat: string): string | null => {
+    const match = tags?.find((t) => t.startsWith(ALWAYS_RULE_TAG))?.slice(ALWAYS_RULE_TAG.length);
+    if (!match || !deps.saveRule) return null;
+    try { deps.saveRule({ effect, match, seats: seat, note: `saved from Slack for ${seat}` }); return match; }
+    catch (e) { log(`always rule ${match} not saved: ${(e as Error).message}`); return null; }
+  };
   const service: ApprovalService = {
     verify: async (sessionName, seatToken) => deps.verifySeat(sessionName, seatToken),
     byRule(input) {
@@ -169,7 +181,9 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
         log(`approval for ${input.sessionName} not sent: the ${input.toolName} input is too long even for the card's thread`);
         return null;
       }
-      const body = fits ? whole : `${head}\`\`\`\n${dialogExcerpt(text)}\n\`\`\`\nFull ${input.toolName} input in this card's thread.`;
+      const always = alwaysRuleFor(input.toolName, input.toolInput);
+      const saves = always ? `\nAlways approve / Always deny saves \`${always}\` for ${input.sessionName}.` : "";
+      const body = (fits ? whole : `${head}\`\`\`\n${dialogExcerpt(text)}\n\`\`\`\nFull ${input.toolName} input in this card's thread.`) + saves;
       const humanDetail = fits ? undefined : `Full ${input.toolName} input:\n\`\`\`\n${text}\n\`\`\``;
       const open = deps.queueRepo.list({ tag: "approval-request", state: "pending", limit: 200 }).filter((q) => q.state === "pending" && q.sourceSession === input.sessionName && q.tags?.includes("approval-request"));
       if (open.length >= MAX_PENDING_PER_SEAT) {
@@ -185,8 +199,9 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
         summary: `Approve ${input.toolName} for ${input.sessionName}?`,
         body,
         ...(humanDetail ? { humanDetail } : {}),
-        tags: ["approval-request"],
-        humanQuestions: [{ id: QUESTION_ID, question: `Allow ${input.sessionName} to run this ${input.toolName}?`, options: [{ id: "allow", label: "Approve" }, { id: "deny", label: "Deny" }] }],
+        tags: ["approval-request", ...(always ? [`${ALWAYS_RULE_TAG}${always}`] : [])],
+        humanQuestions: [{ id: QUESTION_ID, question: `Allow ${input.sessionName} to run this ${input.toolName}?`, options: [{ id: "allow", label: "Approve" }, { id: "deny", label: "Deny" },
+          ...(always ? [{ id: "always_allow", label: "Always approve" }, { id: "always_deny", label: "Always deny" }] : [])] }],
         nudge: false,
       });
       return qitemId;
@@ -204,11 +219,14 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
       for (;;) {
         const item = deps.queueRepo.getById(requestId);
         if (!item?.tags?.includes("approval-request") || item.sourceSession !== sessionName) return "expired";
-        const answer = item.humanAnswers?.[QUESTION_ID];
+        const clicked = item.humanAnswers?.[QUESTION_ID];
+        const answer = clicked === "always_allow" ? "allow" : clicked === "always_deny" ? "deny" : clicked;
         // A card split over its thread: its buttons count only once every part, the full input included, is in Slack.
         if ((answer === "allow" || answer === "deny") && (!item.humanDetail || item.deliveryOutcome === "posted")) {
           if (!deps.queueRepo.transitionLog.listForQitem(requestId).some((t) => t.transitionNote?.startsWith("approval "))) {
-            deps.queueRepo.update({ qitemId: requestId, actorSession: "daemon@kernel", transitionNote: `approval ${answer} by ${item.destinationSession} for ${item.summary ?? "the request"}` });
+            const saved = clicked !== answer ? saveAlways(item.tags, answer, sessionName) : null;
+            deps.queueRepo.update({ qitemId: requestId, actorSession: "daemon@kernel",
+              transitionNote: `approval ${answer} by ${item.destinationSession} for ${item.summary ?? "the request"}${saved ? `; saved ${answer} rule ${saved}` : ""}` });
           }
           return answer;
         }

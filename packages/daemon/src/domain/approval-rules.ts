@@ -65,6 +65,28 @@ export const DEFAULT_APPROVAL_RULES: readonly ApprovalRule[] = [
   ...["/", "~", "~/", "$HOME"].map((target) => ({ effect: "deny" as const, match: `Bash(rm -rf ${target})`, note: "never delete home or root" })),
 ];
 
+/** The rule an "Always approve/deny" click saves for this request: the command's fixed start (its executable
+ *  and, when the next word is no option, that word) followed by " *" for the varying rest. Only a single
+ *  plain Bash command gets one; anything else returns null and its card has no Always buttons. */
+export function alwaysRuleFor(toolName: string, toolInput: unknown): string | null {
+  if (toolName !== "Bash") return null;
+  const command = commandOf(toolInput);
+  const parts = command === null ? null : plain.plainParts(command);
+  if (!parts || parts.length !== 1 || !allowable(parts[0]!)) return null;
+  const words = parts[0]!.split(" ");
+  if (words[0] === "cd") return null;
+  const start = words.length > 1 && !words[1]!.startsWith("-") && PLAIN_WORD.test(words[1]!) ? words.slice(0, 2) : words.slice(0, 1);
+  return `Bash(${start.join(" ")} *)`;
+}
+
+/** Saves a rule from an Always click: added once, scoped to `seats`, never rewriting other rules. */
+export function saveAlwaysRule(home: string, rule: ApprovalRule): void {
+  if (!isValidRule(rule)) throw new Error(`not a rule: ${JSON.stringify(rule)}`);
+  const rules = readApprovalRules(home);
+  if (rules.some((r) => r.effect === rule.effect && r.match === rule.match && r.seats === rule.seats)) return;
+  writeApprovalRules(home, [...rules, rule]);
+}
+
 /** Writes the default rules when the home has none; returns whether it wrote them. */
 export function seedApprovalRules(home: string): boolean {
   if (existsSync(approvalRulesPath(home))) return false;

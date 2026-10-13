@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedApprovalRules } from "../src/domain/approval-rules.js";
 import { parse } from "yaml";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
@@ -24,6 +26,9 @@ const dbs: ReturnType<typeof createFullTestDb>[] = [];
 afterEach(() => { for (const db of dbs.splice(0)) db.close(); vi.unstubAllEnvs(); });
 function fixture(runtime: string, name = "kernel") {
   vi.stubEnv("OPENRIG_YOLO", "0");
+  const home = mkdtempSync(join(tmpdir(), "kernel-rules-"));
+  seedApprovalRules(home);
+  vi.stubEnv("OPENRIG_HOME", home);
   const db = createFullTestDb(); dbs.push(db);
   const rigRepo = new RigRepository(db), rig = rigRepo.createRig(name);
   const node = rigRepo.addNode(rig.id, "operator.agent", { runtime, cwd: "/inert/kernel" });
@@ -43,21 +48,17 @@ function transport() {
 function assertGrant(command: string, runtime: string) {
   if (runtime === "claude-code") {
     expect(command).toContain("--permission-mode acceptEdits");
-    expect(command).toContain("Bash(rig:*)"); expect(command).toContain("Bash(tmux:*)");
-    expect(command).toContain('"Skill"'); expect(command).not.toContain("--dangerously-skip-permissions");
+    expect(command).not.toContain("--dangerously-skip-permissions");
     expect(command).not.toContain("skipDangerousModePermissionPrompt");
     const args = operationalLaunchArgs("claude-code", { kernelAuthority: true });
     expect(command).toContain(args.map(arg => ` ${shellQuote(arg)}`).join(""));
     const settings = JSON.parse(args[1]);
-    expect(Object.keys(settings)).toEqual(["permissions", "hooks"]);
-    expect(Object.keys(settings.permissions)).toEqual(["allow"]); // no reset of user ask/deny
-    expect(settings.permissions.allow).toEqual(expect.arrayContaining([
-      "Read(~/**)", "WebFetch", "Bash(claude auth status:*)", "Bash(codex login status:*)",
-      "Bash(command -v:*)", "Bash(python3:*)", "Bash(cd:*)", "Bash(sort:*)", "Bash(wc:*)",
-    ]));
+    // One permission story: the kernel's rules are the human's approval-rules.json, nothing hard-coded.
+    expect(Object.keys(settings)).toEqual(["permissions"]);
+    expect(Object.keys(settings.permissions)).toEqual(["allow", "deny"]); // no reset of user ask
+    expect(settings.permissions.allow).toEqual(expect.arrayContaining(["Read", "Bash(rig *)", "Bash(git status *)", "Bash(sqlite3 -readonly -safe *)"]));
+    expect(settings.permissions.deny).toEqual(expect.arrayContaining(["Bash(rig send *--dangerously-interact*)", "Bash(git push *--force*)"]));
     expect(settings.permissions.allow).not.toContain("Bash");
-    expect(settings.hooks.PreToolUse[0].matcher).toBe("Bash");
-    expect(settings.hooks.PreToolUse[0].hooks[0].command).toContain("claude-team-permissions.cjs");
   } else {
     expect(command).toContain("-s danger-full-access -a never");
     expect(command).toContain("notice.hide_full_access_warning=true");
