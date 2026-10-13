@@ -12,7 +12,7 @@ function decide(input) {
   return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason:
     `OpenRig runs only simple commands here (this one has ${why}). Rewrite it as plain commands joined by &&, ||, ; or |: `
     + "no $(...), backticks, variables, loops, heredocs, redirects or background &. Pass text as quoted literals or write it with the Write tool first; "
-    + "put multi-step logic in a script file and run that." } };
+    + "split it into separate simple commands, one per call; a script file always needs the human's approval." } };
 }
 
 if (require.main === module) {
