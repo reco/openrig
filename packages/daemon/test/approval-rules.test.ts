@@ -64,6 +64,11 @@ describe("approval rules", () => {
     expect(effect(rules, tool("Read", `${process.env.HOME}/x/../notes.md`))).toBeNull();
     expect(effect(rules, tool("Edit", "/srv/a.txt"))).toBe("allow");
     expect(effect(rules, tool("Edit", "/srv/sub/a.txt"))).toBeNull();
+    const env: ApprovalRule[] = [{ effect: "allow", match: "Read(~/**)" }, { effect: "deny", match: "Read(~/**/.env)" }, { effect: "deny", match: "Edit(//etc/**)" }];
+    expect(effect(env, tool("Read", `${process.env.HOME}/.env`))).toBe("deny");
+    expect(effect(env, tool("Read", `${process.env.HOME}/a/b/.env`))).toBe("deny");
+    expect(effect(env, tool("Edit", "/etc/hosts"))).toBe("deny");
+    expect(claudeDenyRules(env, null)).toEqual(["Read(~/**/.env)", "Edit(//etc/**)"]);
   });
 
   it("matches tools by name and file tools by path, scoped to seats", () => {

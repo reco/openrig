@@ -59,8 +59,8 @@ function parseMatch(match: string): { tool: string; arg: string | null } | null 
 }
 
 function globRegex(glob: string, path = false): RegExp {
-  const expanded = path ? expandHome(glob) : glob;
-  const body = expanded.split(/(\*+)/).map((part) => part.startsWith("*") ? (path && part === "*" ? "[^/]*" : ".*") : part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("");
+  const expanded = path ? expandHome(glob.replace(/^\/\//, "/")).replace(/\/\*\*\//g, "/\u0000") : glob;
+  const body = expanded.split(/(\*+|\u0000)/).map((part) => part === "\u0000" ? "(?:.*/)?" : part.startsWith("*") ? (path && part === "*" ? "[^/]*" : ".*") : part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join("");
   return new RegExp(`^${body.replace(/ \.\*$/, "(?: .*)?")}$`, "s");
 }
 
@@ -135,6 +135,6 @@ export function claudeDenyRules(rules: readonly ApprovalRule[], sessionName: str
       const m = parseMatch(r.match)!;
       if (m.arg === null) return [m.tool];
       if (m.tool.startsWith("mcp__")) return [];
-      return [`${m.tool}(${m.tool !== "Bash" && m.arg.startsWith("/") ? `/${m.arg}` : m.arg})`];
+      return [`${m.tool}(${m.tool !== "Bash" && /^\/(?!\/)/.test(m.arg) ? `/${m.arg}` : m.arg})`];
     });
 }
