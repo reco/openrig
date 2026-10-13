@@ -119,11 +119,29 @@ function hits(rule: ApprovalRule, req: RuleRequest): boolean {
   return allowable(command) && globMatches(match.arg, command);
 }
 
-/** Deny wins over allow; no hit leaves the request to the human. Only a plain single command is allowed by rule. */
+const OPERATOR = /\s*(?:&&|\|\||;|\|)\s*/;
+const CHANGE_DIR = /^cd [\w\-.:@%+,/=]+$/;
+
+/** The plain commands of a command chained only with &&, ||, ; or |, or null when any part is not plain. */
+function plainParts(command: string): string[] | null {
+  if (!/(?:&&|\|\||;|\|)/.test(command)) return null;
+  const parts = command.trim().split(OPERATOR);
+  return parts.every((p) => CHANGE_DIR.test(p) || allowable(p)) ? parts : null;
+}
+
+/** Deny wins over allow; no hit leaves the request to the human. A plain command is allowed by a matching rule;
+ *  a chain of plain commands only when every command in it (a cd aside) is. */
 export function ruleDecision(rules: readonly ApprovalRule[], req: RuleRequest): RuleHit | null {
   const deny = rules.find((r) => r.effect === "deny" && hits(r, req));
   if (deny) return { effect: "deny", rule: deny };
-  const allow = rules.find((r) => r.effect === "allow" && hits(r, req));
+  const allowOf = (r: RuleRequest) => rules.find((rule) => rule.effect === "allow" && hits(rule, r));
+  const command = commandOf(req.toolInput);
+  const parts = command === null ? null : plainParts(command);
+  if (parts) {
+    const covering = parts.filter((p) => !CHANGE_DIR.test(p)).map((p) => allowOf({ ...req, toolInput: { command: p } }));
+    return covering.length && covering.every(Boolean) ? { effect: "allow", rule: covering[covering.length - 1]! } : null;
+  }
+  const allow = allowOf(req);
   return allow ? { effect: "allow", rule: allow } : null;
 }
 

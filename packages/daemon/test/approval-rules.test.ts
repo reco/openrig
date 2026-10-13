@@ -28,12 +28,26 @@ describe("approval rules", () => {
     expect(effect(rules, bash("psql -c 'drop table x'"))).toBeNull();
   });
 
-  it("never allows a compound or expanding command by rule", () => {
+  it("never allows a chain with an uncovered part, nor any expanding or redirecting command", () => {
     const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(ps *)" }];
     expect(effect(rules, bash("ps aux; rm -rf ~"))).toBeNull();
     expect(effect(rules, bash("ps $(rm -rf ~)"))).toBeNull();
     expect(effect(rules, bash("ps aux | grep node"))).toBeNull();
     expect(effect(rules, bash("ps aux > /etc/x"))).toBeNull();
+    expect(effect(rules, bash("cd /tmp && ./evil"))).toBeNull();
+    expect(effect(rules, bash("cd /tmp"))).toBeNull();
+    expect(effect(rules, bash("cd $(evil) && ps"))).toBeNull();
+    expect(effect(rules, bash("ps & rm x"))).toBeNull();
+  });
+
+  it("allows a chain of plain commands when every part is allowed, a cd aside, and denies on any denied part", () => {
+    const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(git *)" }, { effect: "allow", match: "Bash(npm test *)" }, { effect: "allow", match: "Bash(grep *)" }, { effect: "deny", match: "Bash(git push *)" }];
+    expect(effect(rules, bash("cd /Users/reco/dev/x && npm test"))).toBe("allow");
+    expect(effect(rules, bash("git status && git log --oneline -3"))).toBe("allow");
+    expect(effect(rules, bash("git log | grep fix"))).toBe("allow");
+    expect(effect(rules, bash("git fetch; git status || git branch"))).toBe("allow");
+    expect(effect(rules, bash("git status && git push origin x"))).toBe("deny");
+    expect(effect(rules, bash("git status && npm publish"))).toBeNull();
   });
 
   it("never allows past an assignment, a wrapper, an executable path, quoting or odd spacing", () => {
