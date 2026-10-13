@@ -79,6 +79,20 @@ describe("same-conversation Codex resume keeps the conversation's own policy", (
     expect(cmd).not.toContain("-a never");
   });
 
+  it("a team seat's resume adds no team workspace or queue root beyond the conversation's own roots", async () => {
+    const prepareTeamWorkspace = vi.fn(() => ["/Users/reco/.openrig/workspace", "/shared/queue"]);
+    const t = tmux();
+    await new CodexResumeAdapter(t, { readPriorPolicy: () => QUEUE_WORKER, prepareTeamWorkspace }).resume("creative-codex@Imago", "codex_id", "thread-1", "/ws", null, "floor", null, null, false, false, true);
+    expect(sent(t)[0]).not.toContain("/Users/reco/.openrig/workspace");
+    expect(sent(t)[0]!.match(/--add-dir/g)).toHaveLength(1);
+    const binding = { id: "b", nodeId: "n", tmuxSession: "creative-codex@Imago", tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/ws", teamPermissionDefault: true, launchPosture: "floor" } as NodeBinding;
+    const t2 = tmux();
+    await new CodexRuntimeAdapter({ tmux: t2, fsOps: { readFile: () => "", writeFile: () => {}, exists: () => false, mkdirp: () => {}, listFiles: () => [], homedir: "/h" }, prepareTeamWorkspace, readPriorPolicy: () => QUEUE_WORKER, sleep: async () => {} } as never).launchHarness(binding, { name: "creative-codex@Imago", resumeToken: "thread-1" });
+    expect(sent(t2)[0]).not.toContain("/Users/reco/.openrig/workspace");
+    expect(sent(t2)[0]!.match(/--add-dir/g)).toHaveLength(1);
+    expect(prepareTeamWorkspace).not.toHaveBeenCalled();
+  });
+
   it("an explicitly chosen effort still wins over the prior one", async () => {
     const t = tmux();
     await new CodexResumeAdapter(t, { readPriorPolicy: () => QUEUE_WORKER }).resume("s@r", "codex_id", "thread-1", "/ws", null, "floor", null, "low");
