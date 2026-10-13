@@ -191,12 +191,42 @@ function denyForm(segment: string): string {
     prev = s;
     s = s.replace(/^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/, "").replace(/^(?:sudo|env|command|exec|nohup|time|nice)\s+/, "");
   }
-  return s.replace(/^\S*\//, "");
+  s = s.replace(/^\S*\//, "");
+  if (!s.startsWith("git ")) return s;
+  // git's global -C <dir> goes, and -c<x> reads as -c <x>, so `git push * main` and `git -c *` see the command.
+  for (let prev = ""; prev !== s;) {
+    prev = s;
+    s = s.replace(/^git -C ?\S+ /, "git ").replace(/^git -c(?=\S)/, "git -c ");
+  }
+  // clone and ls-remote take their upload-pack command as -u, alone or in a cluster of short options.
+  return /^git (?:clone|ls-remote) /.test(s) && / -[A-Za-z]*u/.test(s) ? `${s} --upload-pack` : s;
 }
 
-/** Every simple command a deny rule must see, wherever it sits in a compound command. */
+/** Every simple command a deny rule must see, wherever it sits in a compound command: split everywhere, and
+ *  split only outside quotes and escapes, so neither a quoted operator nor a substitution in quotes hides one. */
 function commandSegments(command: string): string[] {
-  return command.split(/[;&|\n`(){}<>]+|\$\(/).map(denyForm).filter(Boolean);
+  const outsideQuotes: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!;
+    if (quote) { current += c; if (c === quote) quote = null; continue; }
+    if (c === "\\") { current += command.slice(i, i + 2); i++; continue; }
+    if (c === "'" || c === '"') { quote = c; current += c; continue; }
+    if (/[;&|\n`(){}<>]/.test(c) || (c === "$" && command[i + 1] === "(")) { outsideQuotes.push(current); current = ""; continue; }
+    current += c;
+  }
+  outsideQuotes.push(current);
+  return [...command.split(/[;&|\n`(){}<>]+|\$\(/), ...outsideQuotes].map(denyForm).filter(Boolean);
+}
+
+/** git takes any unambiguous prefix of a long option: a deny rule ending in `--<option>*` also denies each prefix,
+ *  as `--<prefix>=...`, `--<prefix> ...` or last (`git push *--force*` denies `git push --forc origin x`). */
+function denyVariants(arg: string): string[] {
+  const m = /^(git .*)--([a-z][a-z-]+)\*$/.exec(arg);
+  if (!m) return [arg];
+  const prefixes = [...m[2]!].map((_, i) => m[2]!.slice(0, i)).filter((p) => p && !p.endsWith("-"));
+  return [arg, ...prefixes.flatMap((p) => [`${m[1]}--${p}=*`, `${m[1]}--${p} *`, `${m[1]}--${p}`])];
 }
 
 interface PlainCommand {
@@ -248,7 +278,7 @@ function hits(rule: ApprovalRule, req: RuleRequest): boolean {
     if (rule.effect === "allow" && arg.value.split("/").includes("..")) return false;
     return globMatches(match.arg, posix.normalize(expandHome(arg.value)), true);
   }
-  if (rule.effect === "deny") return commandSegments(command).some((s) => globMatches(match.arg!, s));
+  if (rule.effect === "deny") return commandSegments(command).some((s) => denyVariants(match.arg!).some((v) => globMatches(v, s)));
   const allowed = allowForm(command);
   return allowed !== null && globMatches(match.arg, allowed);
 }
@@ -290,6 +320,7 @@ function claudeRule(r: ApprovalRule): string[] {
   if (m.arg === null) return [m.tool];
   if (m.tool.startsWith("mcp__")) return [];
   if (r.exact && (/[*?[\]\\\n()]/.test(m.literal!) || !(m.tool === "Bash" || m.literal!.startsWith("/")))) return [];
+  if (m.tool === "Bash" && r.effect === "deny" && !r.exact) return denyVariants(m.arg).map((v) => `Bash(${v})`);
   return [`${m.tool}(${m.tool !== "Bash" && /^\/(?!\/)/.test(m.arg) ? `/${m.arg}` : m.arg})`];
 }
 

@@ -120,6 +120,20 @@ describe("one permission story", () => {
     expect(ruleDecision([{ effect: "allow", match: "Edit(/y)", exact: true }], { sessionName: "dev@rig", toolName: "Edit", toolInput: { file_path: "/y/z" } })).toBeNull();
   });
 
+  it("with git allowed, a deny sees through quoted operators, escapes, git's -C/-c spellings, -u and long-option prefixes", () => {
+    const rules: ApprovalRule[] = [...DEFAULT_APPROVAL_RULES, { effect: "allow", match: "Bash(git *)" }];
+    for (const command of ["git fetch 'a;b' --upload-pack=./evil origin", "git fetch \"a|b\" --upload-pack=./evil origin", "git fetch a\\;b --upload-pack=./evil origin",
+      "git fetch --upload-pa=./evil origin", "git fetch --upl ./evil origin", "git clone -u ./evil r", "git clone -qu./evil r", "git ls-remote -u ./evil r",
+      "git push --forc origin x", "git push origin x --fo", "git -C /repo push origin main", "git -ccore.pager=./evil log", "git -C /repo -c core.pager=x log",
+      "git log --outp=x", "git diff --ext", "echo \"$(git push --force)\""])
+      expect(ruleDecision(rules, bash(command))?.effect, command).toBe("deny");
+    for (const command of ["git fetch --unshallow origin", "git add --update", "git push origin feature", "git log --oneline", "git fetch 'a;b' origin", "git clone r --depth 1"])
+      expect(ruleDecision(rules, bash(command))?.effect, command).toBe("allow");
+    const native = claudePermissionRules(rules, "dev@rig").deny;
+    expect(native).toEqual(expect.arrayContaining(["Bash(git *--upload-pack*)", "Bash(git *--upl=*)", "Bash(git *--u *)", "Bash(git push *--f)", "Bash(git *--ext-d=*)"]));
+    expect(native).not.toContain("Bash(git *--upload-=*)");
+  });
+
   it("allow rules look through literal leading assignments, except one that changes what runs; deny sees through all", () => {
     const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(pnpm -C /Users/reco/dev/* *)" }, { effect: "allow", match: "Bash(bash *)" }, { effect: "allow", match: "Bash(node *)" },
       { effect: "deny", match: "Bash(rm -rf *)" }, { effect: "allow", match: "Bash(rm *)" }, { effect: "deny", match: "Bash(git push *)" }, { effect: "allow", match: "Bash(git *)" },
