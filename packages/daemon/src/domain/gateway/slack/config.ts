@@ -60,6 +60,8 @@ export interface SlackConnectorConfig {
   /** Optional channel for pure FYI posts: an update with no buttons that is not a reply in a thread.
    *  Inbound there lands on `inboundDestination`. Absent = those post where everything else does. */
   notificationsChannel?: string | null;
+  /** Seat that gets a smoke-check row after a merge from Slack; absent = none. */
+  mergeSmokeDestination?: string | null;
 }
 
 export const DEFAULT_CONFIG: SlackConnectorConfig = {
@@ -111,6 +113,9 @@ function validateConfig(cfg: SlackConnectorConfig, opts: { reading?: boolean } =
   }
   if (!Array.isArray(cfg.extraChannels) || cfg.extraChannels.some((c) => !c || typeof c.id !== "string" || !/^[A-Z0-9-]+$/.test(c.id) || typeof c.inboundDestination !== "string" || !c.inboundDestination)) {
     throw new Error("extraChannels must be a list of { id: <Slack channel id>, inboundDestination: <seat> }");
+  }
+  if (cfg.mergeSmokeDestination != null && (typeof cfg.mergeSmokeDestination !== "string" || !cfg.mergeSmokeDestination.includes("@"))) {
+    throw new Error(`mergeSmokeDestination must be a seat session name (member@rig) (got ${String(cfg.mergeSmokeDestination)})`);
   }
   if (cfg.notificationsChannel != null && (typeof cfg.notificationsChannel !== "string" || !/^[A-Z0-9-]+$/.test(cfg.notificationsChannel))) {
     throw new Error(`notificationsChannel must be a Slack channel id (got ${String(cfg.notificationsChannel)})`);
