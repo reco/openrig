@@ -1009,7 +1009,8 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         if (keepProjectCopy) {
           console.error(`[openrig] kept the locally edited ${projectCopy}; it does not get the shipped approval-request.cjs updates`);
         } else if (!this.fs.exists(approvalDest) || PACKAGED_APPROVAL_HASHES.has(hashContent(this.fs.readFile(approvalDest)))) {
-          this.fs.copyFile(approvalSource, approvalDest);
+          // Sibling seats share this copy too: identical bytes are not rewritten while a hook reads them.
+          if (!this.fs.exists(approvalDest) || this.fs.readFile(approvalDest) !== this.fs.readFile(approvalSource)) this.fs.copyFile(approvalSource, approvalDest);
           this.preserveMode(approvalSource, approvalDest);
         } else if (hashContent(this.fs.readFile(approvalDest)) !== hashContent(this.fs.readFile(approvalSource))) {
           console.error(`[openrig] kept the locally edited ${approvalDest}; it does not get the shipped approval-request.cjs updates`);
