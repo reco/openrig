@@ -62,6 +62,8 @@ describe("approval rules", () => {
     expect(effect(rules, bash(`git log --format='%h %s' | grep 'fix: x'`))).toBe("allow");
     expect(effect(rules, bash(`grep "$PATH" x`))).toBeNull();
     expect(effect(rules, bash("grep 'unbalanced x"))).toBeNull();
+    const git: ApprovalRule[] = [{ effect: "allow", match: "Bash(git *)" }, { effect: "deny", match: "Bash(git push*)" }, { effect: "allow", match: "Bash(cat *)" }];
+    for (const command of ["git ''{push,origin}", "git add ''*", "cat ~/'.ssh/id_rsa'", "git log 'a'?", "git log x''[ab]"]) expect(effect(git, bash(command)), command).not.toBe("allow");
   });
 
   it("never allows past an assignment, a wrapper, an executable path, quoting or odd spacing", () => {

@@ -115,7 +115,8 @@ function allowable(part: string): boolean {
   if (!words || words.length !== 1) return false;
   const [first, ...args] = words[0]!;
   if (!first || first.quoted || !PLAIN_WORD.test(first.text) || /[=/]/.test(first.text)) return false;
-  if (!args.every((w) => w.quoted || PLAIN_WORD.test(w.text))) return false;
+  // A partly quoted word's unquoted text still expands (braces, globs, a leading ~): it must be plain too.
+  if (!args.every((w) => { const bare = w.text.replace(/'[^']*'|"[^"]*"/g, ""); return bare === "" || PLAIN_WORD.test(bare); })) return false;
   if (first.text !== "cd") return true;
   return args.length === 1 && !args[0]!.quoted && !args[0]!.text.split("/").includes("..");
 }
