@@ -31,6 +31,7 @@ describe("per-seat approval tokens", () => {
       c.set("activityHookToken" as never, "hook" as never);
       c.set("approvalService" as never, {
         verify: (session: string, token: string | null) => session === "dev@rig" && token === "good",
+        byRule: () => null,
         start: async () => { asked.push("start"); return "q1"; },
         wait: async () => "allow",
       } as never);

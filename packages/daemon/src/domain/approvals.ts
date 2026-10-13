@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import type { QueueRepository } from "./queue-repository.js";
 import { maskSecrets } from "./credential-mask.js";
 import { SLACK_SECTION_CAP, escapeSlackText, redactSecrets } from "./gateway/slack/message.js";
+import { ruleDecision, type ApprovalRule } from "./approval-rules.js";
 
 export type ApprovalDecision = "allow" | "deny";
 export type ApprovalWait = ApprovalDecision | "pending" | "expired";
@@ -33,6 +34,8 @@ export interface ApprovalServiceDeps {
   cwdOf?: (sessionName: string) => string | null;
   /** Read at each check, so a config change applies to open requests too. */
   timeoutMs?: () => number;
+  /** The human's allow/deny rules, read at each request. */
+  rules?: () => readonly ApprovalRule[];
   pollMs?: number;
   now?: () => number;
   log?: (msg: string) => void;
@@ -40,6 +43,8 @@ export interface ApprovalServiceDeps {
 
 export interface ApprovalService {
   verify: (sessionName: string, seatToken: string | null) => Promise<boolean>;
+  /** A rule's answer for this request, before any human is asked; null when no rule matches. */
+  byRule: (input: ApprovalRequest) => { decision: ApprovalDecision; message: string } | null;
   start: (input: ApprovalRequest) => Promise<string | null>;
   /** Only the seat that asked may wait on its request. */
   wait: (requestId: string, sessionName: string, sliceMs: number) => Promise<ApprovalWait>;
@@ -134,6 +139,17 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
   };
   const service: ApprovalService = {
     verify: async (sessionName, seatToken) => deps.verifySeat(sessionName, seatToken),
+    byRule(input) {
+      let rules: readonly ApprovalRule[];
+      try { rules = deps.rules?.() ?? []; } catch (e) {
+        log(`approval rules not applied: ${(e as Error).message}`);
+        return null;
+      }
+      const hit = ruleDecision(rules, input);
+      if (!hit) return null;
+      log(`${hit.effect} by rule ${hit.rule.match}${hit.rule.seats ? ` for ${hit.rule.seats}` : ""}: ${input.sessionName} ${input.toolName} ${approvalText(input.toolName, input.toolInput).split("\n")[0]!.slice(0, 200)}`);
+      return { decision: hit.effect, message: `${hit.effect === "deny" ? "Denied" : "Allowed"} by the OpenRig approval rule ${hit.rule.match}${hit.rule.note ? `: ${hit.rule.note}` : ""}` };
+    },
     async start(input) {
       if (!deps.optedIn().includes(input.sessionName)) return null;
       const human = deps.approver();

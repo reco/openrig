@@ -3,6 +3,8 @@ import { nonInterruptiveArgs } from "./non-interruptive.js";
 import { shellQuote } from "./shell-quote.js";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
+import { getOpenRigHome } from "../openrig-compat.js";
+import { claudeDenyRules, readApprovalRules } from "../domain/approval-rules.js";
 
 // Command families used for rig lifecycle, substrate inspection, remote operations and upgrades.
 // These are tool allowances, not containment: node/npm/python/ssh can themselves run arbitrary code.
@@ -38,18 +40,32 @@ export const TEAM_CLAUDE_ASK = [
   "seat clean", "seat handover", "seat switch-client", "seat set-permissions", "seat set-model",
 ].map(command => `Bash(rig ${command}:*)`);
 
-type LaunchChoice = Pick<NodeBinding, "kernelAuthority" | "teamPermissionDefault" | "nonInterruptive" | "launchPosture" | "permissionMode">;
+type LaunchChoice = Pick<NodeBinding, "kernelAuthority" | "teamPermissionDefault" | "nonInterruptive" | "launchPosture" | "permissionMode"> & { tmuxSession?: string | null };
 
-function claudeCommandSettings(allow: string[], ask: string[] = []): string[] {
-  const permissions = { allow, ...(ask.length ? { ask } : {}) };
+/** The human's deny rules for this seat; a broken rules file adds none (the daemon logs it at each request). */
+function seatDenyRules(choice: LaunchChoice): string[] {
+  try { return claudeDenyRules(readApprovalRules(getOpenRigHome()), choice.tmuxSession ?? null); } catch { return []; }
+}
+
+function claudeCommandSettings(allow: string[], ask: string[] = [], deny: string[] = []): string[] {
+  const permissions = { allow, ...(ask.length ? { ask } : {}), ...(deny.length ? { deny } : {}) };
   const hook = fileURLToPath(new URL("../../assets/claude-team-permissions.cjs", import.meta.url));
   if (!existsSync(hook)) return ["--settings", JSON.stringify({ permissions })];
   const policy = Buffer.from(JSON.stringify({ allow, ask })).toString("base64");
   const command = [process.execPath, hook, policy].map(shellQuote).join(" ");
   return ["--settings", JSON.stringify({
-    permissions: { allow },
+    permissions: { allow, ...(deny.length ? { deny } : {}) },
     hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command, timeout: 5 }] }] },
   })];
+}
+
+/** One --settings flag carries the deny rules, merged into a settings flag already present. */
+function withDeny(args: string[], deny: string[]): string[] {
+  if (!deny.length) return args;
+  const at = args.indexOf("--settings");
+  if (at === -1) return [...args, "--settings", JSON.stringify({ permissions: { deny } })];
+  const settings = JSON.parse(args[at + 1]!) as { permissions?: Record<string, unknown> };
+  return [...args.slice(0, at + 1), JSON.stringify({ ...settings, permissions: { ...settings.permissions, deny } }), ...args.slice(at + 2)];
 }
 
 /** Session flags only; never writes a personal/project permission file. */
@@ -60,15 +76,16 @@ export function operationalLaunchArgs(runtime: string, choice: LaunchChoice): st
     return ["-c", "check_for_update_on_startup=false", ...nonInterruptiveArgs(runtime,
       choice.kernelAuthority ? { launchPosture: "full_bypass", nonInterruptive: true } : choice)];
   }
+  const deny = runtime === "claude-code" ? seatDenyRules(choice) : [];
   if (!choice.kernelAuthority) {
     if (runtime === "claude-code" && choice.teamPermissionDefault && !choice.permissionMode
       && (!choice.launchPosture || choice.launchPosture === "floor")) {
-      return claudeCommandSettings(TEAM_CLAUDE_ALLOW, TEAM_CLAUDE_ASK);
+      return claudeCommandSettings(TEAM_CLAUDE_ALLOW, TEAM_CLAUDE_ASK, deny);
     }
-    return nonInterruptiveArgs(runtime, choice);
+    return withDeny(nonInterruptiveArgs(runtime, choice), deny);
   }
   if (runtime === "claude-code") {
-    return claudeCommandSettings(KERNEL_CLAUDE_ALLOW);
+    return claudeCommandSettings(KERNEL_CLAUDE_ALLOW, [], deny);
   }
   return [];
 }

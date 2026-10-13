@@ -1388,6 +1388,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     activityHookToken: resolvedActivityHookToken,
     approvalService: await (async () => {
       const { makeApprovalService } = await import("./domain/approvals.js");
+      const { readApprovalRules } = await import("./domain/approval-rules.js");
       const { ensureSeatTokenSecret, seatTokenProvesOccupant } = await import("./domain/seat-token.js");
       const { loadConfig: loadSlackConfig } = await import("./domain/gateway/slack/config.js");
       const { loadHumanRegistry } = await import("./domain/gateway/human-registry.js");
@@ -1395,6 +1396,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         queueRepo: queueRepoInstance,
         optedIn: () => { try { return loadSlackConfig(OPENRIG_HOME).approvalSeats; } catch { return []; } },
         timeoutMs: () => { try { return loadSlackConfig(OPENRIG_HOME).approvalTimeoutSeconds * 1000; } catch { return 1_800_000; } },
+        rules: () => readApprovalRules(OPENRIG_HOME),
         approver: () => { const r = loadHumanRegistry(OPENRIG_HOME); return r.ok ? r.entities.find((e) => e.role !== "requester")?.address ?? null : null; },
         verifySeat: async (sessionName, presented) => {
           const row = db.prepare("SELECT node_id FROM sessions WHERE session_name = ? ORDER BY id DESC LIMIT 1").get(sessionName) as { node_id: string } | undefined;

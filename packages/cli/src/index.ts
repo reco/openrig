@@ -40,6 +40,7 @@ import { sendCommand } from "./commands/send.js";
 import { streamCommand, type StreamDeps } from "./commands/stream.js";
 import { queueCommand, type QueueDeps } from "./commands/queue.js";
 import { slackCommand, type SlackDeps } from "./commands/slack.js";
+import { approvalsCommand } from "./commands/approvals.js";
 import { projectCommand, type ProjectDeps } from "./commands/project.js";
 import { viewCommand, type ViewDeps } from "./commands/view.js";
 import { terminalCommand, type TerminalDeps } from "./commands/terminal.js";
@@ -212,6 +213,7 @@ export function createProgram(depsOverride?: ProgramDeps): Command {
   program.addCommand(streamCommand(depsOverride?.streamDeps));
   program.addCommand(queueCommand(depsOverride?.queueDeps));
   program.addCommand(slackCommand(depsOverride?.slackDeps));
+  program.addCommand(approvalsCommand());
   program.addCommand(projectCommand(depsOverride?.projectDeps));
   program.addCommand(viewCommand(depsOverride?.viewDeps));
   program.addCommand(terminalCommand(depsOverride?.terminalDeps));

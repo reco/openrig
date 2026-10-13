@@ -529,8 +529,12 @@ activityRoutes.post("/approvals", async (c) => {
     console.log(`[approvals] refused ${sessionName}: seat token ${stringOrNull(body.seatToken) ? "does not match its current occupant generation" : "missing"}; its prompt stays in the terminal`);
     return c.json({ ok: false, code: "seat_token_mismatch", decision: null, pending: false }, 403);
   }
+  const toolName = stringOrNull(body.toolName);
+  if (!stringOrNull(body.requestId) && toolName) {
+    const ruled = approvals.byRule({ sessionName, toolName, toolInput: body.toolInput, agentType: stringOrNull(body.agentType) });
+    if (ruled) return c.json({ ok: true, decision: ruled.decision, message: ruled.message, pending: false });
+  }
   const requestId = stringOrNull(body.requestId) ?? await (async () => {
-    const toolName = stringOrNull(body.toolName);
     return toolName ? approvals.start({ sessionName, toolName, toolInput: body.toolInput, agentType: stringOrNull(body.agentType) }) : null;
   })();
   if (!requestId) return c.json({ ok: true, decision: null, pending: false });
