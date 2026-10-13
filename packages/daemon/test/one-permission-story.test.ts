@@ -84,7 +84,14 @@ describe("one permission story", () => {
   it("derives the Always rule from a single plain command's fixed start, and none from anything else", () => {
     expect(alwaysRuleFor("Bash", { command: "bash /path/sweep.sh --since 2h" })).toBe("Bash(bash /path/sweep.sh *)");
     expect(alwaysRuleFor("Bash", { command: "git status --short" })).toBe("Bash(git status *)");
-    for (const command of ["timeout 30 pytest", "find . -name x", "env FOO=1 make", "sudo apt install x", "xargs rm", "curl https://deploy:ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/x/y",
+    expect(alwaysRuleFor("Bash", { command: "gh pr view 496" })).toBe("Bash(gh pr view *)");
+    expect(alwaysRuleFor("Bash", { command: "gh pr view 496 --json state" })).toBe("Bash(gh pr view *)");
+    expect(alwaysRuleFor("Bash", { command: "git log -5" })).toBe("Bash(git log *)");
+    expect(alwaysRuleFor("Bash", { command: "bash /x.sh ts" })).toBe("Bash(bash /x.sh *)");
+    expect(alwaysRuleFor("Bash", { command: "cat notes.md" })).toBe("Bash(cat notes.md *)");
+    expect(alwaysRuleFor("Bash", { command: "gh api repos/o/r/pulls" })).toBe("Bash(gh api *)");
+    expect(alwaysRuleFor("Bash", { command: "npm run build extra more" })).toBe("Bash(npm run build *)");
+    for (const command of ["kill 1234", "head -5 x", "timeout 30 pytest", "find . -name x", "env FOO=1 make", "sudo apt install x", "xargs rm", "curl https://deploy:ghp_abcdefghijklmnopqrstuvwxyz0123456789@github.com/x/y",
       "ls -la src", "rm -rf build", "python3 -c 'x'", "git -C repo push origin x", "make", "ls && rm x", "echo $(id)", "cat <<EOF\nx\nEOF", "./run.sh", "FOO=1 make", "cd /tmp"]) {
       expect(alwaysRuleFor("Bash", { command }), command).toBeNull();
     }

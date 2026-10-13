@@ -69,18 +69,34 @@ export const DEFAULT_APPROVAL_RULES: readonly ApprovalRule[] = [
 /** Commands that run another command, or whose second word does not bound what they do. */
 const WRAPPERS = new Set(["cd", "env", "sudo", "timeout", "nice", "nohup", "time", "xargs", "watch", "command", "exec", "find"]);
 
-/** The rule an "Always approve/deny" click saves for this request: the command's fixed start (its executable
- *  and, when the next word is no option, that word) followed by " *" for the varying rest. Only a single
- *  plain Bash command gets one; anything else returns null and its card has no Always buttons. */
+const SUBCOMMAND = /^[a-z][a-z0-9-]*$/;
+
+/** The command's fixed start: its executable, then up to two subcommand words (`gh pr view`), or one file it
+ *  runs or reads (`bash /x.sh`, `cat notes.md`). Stops at the first option or argument-looking word. */
+function fixedStart(words: readonly string[]): string[] {
+  const fixed = [words[0]!];
+  for (const word of words.slice(1, 3)) {
+    if (SUBCOMMAND.test(word)) { fixed.push(word); continue; }
+    const file = !word.startsWith("-") && PLAIN_WORD.test(word) && /[./]/.test(word) && /[a-z]/i.test(word);
+    if (fixed.length === 1 && file) fixed.push(word);
+    break;
+  }
+  return fixed;
+}
+
+/** The rule an "Always approve/deny" click saves for this request: the command's fixed start followed by " *"
+ *  for the varying rest. Only a single plain Bash command gets one; anything else returns null and its card has
+ *  no Always buttons. */
 export function alwaysRuleFor(toolName: string, toolInput: unknown): string | null {
   if (toolName !== "Bash") return null;
   const command = commandOf(toolInput);
   const parts = command === null ? null : plain.plainParts(command);
   if (!parts || parts.length !== 1 || !allowable(parts[0]!)) return null;
   const words = parts[0]!.split(" ");
+  const fixed = fixedStart(words);
   // Two fixed words (a script, a subcommand): a bare executable would allow everything it can do.
-  if (WRAPPERS.has(words[0]!) || words.length < 2 || words[1]!.startsWith("-") || !PLAIN_WORD.test(words[1]!)) return null;
-  const rule = `Bash(${words.slice(0, 2).join(" ")} *)`;
+  if (WRAPPERS.has(words[0]!) || fixed.length < 2) return null;
+  const rule = `Bash(${fixed.join(" ")} *)`;
   // A rule that would carry a credential literal is not saved: the card shows it masked.
   return maskSecrets(rule) === rule ? rule : null;
 }
