@@ -106,6 +106,27 @@ describe("merge a pull request from Slack", () => {
     expect(merges()).toEqual([]);
   });
 
+  it("while GitHub reports UNKNOWN (recomputing after main moved) the click reads it again every 3 s for up to 30 s", async () => {
+    const waits: number[] = [];
+    const id = await card();
+    pr.mergeStateStatus = "UNKNOWN";
+    click(id, human, "merge");
+    await actOnMergeAnswers(repo, { gh, smokeDestination: () => null, approver: () => human,
+      sleep: async (ms) => { waits.push(ms); if (waits.length === 2) pr.mergeStateStatus = "CLEAN"; } });
+    expect(waits).toEqual([3000, 3000]);
+    expect(merges()).toEqual([["pr", "merge", "7", "--repo", "acme/site", "--squash", "--match-head-commit", SHA]]);
+
+    waits.length = 0;
+    pr = green();
+    const stuck = await card();
+    pr.mergeStateStatus = "UNKNOWN";
+    click(stuck, human, "merge");
+    await actOnMergeAnswers(repo, { gh, smokeDestination: () => null, approver: () => human, sleep: async (ms) => { waits.push(ms); } });
+    expect(waits).toHaveLength(10);
+    expect(merges()).toHaveLength(1);
+    expect(thread(stuck).join("\n")).toContain("GitHub reports it UNKNOWN, not CLEAN");
+  });
+
   it("Not now closes the card and returns the request to the seat as declined", async () => {
     const id = await card();
     click(id, human, "not_now");

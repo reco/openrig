@@ -117,7 +117,23 @@ export interface MergeDeps {
   /** The configured human who may approve (the registry's approver), as for permission approvals. */
   approver: () => string | null;
   now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
   log?: (msg: string) => void;
+}
+
+const UNKNOWN_RECHECK_MS = 3_000;
+const UNKNOWN_WAIT_MS = 30_000;
+
+/** The pull request once GitHub has settled its merge state: UNKNOWN (recomputing after its base moved, as
+ *  right after another merge) is read again every 3 s for up to 30 s; any other state is final. */
+async function readSettledPr(deps: MergeDeps, ref: MergeRef): Promise<PrState> {
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  let pr = await readPr(deps.gh, ref);
+  for (let waited = 0; pr.mergeStateStatus === "UNKNOWN" && waited < UNKNOWN_WAIT_MS; waited += UNKNOWN_RECHECK_MS) {
+    await sleep(UNKNOWN_RECHECK_MS);
+    pr = await readPr(deps.gh, ref);
+  }
+  return pr;
 }
 
 /** Act once on each answered merge card the daemon built: Not now declines back to the asking seat;
@@ -147,7 +163,7 @@ export async function actOnMergeAnswers(repo: QueueRepository, deps: MergeDeps):
       outcome = { note: "declined", thread: `Not merged: ${row.destinationSession} chose Not now.`, seat: `Merge of ${name} declined by ${row.destinationSession} (Not now).` };
     } else {
       try {
-        const failures = gateFailures(await readPr(deps.gh, ref), ref);
+        const failures = gateFailures(await readSettledPr(deps, ref), ref);
         if (failures.length) {
           outcome = { note: `refused ${failures.join("; ")}`, thread: `Not merged: ${failures.join("; ")}.`, seat: `Merge of ${name} refused at click time: ${failures.join("; ")}.` };
         } else {
