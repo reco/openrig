@@ -1,7 +1,7 @@
 // A seat waiting at an interactive prompt (a selection or permission question) for more than
 // five minutes, or ten seconds when its plain Yes and No can be answered from the card, gets a
-// notice to its human per prompt episode: the seat, the prompt's question
-// and the command to attach, and a reminder each hour the prompt stays. The episode is the same
+// notice to its human per prompt episode, once: the seat, the prompt's question and the command to
+// attach. The card stays with the human while the prompt stays; no reminders. The episode is the same
 // prompt body (the question, the command it asks about and its options) seen continuously; a
 // different body, or the same one after the seat moved on, is a new episode.
 // A permission prompt whose plain "Yes" and "No" options can be told apart carries their keys, so
@@ -15,7 +15,6 @@ import type { QueueRepository } from "./queue-repository.js";
 export const STUCK_PROMPT_AFTER_MS = 5 * 60_000;
 export const ANSWERABLE_PROMPT_AFTER_MS = 10_000;
 export const STUCK_PROMPT_SCAN_MS = 15_000;
-const REMIND_AFTER_MS = 60 * 60_000;
 const PROMPT_REASONS = new Set(["selection_prompt", "permission_prompt"]);
 
 export interface StuckPrompt {
@@ -201,7 +200,7 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
         if (!episode || episode.key !== key) { open.set(session, { key, since: now() }); continue; }
         const wait = prompt.choices ? answerableAfterMs : afterMs;
         if (deps.heldByHook?.(session, prompt.choices ? prompt.dialog : null)) continue;
-        if (episode.notifiedAt === undefined ? now() - episode.since < wait : now() - episode.notifiedAt < REMIND_AFTER_MS) continue;
+        if (episode.notifiedAt !== undefined || now() - episode.since < wait) continue;
         episode.notifiedAt = now();
         try {
           await deps.notify({ session, reason: prompt.reason, promptLine, attach: `tmux attach -t ${session}`, episodeId: episodeIdOf(session, key), since: episode.since, key, dialog: prompt.dialog,
@@ -284,11 +283,11 @@ export function retireStalePromptNotices(repo: QueueRepository, running: string[
 }
 
 /** A card for this seat's same prompt is with the human already (a restart), so no new one is posted:
- *  one still open from the last 50 minutes, or a notice without buttons; the hourly reminder is new,
- *  and so is the same prompt shown again after its card was answered. */
+ *  one still open, however old, or a notice without buttons from the last 50 minutes. The same prompt
+ *  shown again after its card was answered or retired is new. */
 export function hasRecentPromptCard(repo: QueueRepository, p: { session: string; key: string }, now = Date.now()): boolean {
-  return !!repo.db.prepare(`SELECT 1 FROM queue_items WHERE tags LIKE ? AND tags LIKE ? AND ts_created > ?
-      AND (state IN ('pending', 'in-progress', 'blocked') OR (human_intent = 'update' AND state != 'canceled')) LIMIT 1`)
+  return !!repo.db.prepare(`SELECT 1 FROM queue_items WHERE tags LIKE ? AND tags LIKE ?
+      AND (state IN ('pending', 'in-progress', 'blocked') OR (human_intent = 'update' AND state != 'canceled' AND ts_created > ?)) LIMIT 1`)
     .get(`%"stuck-prompt-session:${p.session}"%`, `%"stuck-prompt-key:${p.key}"%`, new Date(now - 50 * 60_000).toISOString());
 }
 

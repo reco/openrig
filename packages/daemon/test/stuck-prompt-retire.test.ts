@@ -85,11 +85,12 @@ describe("stale stuck-prompt cards are retired", () => {
     expect(repo.getById(other.id)?.state).toBe("pending");
   });
 
-  it("a card still open for the seat's same prompt blocks a duplicate (a restart); an answered or replaced one does not", async () => {
+  it("a card still open for the seat's same prompt blocks a duplicate at any age (a restart); an answered or replaced one does not", async () => {
     const open = await postedCard("cfo@finance", "k1");
     expect(hasRecentPromptCard(repo, { session: "cfo@finance", key: "k1" })).toBe(true);
     expect(hasRecentPromptCard(repo, { session: "dev@rig", key: "k1" })).toBe(false);
-    expect(hasRecentPromptCard(repo, { session: "cfo@finance", key: "k1" }, Date.now() + 51 * 60_000)).toBe(false);
+    expect(hasRecentPromptCard(repo, { session: "cfo@finance", key: "k1" }, Date.now() + 51 * 60_000)).toBe(true);
+    expect(hasRecentPromptCard(repo, { session: "cfo@finance", key: "k1" }, Date.now() + 10 * 3600_000)).toBe(true);
     repo.update({ qitemId: open.id, actorSession: "reco@external", state: "done", closureReason: "no-follow-on" });
     expect(hasRecentPromptCard(repo, { session: "cfo@finance", key: "k1" })).toBe(false);
     const replaced = await postedCard("cfo@finance", "k1");

@@ -68,7 +68,7 @@ describe("stuck-prompt watch", () => {
     expect(sent).toHaveLength(1);
   });
 
-  it("a new Claude approval with the same question is a new episode; the same prompt is reminded hourly", async () => {
+  it("a new Claude approval with the same question is a new episode; the same prompt is posted once, never reminded", async () => {
     let t = 0;
     const claude = (command: string) => ["", " Bash command", "", `   ${command}`, "   Run the command", "", " Do you want to proceed?",
       " ❯ 1. Yes", "   2. Yes, and don't ask again for this command", "   3. No, and tell Claude what to do differently (esc)", ""].join("\n");
@@ -81,11 +81,8 @@ describe("stuck-prompt watch", () => {
     t = 13 * 60_000; await watch.tick();
     expect(sent.map((p) => p.promptLine)).toEqual(["Do you want to proceed?", "Do you want to proceed?"]);
     expect(sent[0]!.episodeId).not.toBe(sent[1]!.episodeId);
-    t = 72 * 60_000; await watch.tick();
+    for (const minutes of [73, 133, 600]) { t = minutes * 60_000; await watch.tick(); }
     expect(sent).toHaveLength(2);
-    t = 73 * 60_000; await watch.tick();
-    expect(sent).toHaveLength(3);
-    expect(sent[2]).toMatchObject({ episodeId: sent[1]!.episodeId, waitingMinutes: 66 });
   });
 
   it("a resized pane and output above the dialog are the same prompt", async () => {
