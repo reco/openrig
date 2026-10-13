@@ -451,8 +451,9 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   // every update steer where the post goes.
   // A pure FYI post (an update with no buttons, not a reply in a thread, not pinned by tag) goes to
   // the notifications channel when one is set; anything the human answers stays on the default.
-  const notificationsChannelFor = (p: OutboundPostPayload, replyTo: string | null, threadTs: string | undefined): string | null =>
-    cfg.notificationsChannel && p.humanIntent === "update" && !p.humanConfirm && !p.humanQuestions?.length && !replyTo && !threadTs && !taggedChannel(p)
+  // A seat with its own channel (channel map, extra channel) keeps its FYI there.
+  const notificationsChannelFor = (p: OutboundPostPayload, replyTo: string | null, threadTs: string | undefined, otherwise: string): string | null =>
+    cfg.notificationsChannel && otherwise === cfg.channel && p.humanIntent === "update" && !p.humanConfirm && !p.humanQuestions?.length && !replyTo && !threadTs && !taggedChannel(p)
       ? cfg.notificationsChannel : null;
 
   const threadReplyTo = (p: OutboundPostPayload): string | null => {
@@ -698,9 +699,14 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         resolveChannel: (p, threadTs) => {
           const replyTo = threadReplyTo(p);
           const recorded = replyTo ? opts.queueRepo.replyToChoiceFor(p.qitemId) : null;
-          const fyi = notificationsChannelFor(p, replyTo, threadTs);
-          if (cfg.channelMap?.length) return recorded ? recorded.channel ?? cfg.channel! : fyi ?? resolveOutboundChannel(cfg, p.sourceSession) ?? cfg.channel!;
-          return recorded?.channel ?? fyi ?? channelForPost(p, threadTs);
+          if (cfg.channelMap?.length) {
+            if (recorded) return recorded.channel ?? cfg.channel!;
+            const mapped = resolveOutboundChannel(cfg, p.sourceSession) ?? cfg.channel!;
+            return notificationsChannelFor(p, replyTo, threadTs, mapped) ?? mapped;
+          }
+          if (recorded?.channel) return recorded.channel;
+          const usual = channelForPost(p, threadTs);
+          return notificationsChannelFor(p, replyTo, threadTs, usual) ?? usual;
         },
         pinChannel: Boolean(cfg.channelMap?.length),
         sourceLabel: cfg.sourceLabel,
@@ -1210,7 +1216,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     const followedThreads = (channel: string) => () => threadMap.listOpenRootsInChannel(channel, new Date(Date.now() - 7 * 24 * 3600_000).toISOString());
     const activeThreads = (channel: string) => () => threadMap.listActiveRootsInChannel(channel, new Date(Date.now() - 6 * 3600_000).toISOString());
     recovery = new ChannelRecovery({ channel: cfg.channel, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl, threadRoots: cfg.channel ? followedThreads(cfg.channel) : undefined, hotRoots: cfg.channel ? activeThreads(cfg.channel) : undefined });
-    extraRecoveries = cfg.extraChannels.map((c) => new ChannelRecovery({ channel: c.id, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl, threadRoots: followedThreads(c.id), hotRoots: activeThreads(c.id) }));
+    extraRecoveries = channels.filter((c) => c.id !== cfg.channel).map((c) => new ChannelRecovery({ channel: c.id, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl, threadRoots: followedThreads(c.id), hotRoots: activeThreads(c.id) }));
     const recoveries = [recovery, ...extraRecoveries];
     let fastTimer: ReturnType<typeof setInterval> | undefined;
     starts.push(() => {

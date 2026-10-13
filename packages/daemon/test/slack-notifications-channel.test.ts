@@ -1,7 +1,7 @@
 // #rig-notifications: pure FYI posts (updates with no buttons, not thread replies) go to the
 // notifications channel; anything the human answers stays on the default. Through the real wire.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDb } from "../src/db/connection.js";
@@ -27,6 +27,7 @@ describe("Slack notifications channel", () => {
   let posts: Array<Record<string, unknown>>;
   let reactions: Array<{ timestamp: string; name: string }>;
   let counted: string[];
+  let historyChannels: string[];
   let socket: WsLike;
   const stops: Array<() => void> = [];
 
@@ -41,6 +42,7 @@ describe("Slack notifications channel", () => {
     posts = [];
     reactions = [];
     counted = [];
+    historyChannels = [];
     const sockets: WsLike[] = [];
     const contract = new MissionControlWriteContract({ db, eventBus: bus, queueRepo: repo, actionLog: new MissionControlActionLog(db) });
     const wire = buildSlackGatewayWire({
@@ -62,6 +64,7 @@ describe("Slack notifications channel", () => {
         }
         if (url.endsWith("reactions.add")) { reactions.push(JSON.parse(String(init?.body))); return reply({ ok: true }); }
         if (url.endsWith("chat.postMessage")) { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); }
+        if (url.includes("conversations.history")) historyChannels.push(new URL(url).searchParams.get("channel")!);
         return reply({ ok: true, messages: [] });
       },
     });
@@ -101,6 +104,15 @@ describe("Slack notifications channel", () => {
     const inbound = rowWith("How is the build?")!;
     await repo.create({ sourceSession: "advisor@kernel", destinationSession: "human-founder@external", humanIntent: "update", summary: "Build", body: "Build is green.", replyTo: inbound.qitemId, nudge: false });
     expect(await posted("Build is green.")).toMatchObject({ channel: "C-MAIN", thread_ts: "200.1" });
+  });
+
+  it("a seat with its own channel keeps its FYI there", async () => {
+    await repo.create({ sourceSession: "psa-dev@psa", destinationSession: "lee@external", humanIntent: "update", summary: "Done", body: "Theme shipped.", nudge: false });
+    expect((await posted("Theme shipped.")).channel).toBe("C-PSA");
+  });
+
+  it("missed messages in the notifications channel are recovered like the others", async () => {
+    await vi.waitFor(() => expect(Object.keys(JSON.parse(readFileSync(join(home, "state", "slack-channel-coverage.json"), "utf8")).channels ?? JSON.parse(readFileSync(join(home, "state", "slack-channel-coverage.json"), "utf8")))).toEqual(expect.arrayContaining(["C-MAIN", "C-PSA", "C-NOTE"])));
   });
 
   it("a message written in the notifications channel lands on the inbound destination", async () => {
