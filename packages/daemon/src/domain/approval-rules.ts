@@ -1,4 +1,4 @@
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, posix } from "node:path";
 import { createRequire } from "node:module";
@@ -43,6 +43,33 @@ export function readApprovalRules(home: string): ApprovalRule[] {
   const invalid = rules.findIndex((r) => !isValidRule(r));
   if (invalid !== -1) throw new Error(`${APPROVAL_RULES_FILE} rule ${invalid + 1} is invalid: ${JSON.stringify(rules[invalid])}`);
   return rules as ApprovalRule[];
+}
+
+/** The rules a new home starts with: read-only inspection, git read verbs, test runners and the rig CLI,
+ *  plus the safety denies. Written only when the home has no rules file; a user's file is never touched. */
+export const DEFAULT_APPROVAL_RULES: readonly ApprovalRule[] = [
+  ...["Read", "Glob", "Grep"].map((match) => ({ effect: "allow" as const, match })),
+  ...["ls", "cat", "head", "tail", "wc", "grep", "jq", "sqlite3 -readonly -safe", "pwd",
+    "git status", "git log", "git diff", "git show", "git branch", "git rev-parse", "git fetch", "git blame", "git ls-files",
+    "npm test", "npm run test", "pnpm test", "pnpm run test", "npx vitest", "npx jest", "pytest", "go test", "cargo test", "make test",
+    "rig"].map((command) => ({ effect: "allow" as const, match: `Bash(${command} *)` })),
+  { effect: "deny", match: "Bash(rig send *--dangerously-interact*)", note: "a seat never drives another seat's prompt" },
+  { effect: "deny", match: "Bash(git push *--force*)", note: "no force-push" },
+  { effect: "deny", match: "Bash(git push *-f *)", note: "no force-push" },
+  { effect: "deny", match: "Bash(git push * main)", note: "merges go through review" },
+  { effect: "deny", match: "Bash(git push * master)", note: "merges go through review" },
+  { effect: "deny", match: "Bash(git *--upload-pack*)", note: "runs a local command" },
+  { effect: "deny", match: "Bash(git *--output*)", note: "writes arbitrary files" },
+  { effect: "deny", match: "Bash(git -c *)", note: "config overrides can run commands" },
+  { effect: "deny", match: "Bash(git *--ext-diff*)", note: "runs an external diff program" },
+  ...["/", "~", "~/", "$HOME"].map((target) => ({ effect: "deny" as const, match: `Bash(rm -rf ${target})`, note: "never delete home or root" })),
+];
+
+/** Writes the default rules when the home has none; returns whether it wrote them. */
+export function seedApprovalRules(home: string): boolean {
+  if (existsSync(approvalRulesPath(home))) return false;
+  writeApprovalRules(home, DEFAULT_APPROVAL_RULES);
+  return true;
 }
 
 export function writeApprovalRules(home: string, rules: readonly ApprovalRule[]): void {
@@ -127,6 +154,12 @@ function hits(rule: ApprovalRule, req: RuleRequest): boolean {
   if (!globMatches(match.tool, req.toolName)) return false;
   if (match.arg === null) return true;
   const command = commandOf(req.toolInput);
+  // An MCP exec tool's `call <name> <json>`: the rule names the call; its JSON arguments are data.
+  const call = req.toolName.startsWith("mcp__") && command !== null ? /^call\s+([\w.:-]+)(?:\s|$)/.exec(command.trim()) : null;
+  if (call) {
+    const named = /^call\s+([\w.:*-]+)(?:\s+\*)?$/.exec(match.arg);
+    return !!named && globMatches(named[1]!, call[1]!);
+  }
   if (command === null) {
     const arg = argOf(req.toolInput);
     if (!arg.path) return globMatches(match.arg, arg.value);
@@ -144,7 +177,7 @@ export function ruleDecision(rules: readonly ApprovalRule[], req: RuleRequest): 
   if (deny) return { effect: "deny", rule: deny };
   const allowOf = (r: RuleRequest) => rules.find((rule) => rule.effect === "allow" && hits(rule, r));
   const command = commandOf(req.toolInput);
-  if (command === null) {
+  if (command === null || (req.toolName.startsWith("mcp__") && /^call\s+[\w.:-]+(?:\s|$)/.test(command.trim()))) {
     const allow = allowOf(req);
     return allow ? { effect: "allow", rule: allow } : null;
   }
@@ -154,10 +187,58 @@ export function ruleDecision(rules: readonly ApprovalRule[], req: RuleRequest): 
   return covering.every(Boolean) ? { effect: "allow", rule: covering[covering.length - 1]! } : null;
 }
 
-/** The deny rules for one seat in Claude's own permission syntax, so its runtime refuses them even without the daemon.
- *  Claude reads a filesystem-absolute path as //path, and ignores an MCP rule with a pattern (the daemon still applies it). */
+const appliesTo = (r: ApprovalRule, sessionName: string | null) => !r.seats || (sessionName !== null && globMatches(r.seats, sessionName));
+
+/** One seat's allow and deny rules in Claude's own permission syntax, so its runtime applies them before any
+ *  prompt or classifier. Claude reads a filesystem-absolute path as //path, and ignores an MCP rule with a
+ *  pattern (the daemon still applies those). */
+export function claudePermissionRules(rules: readonly ApprovalRule[], sessionName: string | null): { allow: string[]; deny: string[] } {
+  const native = (effect: RuleEffect) => rules.filter((r) => r.effect === effect && appliesTo(r, sessionName))
+    .flatMap((r) => {
+      const m = parseMatch(r.match)!;
+      if (m.arg === null) return [m.tool];
+      if (m.tool.startsWith("mcp__")) return [];
+      return [`${m.tool}(${m.tool !== "Bash" && /^\/(?!\/)/.test(m.arg) ? `/${m.arg}` : m.arg})`];
+    });
+  return { allow: native("allow"), deny: native("deny") };
+}
+
+/** Codex rules are literal token prefixes: a Bash pattern of plain words, optionally ending in " *". */
+function codexPrefix(match: string): string[] | null {
+  const m = parseMatch(match);
+  if (!m || m.tool !== "Bash" || m.arg === null) return null;
+  const words = m.arg.replace(/ \*$/, "").split(" ");
+  return words.every((w) => /^[\w\-.:@%+,/=]+$/.test(w)) ? words : null;
+}
+
+export const CODEX_RULES_FILE = "openrig.rules";
+
+/** The rules every seat shares, as Codex execpolicy: allow is allow, deny is forbidden. Codex reads every
+ *  *.rules file in its home for every session, so a rule scoped to some seats, or a pattern Codex cannot
+ *  express as a literal prefix, stays with the daemon's prompt-time check only. */
+export function codexRulesText(rules: readonly ApprovalRule[]): string {
+  const lines = rules.filter((r) => !r.seats || r.seats === "*").flatMap((r) => {
+    const prefix = codexPrefix(r.match);
+    if (!prefix) return [];
+    const note = r.note ? `, justification=${JSON.stringify(r.note)}` : "";
+    return [`prefix_rule(pattern=${JSON.stringify(prefix)}, decision="${r.effect === "deny" ? "forbidden" : "allow"}"${note})`];
+  });
+  return `# Written by OpenRig from ${APPROVAL_RULES_FILE} at each Codex launch; edits here are replaced.\n${lines.join("\n")}\n`;
+}
+
+/** Keeps `<codexHome>/rules/openrig.rules` equal to the shared rules; never touches any other rules file. */
+export function projectCodexRules(home: string, codexHome: string): void {
+  const dir = join(codexHome, "rules");
+  const path = join(dir, CODEX_RULES_FILE);
+  const text = codexRulesText(readApprovalRules(home));
+  try { if (readFileSync(path, "utf8") === text) return; } catch { /* first write */ }
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(`${path}.tmp`, text);
+  renameSync(`${path}.tmp`, path);
+}
+
 export function claudeDenyRules(rules: readonly ApprovalRule[], sessionName: string | null): string[] {
-  return rules.filter((r) => r.effect === "deny" && (!r.seats || (sessionName !== null && globMatches(r.seats, sessionName))))
+  return rules.filter((r) => r.effect === "deny" && appliesTo(r, sessionName))
     .flatMap((r) => {
       const m = parseMatch(r.match)!;
       if (m.arg === null) return [m.tool];
