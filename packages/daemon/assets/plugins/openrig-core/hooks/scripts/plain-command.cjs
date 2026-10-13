@@ -65,14 +65,15 @@ function plainParts(command) {
 }
 
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
-/** Variables that change which program runs, what it loads at startup, or where it reads its configuration
- *  (any case): search paths, option and flag variables, wrappers, shells, home and config directories. */
-const RUN_CHANGING = /^(?:LD_\w*|DYLD_\w*|GIT_\w*|NPM_CONFIG_\w*|XDG_\w*|BASH_ENV|ENV|IFS|PS4|PROMPT_COMMAND|SHELLOPTS|BASHOPTS|MAKEFILES|PAGER|EDITOR|VISUAL|PYTHONSTARTUP|\w*(?:PATH|OPT|OPTS|OPTIONS|FLAGS|WRAPPER|SHELL|LIB|LIBS|HOME|CONFIG|RC))=/i;
+/** Variables that only carry data to the program: a few inert names, and names ending in a data suffix. */
+const DATA = /^(?:CI|NODE_ENV|DEBUG|TZ|LANG|LC_[A-Z]+|FORCE_COLOR|NO_COLOR|TERM|[A-Z][A-Z0-9_]*_(?:URI|URL|HOST|PORT|USER|DB|NAME|KEY|TOKEN))=/;
+/** Those of them a toolchain reads to choose what it fetches, loads or runs (any case). */
+const RUN_CHANGING = /^(?:LD_|DYLD_|GIT_|SSH_|NPM_|NODE_(?!ENV=)|PNPM_|YARN_|PIP_|UV_|PYTHON|CARGO_|RUST|GO|DOCKER_|XDG_)/i;
 
-/** A part's words after its leading NAME=value assignments; null when one of them changes what runs. */
+/** A part's words after its leading NAME=value assignments; null when one of them is not plain data. */
 function afterAssignments(words) {
   let i = 0;
-  for (; i < words.length - 1 && ASSIGNMENT.test(words[i].text); i++) if (RUN_CHANGING.test(words[i].text)) return null;
+  for (; i < words.length - 1 && ASSIGNMENT.test(words[i].text); i++) if (!DATA.test(words[i].text) || RUN_CHANGING.test(words[i].text)) return null;
   return words.slice(i);
 }
 

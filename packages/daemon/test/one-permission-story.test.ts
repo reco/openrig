@@ -124,15 +124,17 @@ describe("one permission story", () => {
     const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(pnpm -C /Users/reco/dev/* *)" }, { effect: "allow", match: "Bash(bash *)" }, { effect: "allow", match: "Bash(node *)" },
       { effect: "deny", match: "Bash(rm -rf *)" }, { effect: "allow", match: "Bash(rm *)" }, { effect: "deny", match: "Bash(git push *)" }, { effect: "allow", match: "Bash(git *)" },
       ...["npm", "go", "cargo", "pytest", "make"].map((c) => ({ effect: "allow" as const, match: `Bash(${c} *)` }))];
-    for (const command of ["MONGODB_URI=x pnpm -C /Users/reco/dev/y test", "A='a b' B=\"c d\" pnpm -C /Users/reco/dev/y test", "CI=1 bash a.sh && FOO=2 node a.js"])
+    for (const command of ["MONGODB_URI=x pnpm -C /Users/reco/dev/y test", "API_URL='a b' DB_NAME=\"c d\" pnpm -C /Users/reco/dev/y test", "CI=1 bash a.sh && NODE_ENV=test node a.js"])
       expect(ruleDecision(rules, bash(command))?.effect, command).toBe("allow");
     for (const command of ["PATH=x bash a.sh", "NODE_OPTIONS=--require=x node a.js", "CI=1 LD_PRELOAD=x bash a.sh", "GIT_DIR=x bash a.sh", "DYLD_INSERT_LIBRARIES=x node a.js",
       "X=~/a{b,c} bash a.sh", "X=$HOME bash a.sh", "\"X\"=1 bash a.sh", "X=1",
       "SHELLOPTS=xtrace PS4='$(touch /tmp/p)' npm test", "npm_config_script_shell=./evil npm test", "HOME=./x npm test", "MAKEFILES=./e.mk make test",
-      "GOFLAGS=-toolexec=./evil go test ./...", "RUSTC_WRAPPER=./evil cargo test", "PYTEST_ADDOPTS='-p evil' pytest", "PERL5OPT=-Mevil bash a.sh", "JAVA_TOOL_OPTIONS=x bash a.sh"])
+      "GOFLAGS=-toolexec=./evil go test ./...", "RUSTC_WRAPPER=./evil cargo test", "PYTEST_ADDOPTS='-p evil' pytest", "PERL5OPT=-Mevil bash a.sh", "JAVA_TOOL_OPTIONS=x bash a.sh",
+      "RUSTC=./evil cargo test", "CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER=./evil cargo test", "GOENV=./e go test ./...", "PYTHONUSERBASE=./u pytest", "CC=./evil go test ./...",
+      "SSH_ASKPASS=./evil git fetch", "PIP_INDEX_URL=http://evil pytest", "FOO=1 bash a.sh", "api_url=x bash a.sh"])
       expect(ruleDecision(rules, bash(command)), command).toBeNull();
     for (const command of ["CI=1 rm -rf build", "X='a b' git push origin", "X=\"a b\" Y='c d' git push origin"]) expect(ruleDecision(rules, bash(command))?.effect, command).toBe("deny");
-    expect(ruleDecision(rules, bash("X='a b' git status"))?.effect).toBe("allow");
+    expect(ruleDecision(rules, bash("DB_HOST='a b' git status"))?.effect).toBe("allow");
     expect(alwaysRuleFor("Bash", { command: "MONGODB_URI=x bash /p/sweep.sh --since 2h" })).toEqual({ match: "Bash(bash /p/sweep.sh *)", exact: false });
     expect(alwaysRuleFor("Bash", { command: "PATH=x bash /p/sweep.sh" })).toEqual({ match: "Bash(PATH=x bash /p/sweep.sh)", exact: true });
   });
