@@ -52,6 +52,7 @@ describe("SeatLifecycleService.launchFresh", () => {
   let activitySwaps: Array<{ nodeId: string; generation: string }>;
   let service: SeatLifecycleService;
   let listProcesses: NativeProcessLister;
+  let launchProcesses: NativeProcessLister;
 
   beforeEach(() => {
     db = createFullTestDb();
@@ -118,7 +119,9 @@ describe("SeatLifecycleService.launchFresh", () => {
       eventBus,
       tmuxAdapter: tmux,
       sleep: async () => undefined,
+      listProcesses: () => launchProcesses(),
     });
+    launchProcesses = async () => [];
     invalidations = [];
     activitySwaps = [];
     listProcesses = async () => [{ pid: 4242, ppid: 1, pgid: 4242, tpgid: 4242,
@@ -175,6 +178,24 @@ describe("SeatLifecycleService.launchFresh", () => {
     expect(new SeatIdentityStore(db).getForNode(seat.node.id)?.verdict).toBe(mode === "valid" ? "verified" : "mismatch");
     expect(alive.has(seat.sessionName)).toBe(true);
     if (mode === "valid") expect(observe).toHaveBeenCalledTimes(2);
+  });
+
+  it("a fresh Claude launch records the process it started on its --session-id once ready; a later launch clears it", async () => {
+    const seat = seedSeat();
+    paneCommand = "2.1.289";
+    const startedAt = "Sun Oct  4 12:00:00 2026";
+    const rows: NativeProcessRow[] = [
+      { pid: 4242, ppid: 1, pgid: 4242, tpgid: 4243, executableName: "zsh", command: "-zsh", startedAt },
+      { pid: 4243, ppid: 4242, pgid: 4243, tpgid: 4243, executableName: "2.1.289",
+        command: "claude --session-id fresh-native-uuid", startedAt, executablePath: "/fixture/.local/share/claude/versions/2.1.289" },
+    ];
+    listProcesses = async () => rows;
+    launchProcesses = async () => rows;
+    expect((await service.launchFresh({ seatRef: seat.sessionName, fresh: true, stop: true, reason: "fresh occupant" })).ok).toBe(true);
+    const current = sessionRegistry.getSessionsForRig(seat.rig.id).find(s => s.status === "running")!;
+    expect(sessionRegistry.recordedLaunchProcess(current.id)).toEqual({ pid: 4243, startedAt, token: "fresh-native-uuid" });
+    sessionRegistry.recordResumeLaunch(current.id, "fresh-native-uuid");
+    expect(sessionRegistry.recordedLaunchProcess(current.id)).toBeNull();
   });
 
   it("default-path consent retains context and continues the same occupant once after late acceptance", async () => {

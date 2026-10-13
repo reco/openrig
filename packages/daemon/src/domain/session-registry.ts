@@ -44,6 +44,8 @@ const CLEAR_ROTATION_ON_TOKEN_CHANGE =
   "resume_rotated_from = CASE WHEN resume_token IS ? THEN resume_rotated_from ELSE NULL END, " +
   "resume_rotated_process = CASE WHEN resume_token IS ? THEN resume_rotated_process ELSE NULL END";
 
+export type RecordedLaunchProcess = ClaudeLaunchedProcess & { token: string };
+
 /** The columns `claudeResumeRotation` reads. */
 export const CLAUDE_RESUME_ROTATION_COLUMNS = "resume_token, resume_provenance, resume_rotated_from, resume_rotated_process, resume_launch_process";
 
@@ -426,7 +428,8 @@ export class SessionRegistry {
     sessionId: string,
     type: string,
     token: string,
-    evidence: { source: string | null; currentGeneration: boolean; resumeLaunch?: string | null; launchedProcess?: ClaudeLaunchedProcess | null },
+    evidence: { source: string | null; currentGeneration: boolean; resumeLaunch?: string | null; launchedProcess?: ClaudeLaunchedProcess | null;
+      sameProcess?: RecordedLaunchProcess | null },
   ): boolean {
     return this.db.transaction(() => {
       const launched = (this.db.prepare("SELECT resume_launch_token FROM sessions WHERE id = ?").get(sessionId) as
@@ -440,8 +443,25 @@ export class SessionRegistry {
             JSON.stringify({ pid: evidence.launchedProcess.pid, startedAt: evidence.launchedProcess.startedAt }), sessionId);
         }
       }
+      // An in-process conversation change (/clear, /resume) sent by the very process the launch path
+      // recorded, still recorded now: argv keeps naming its launch token, and only that process may.
+      const same = evidence.sameProcess;
+      const recorded = this.recordedLaunchProcess(sessionId);
+      if (written && evidence.currentGeneration && same && recorded && same.token !== token.trim()
+        && recorded.pid === same.pid && recorded.startedAt === same.startedAt && recorded.token === same.token) {
+        this.db.prepare("UPDATE sessions SET resume_rotated_from = ?, resume_rotated_process = ? WHERE id = ?").run(same.token,
+          JSON.stringify({ pid: same.pid, startedAt: same.startedAt }), sessionId);
+      }
       return written;
     })();
+  }
+
+  /** The process the launch path recorded for this row's current launch, with the token its argv names. */
+  recordedLaunchProcess(sessionId: string): RecordedLaunchProcess | null {
+    const process = launchedProcess((this.db.prepare("SELECT resume_launch_process FROM sessions WHERE id = ?").get(sessionId) as
+      { resume_launch_process: string | null } | undefined)?.resume_launch_process);
+    return process && typeof process.token === "string" && process.token
+      ? { pid: process.pid, startedAt: process.startedAt, token: process.token } : null;
   }
 
   /** The resume launch armed for this row and not yet consumed by a hook, if any. */

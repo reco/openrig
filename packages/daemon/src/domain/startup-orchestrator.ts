@@ -224,6 +224,7 @@ export class StartupOrchestrator {
           ? "rebuilt"
           : "fresh";
     let appliedLaunch: AppliedLaunchObservation | undefined;
+    let freshClaudeToken: string | undefined;
     const launchGeneration = this.sessionRegistry.currentOccupantTenure(input.nodeId)?.generationUuid;
 
     // 1. Mark pending
@@ -316,6 +317,7 @@ export class StartupOrchestrator {
     if (!input.skipHarnessLaunch) {
       try {
         let launchResumeToken = input.resumeToken;
+        // A fresh Claude (`--session-id`) is observed once it is ready, below: only then is it running.
         let attemptedFreshFallback = false;
 
         while (true) {
@@ -334,6 +336,8 @@ export class StartupOrchestrator {
             appliedLaunch = launchResult.appliedLaunch;
             if (input.adapter.runtime === "claude-code" && launchResumeToken?.trim()) {
               await this.recordClaudeResumeLaunch(input.sessionId, input.binding.tmuxPane ?? input.binding.tmuxSession, launchResumeToken.trim(), launchResult.launchedProcess);
+            } else if (input.adapter.runtime === "claude-code") {
+              freshClaudeToken = launchResult.resumeToken?.trim() || undefined;
             }
             const notice = nonInterruptiveNotice(input.adapter.runtime, input.binding);
             if (notice) warnings.push(`${input.sessionName ?? input.nodeId}: ${notice}`);
@@ -423,6 +427,9 @@ export class StartupOrchestrator {
         }
         errors.push(`Readiness timeout after ${readinessTimeoutMs / 1000}s — harness did not become interactive: ${readiness.reason ?? "unknown"}`);
         return this.fail(input, "failed", errors);
+      }
+      if (freshClaudeToken) {
+        await this.recordClaudeResumeLaunch(input.sessionId, input.binding.tmuxPane ?? input.binding.tmuxSession, freshClaudeToken, undefined);
       }
     } catch (err) {
       errors.push(`Readiness check error: ${(err as Error).message}`);
