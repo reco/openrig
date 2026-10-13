@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { seedApprovalRules } from "../src/domain/approval-rules.js";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { NativePermissionStore } from "../src/domain/native-permission-store.js";
@@ -19,6 +23,9 @@ const dbs: ReturnType<typeof createFullTestDb>[] = [];
 afterEach(() => { for (const db of dbs.splice(0)) db.close(); vi.unstubAllEnvs(); });
 function fixture(runtime: string, name = "workshop") {
   vi.stubEnv("OPENRIG_YOLO", "0");
+  const home = mkdtempSync(join(tmpdir(), "team-default-rules-"));
+  seedApprovalRules(home);
+  vi.stubEnv("OPENRIG_HOME", home);
   const db = createFullTestDb(); dbs.push(db);
   const rigRepo = new RigRepository(db), rig = rigRepo.createRig(name);
   const node = rigRepo.addNode(rig.id, "dev.builder", { runtime, cwd: "/inert/project" });
@@ -42,15 +49,15 @@ function assertDefault(cmd: string, runtime: string) {
     expect(cmd, "team settings must reach the native command").toContain(args.map(arg => ` ${shellQuote(arg)}`).join(""));
     const settings = JSON.parse(args[1]);
     expect(Object.keys(settings)).toEqual(["permissions", "hooks"]);
-    expect(settings.permissions.allow).toContain("Bash(rig:*)");
-    expect(settings.permissions.allow).toContain("Bash(npm test:*)");
-    expect(settings.permissions.allow).not.toContain("Bash(tmux:*)");
-    expect(settings.permissions.allow).not.toContain("Bash(node:*)");
+    expect(settings.permissions.allow).toContain("Bash(rig *)");
+    expect(settings.permissions.allow).toContain("Bash(npm test *)");
+    expect(settings.permissions.allow).not.toContain("Bash(tmux *)");
+    expect(settings.permissions.allow).not.toContain("Bash(node *)");
+    expect(settings.permissions.deny).toContain("Bash(rig send *--dangerously-interact*)");
     expect(settings.permissions.ask).toBeUndefined();
     expect(settings.hooks.PreToolUse).toHaveLength(1);
     expect(settings.hooks.PreToolUse[0].matcher).toBe("Bash");
     expect(settings.hooks.PreToolUse[0].hooks[0].command).toContain("claude-team-permissions.cjs");
-    expect(settings.permissions.deny).toBeUndefined();
     expect(cmd).toContain("--permission-mode acceptEdits");
   } else {
     expect(cmd, "configured workspace must reach native command").toContain("--add-dir '/configured/work space'");

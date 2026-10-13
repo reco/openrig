@@ -5,12 +5,30 @@ import { mkdtempSync, copyFileSync, rmSync, readFileSync, existsSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { KERNEL_CLAUDE_ALLOW, TEAM_CLAUDE_ALLOW, TEAM_CLAUDE_ASK, operationalLaunchArgs } from "../src/adapters/kernel-authority.js";
+import { TEAM_CLAUDE_ASK, operationalLaunchArgs } from "../src/adapters/kernel-authority.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
+import { DEFAULT_APPROVAL_RULES, claudePermissionRules, seedApprovalRules } from "../src/domain/approval-rules.js";
 
 const asset = fileURLToPath(new URL("../assets/claude-team-permissions.cjs", import.meta.url));
 const { decide } = createRequire(import.meta.url)(asset);
+// Engine fixtures: the hook's prefix grammar, exercised with the lists launches used before one permission story.
+const KERNEL_CLAUDE_ALLOW = [
+  "Skill", "Read", "Edit", "Write", "Glob", "Grep", "WebFetch",
+  ...["rig", "tmux", "node", "npm", "git", "ssh", "scp", "rsync", "curl", "uname", "ps", "pgrep", "lsof", "df", "du", "ls", "cat", "head", "tail", "rg", "grep",
+    "find", "stat", "date", "sleep", "mkdir", "cp", "mv", "chmod", "tar", "shasum", "cd", "pwd", "echo", "printf", "wc", "sort", "python", "python3"].map(command => `Bash(${command}:*)`),
+  "Bash(command -v:*)", "Bash(claude auth status:*)", "Bash(codex login status:*)", "Read(~/**)",
+];
+const TEAM_CLAUDE_ALLOW = [
+  "Skill", "Read(./**)", "Glob", "Grep", "Bash(rig:*)",
+  ...["pwd", "ls", "cat", "head", "tail", "rg", "grep", "find"].map(command => `Bash(${command}:*)`),
+  ...["npm test", "npm run test", "pnpm test", "pnpm run test", "yarn test", "yarn run test", "bun test", "bun run test", "node --test", "npx vitest", "npx jest",
+    "pytest", "python -m pytest", "python3 -m pytest", "go test", "cargo test", "make test"].map(command => `Bash(${command}:*)`),
+];
 const policy = { allow: TEAM_CLAUDE_ALLOW, ask: TEAM_CLAUDE_ASK };
+const home = mkdtempSync(join(tmpdir(), "team-rules-"));
+seedApprovalRules(home);
+vi.stubEnv("OPENRIG_HOME", home);
+const defaults = claudePermissionRules(DEFAULT_APPROVAL_RULES, null);
 vi.mock("node:fs", async importOriginal => {
   const original = await importOriginal<typeof import("node:fs")>();
   return { ...original, existsSync: vi.fn(original.existsSync) };
@@ -28,16 +46,13 @@ describe("Claude kernel inspection permissions", () => {
     "cd /project", "echo ---", "printf '%s\\n' ready",
     "git -C /project status --porcelain", "rig up demo --cwd /project --target /rigs/demo --plan",
     "'/opt/my tools/rig' up demo --plan", "env OPENRIG_PORT=7434 /opt/tools/rig ps --json",
-  ])("allows a routine inspection command: %s", command => {
+  ])("the engine allows a routine inspection command under a kernel-style list: %s", command => {
+    expect(decide(command, { allow: KERNEL_CLAUDE_ALLOW, ask: [] })).toBe("allow");
+  });
+
+  it("a kernel launch carries the human's rules file, not a hard-coded list", () => {
     const settings = JSON.parse(operationalLaunchArgs("claude-code", { kernelAuthority: true })[1]);
-    const hook = settings.hooks.PreToolUse[0].hooks[0];
-    const result = spawnSync("/bin/sh", ["-c", hook.command], {
-      input: JSON.stringify({ tool_name: "Bash", tool_input: { command }, permission_mode: "acceptEdits" }), encoding: "utf8",
-    });
-    expect(result.status, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ hookSpecificOutput: {
-      hookEventName: "PreToolUse", permissionDecision: "allow",
-    } });
+    expect(settings).toEqual({ permissions: defaults });
   });
 
   it("keeps kernel lifecycle authority distinct from team asks, with no blanket shell grant", () => {
@@ -51,11 +66,6 @@ describe("Claude kernel inspection permissions", () => {
       expect(decide(command, kernel)).toBeUndefined();
   });
 
-  it("keeps native kernel allowances when the optional hook is absent", () => {
-    vi.mocked(existsSync).mockReturnValueOnce(false);
-    expect(JSON.parse(operationalLaunchArgs("claude-code", { kernelAuthority: true })[1]))
-      .toEqual({ permissions: { allow: KERNEL_CLAUDE_ALLOW } });
-  });
 });
 
 describe("Claude team command permissions", () => {
@@ -118,14 +128,14 @@ describe("Claude team command permissions", () => {
   it("falls back to native lifecycle asks when the launch asset is absent", () => {
     vi.mocked(existsSync).mockReturnValueOnce(false);
     const args = operationalLaunchArgs("claude-code", { teamPermissionDefault: true });
-    expect(JSON.parse(args[1])).toEqual({ permissions: { allow: TEAM_CLAUDE_ALLOW, ask: TEAM_CLAUDE_ASK } });
-    expect(operationalLaunchArgs("claude-code", { teamPermissionDefault: true, permissionMode: "plan" })).toEqual([]);
+    expect(JSON.parse(args[1])).toEqual({ permissions: { allow: defaults.allow, ask: TEAM_CLAUDE_ASK, deny: defaults.deny } });
+    expect(JSON.parse(operationalLaunchArgs("claude-code", { teamPermissionDefault: true, permissionMode: "plan" })[1])).toEqual({ permissions: defaults });
   });
 
   it("executes the launch-provided hook via stdin without changing its input or settings", () => {
     const args = operationalLaunchArgs("claude-code", { teamPermissionDefault: true });
     const settings = JSON.parse(args[1]);
-    expect(settings.permissions).toEqual({ allow: TEAM_CLAUDE_ALLOW });
+    expect(settings.permissions).toEqual({ allow: defaults.allow, deny: defaults.deny });
     const hook = settings.hooks.PreToolUse[0].hooks[0];
     expect(hook).toMatchObject({ type: "command", timeout: 5 });
     for (const [command, expected] of [["rig down --help", "allow"], ["/opt/tools/rig down example", "ask"]]) {

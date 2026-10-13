@@ -189,7 +189,7 @@ function prefixEnd(tokens, prefix) {
 
 function prefixes(rules) {
   return rules.flatMap(rule => {
-    const match = /^Bash\((.+):\*\)$/.exec(rule);
+    const match = /^Bash\((.+?)(?::\*| \*)\)$/.exec(rule);
     return match ? [match[1].split(" ")] : [];
   });
 }
