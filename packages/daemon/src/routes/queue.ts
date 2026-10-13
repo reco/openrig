@@ -571,7 +571,7 @@ export function queueRoutes(): Hono {
         const { CARD_NOTE, formatMergeRef } = await import("../domain/human-merge.js");
         // An id reused for a row the seat wrote itself returns that row: it never becomes a merge card.
         const built = item.body === body.body && item.summary === body.summary && !item.humanDetail && JSON.stringify(item.humanQuestions) === JSON.stringify(body.humanQuestions)
-          && body.tags!.every((t) => item.tags?.includes(t)) && item.destinationSession === body.destinationSession;
+          && JSON.stringify([...(item.tags ?? [])].sort()) === JSON.stringify([...body.tags!].sort()) && item.destinationSession === body.destinationSession;
         if (!built) return c.json({ error: `qitem id ${item.qitemId} already names a different row`, code: "invalid_human_merge" }, 409);
         if (!getRepo(c).transitionLog.listForQitem(item.qitemId).some((t) => t.transitionNote?.startsWith(CARD_NOTE) && t.identityProvenance === null)) {
           getRepo(c).update({ qitemId: item.qitemId, actorSession: "daemon@kernel", transitionNote: `${CARD_NOTE}${formatMergeRef(mergeRef)}` });
