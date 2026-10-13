@@ -66,7 +66,7 @@ export function makeThreadRouteResolver(opts: {
       // A reply typed in a thread that holds a newer open decision posted into it answers that
       // decision, not the thread's root; only with none open does it fall back to the root.
       // Only a person's real message (it has its own ts and sender): a click's or ✅'s lookup of a root keeps the root.
-      const typed = ev.type === "message" && !!(ev as { ts?: string }).ts && !!ev.user;
+      const typed = ev.type !== "reaction_added" && !!(ev as { ts?: string }).ts && !!ev.user;
       const threaded = typed ? opts.newestOpenDecision?.(threadTs, ev.channel, ev.user!) : null;
       if (threaded) {
         log(`inbound thread_ts=${threadTs} -> ${threaded.seat} (newest open decision ${threaded.conversationId} in the thread)`);
