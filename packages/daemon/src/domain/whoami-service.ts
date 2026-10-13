@@ -45,6 +45,16 @@ export interface WhoamiResult {
     outgoing: Array<{ kind: string; to: { logicalId: string; sessionName: string | null } }>;
     incoming: Array<{ kind: string; from: { logicalId: string; sessionName: string | null } }>;
   };
+  /** What the daemon itself recorded about the seat's current occupant: no process inspection by the seat needed. */
+  occupancy: {
+    nativeSessionId: string | null;
+    resumeType: string | null;
+    generation: string | null;
+    generationOrdinal: number | null;
+    bootAt: string | null;
+    launchProcess: { pid: number; startedAt: string } | null;
+    appliedLaunch: { axis: string; value: string | null; approvalPolicy: string | null } | null;
+  };
   transcript: {
     enabled: boolean;
     path: string | null;
@@ -152,6 +162,33 @@ export class WhoamiService {
     this.sessionRegistry = deps.sessionRegistry;
     this.transcriptStore = deps.transcriptStore;
     this.contextUsageStore = deps.contextUsageStore ?? null;
+  }
+
+  private occupancy(nodeId: string): WhoamiResult["occupancy"] {
+    const session = this.db.prepare("SELECT id, resume_token, resume_type FROM sessions WHERE node_id = ? ORDER BY id DESC LIMIT 1")
+      .get(nodeId) as { id: string; resume_token: string | null; resume_type: string | null } | undefined;
+    let tenure: ReturnType<SessionRegistry["currentOccupantTenure"]> = null;
+    try { tenure = this.sessionRegistry.currentOccupantTenure(nodeId); } catch { /* a database before occupant tenures */ }
+    let launchProcess: WhoamiResult["occupancy"]["launchProcess"] = null;
+    let appliedLaunch: WhoamiResult["occupancy"]["appliedLaunch"] = null;
+    try {
+      const recorded = session ? this.sessionRegistry.recordedLaunchProcess(session.id) : null;
+      if (recorded) launchProcess = { pid: recorded.pid, startedAt: recorded.startedAt };
+    } catch { /* a database before the launch-process column */ }
+    try {
+      const row = tenure ? this.db.prepare("SELECT axis, value, approval_policy FROM applied_launch_observations WHERE generation_uuid = ?")
+        .get(tenure.generationUuid) as { axis: string; value: string | null; approval_policy: string | null } | undefined : undefined;
+      if (row) appliedLaunch = { axis: row.axis, value: row.value, approvalPolicy: row.approval_policy };
+    } catch { /* a database before launch observations */ }
+    return {
+      nativeSessionId: session?.resume_token ?? null,
+      resumeType: session?.resume_type ?? null,
+      generation: tenure?.generationUuid ?? null,
+      generationOrdinal: tenure?.generationOrdinal ?? null,
+      bootAt: tenure?.bootAt ?? null,
+      launchProcess,
+      appliedLaunch,
+    };
   }
 
   resolve(query: { nodeId?: string; sessionName?: string; targetRepoOverride?: string; compact?: boolean }): WhoamiResult | null {
@@ -343,6 +380,7 @@ export class WhoamiService {
       peers,
       peersNote: "peers = this rig's roster excluding self (no edge filter); edges = directional relationships; use `rig ps --nodes` for node inventory including self + live state",
       edges: { outgoing, incoming },
+      occupancy: this.occupancy(nodeRow.id),
       transcript,
       commands: { sendExamples, captureExamples },
       contextUsage,
