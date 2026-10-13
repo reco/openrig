@@ -155,6 +155,12 @@ export class ThreadSeatMap {
       .run(m.messageTs, m.channel, m.threadTs, m.seat, m.conversationId);
   }
 
+  /** What OpenRig posted into a thread (its replies, not the root), newest first: each part's ask and seat. */
+  partsInThread(threadTs: string, channel: string): Array<{ seat: string; conversationId: string }> {
+    return (this.db.prepare(`SELECT seat, conversation_id FROM thread_part_map WHERE thread_ts = ? AND channel = ? AND message_ts != thread_ts ORDER BY CAST(message_ts AS REAL) DESC`)
+      .all(threadTs, channel) as Array<{ seat: string; conversation_id: string }>).map((r) => ({ seat: r.seat, conversationId: r.conversation_id }));
+  }
+
   /** #899 — the ask and seat of a message OpenRig posted into a thread in this channel; null for any other message. */
   partOf(messageTs: string, channel: string): { threadTs: string; seat: string; conversationId: string } | null {
     const row = this.db.prepare(`SELECT thread_ts, seat, conversation_id FROM thread_part_map WHERE message_ts = ? AND channel = ?`)

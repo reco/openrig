@@ -1045,6 +1045,16 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         // session here; a real rig that happens to use such a name does.
         isAgentSeat: (seat) => !(/^daemon@kernel$|@host$|@system$|^system:/.test(seat))
           || !!opts.queueRepo.db.prepare("SELECT 1 FROM sessions WHERE session_name = ? LIMIT 1").get(seat),
+        newestOpenDecision: (threadTs, channel) => {
+          const root = threadMap.resolveByThread(threadTs);
+          if (!channel) return null;
+          for (const part of threadMap.partsInThread(threadTs, channel)) {
+            if (part.conversationId === root?.conversationId) continue;
+            const item = opts.queueRepo.getById(part.conversationId);
+            if (item && item.humanIntent !== "update" && hasLiveHumanGate(item)) return part;
+          }
+          return null;
+        },
         isHumanStarted: (conversationId) => {
           const item = opts.queueRepo.getById(conversationId);
           const root = threadMap.resolveByConversation(conversationId);
