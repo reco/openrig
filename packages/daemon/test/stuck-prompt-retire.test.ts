@@ -26,8 +26,10 @@ describe("stale stuck-prompt cards are retired", () => {
   let posts: Array<Record<string, unknown>>;
   let updates: Array<Record<string, unknown>>;
   const stops: Array<() => void> = [];
+  let threadDelayMs = 0;
 
   beforeEach(() => {
+    threadDelayMs = 0;
     home = mkdtempSync(join(tmpdir(), "prompt-retire-"));
     db = createDb(); migrate(db, ALL_MIGRATIONS);
     repo = new QueueRepository(db, new EventBus(db), { loadHumanRegistry: () => registry });
@@ -38,7 +40,11 @@ describe("stale stuck-prompt cards are retired", () => {
       home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, requestSweepIntervalMs: 50,
       fetchImpl: async (url, init) => {
         if (url.endsWith("chat.update")) { updates.push(JSON.parse(String(init?.body))); return reply({ ok: true }); }
-        if (url.endsWith("chat.postMessage")) { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); }
+        if (url.endsWith("chat.postMessage")) {
+          const body = JSON.parse(String(init?.body));
+          if (body.thread_ts && threadDelayMs) await new Promise((r) => setTimeout(r, threadDelayMs));
+          posts.push(body); return reply({ ok: true, ts: `${posts.length}.1` });
+        }
         return reply({ ok: true });
       },
     });
@@ -105,6 +111,18 @@ describe("stale stuck-prompt cards are retired", () => {
     repo.recordHumanAnswer({ qitemId: id, actorSession: "reco@external", questionId: "approval", optionId: "allow" });
     repo.resolveDirectHumanReply({ qitemId: id, actorSession: "reco@external", decision: "allow" });
     expect(await service.wait(id, "cfo@finance", 50)).toBe("allow");
+  });
+
+  it("a split approval card answered before its thread finished posting keeps the answer", async () => {
+    const service = makeApprovalService({ queueRepo: repo, optedIn: () => ["cfo@finance"], approver: () => "reco@external", verifySeat: () => true, pollMs: 10 });
+    const command = Array.from({ length: 200 }, (_, i) => `echo step ${i} of the generated migration`).join("\n");
+    threadDelayMs = 100;
+    const id = (await service.start({ sessionName: "cfo@finance", toolName: "Bash", toolInput: { command } }))!;
+    await vi.waitFor(() => expect(posts.some((p) => String(p.text).includes("Full Bash input in this card's thread."))).toBe(true));
+    expect(repo.getById(id)!.deliveryOutcome).not.toBe("posted");
+    repo.recordHumanAnswer({ qitemId: id, actorSession: "reco@external", questionId: "approval", optionId: "allow" });
+    repo.resolveDirectHumanReply({ qitemId: id, actorSession: "reco@external", decision: "allow" });
+    expect(await service.wait(id, "cfo@finance", 3000)).toBe("allow");
   });
 
   it("a newer card for the seat closes its earlier ones, saying a newer card replaced them", async () => {

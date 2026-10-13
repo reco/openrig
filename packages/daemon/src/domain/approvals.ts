@@ -212,7 +212,9 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
           }
           return answer;
         }
-        if (item.state !== "pending" || item.deliveryOutcome === "transport-failed") return "expired";
+        // Answered from the card's excerpt while its thread still posts: the answer stands once the thread lands.
+        const threadPending = (answer === "allow" || answer === "deny") && !!item.humanDetail && item.deliveryOutcome !== "transport-failed" && item.deliveryOutcome !== "never-posted";
+        if (!threadPending && (item.state !== "pending" || item.deliveryOutcome === "transport-failed")) return "expired";
         if (now() - Date.parse(item.tsCreated) >= timeoutMs()) {
           await expire(requestId, "no answer in time");
           return "expired";
