@@ -36,6 +36,7 @@ function makeDeps(overrides: Partial<SlackDeps> = {}): { deps: SlackDeps; logs: 
       checkEnvFilePermissions: () => null,
       verifyScopes: async () => ({ ok: true, granted: [], missing: [] }),
       verifyChannelMembership: async () => ({ ok: true, isMember: true }),
+      mappedChannels: (cfg: { channel?: string | null }) => (cfg.channel ? [{ channel: cfg.channel, isDefault: true, matches: [] as string[] }] : []),
       buildSlackAppManifest, FEATURE_SCOPES, BASELINE_REQUIRED_SCOPES,
     }),
     clientFactory: () => ({
@@ -107,7 +108,7 @@ describe("S10 CLI cutover — admin verbs route to the daemon", () => {
       verifyScopes: async () => ({ ok: true, granted: ["chat:write"], missing: [] }),
       verifyChannelMembership: async (_token: string, channel: string) => ({ ok: true, isMember: channel === "C1" }),
     }) as never }), ["verify", "--json"]);
-    expect(JSON.parse(logs[0]!)).toMatchObject({ ready: false, extraMembers: [{ id: "C2", isMember: false }] });
+    expect(JSON.parse(logs[0]!)).toMatchObject({ ready: false, channels: [{ channel: "C1", member: { isMember: true } }, { channel: "C2", matches: ["inbound psa-dev@psa"], member: { isMember: false } }] });
     expect(process.exitCode).toBe(1);
     process.exitCode = 0;
   });
