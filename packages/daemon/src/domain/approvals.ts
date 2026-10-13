@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import type { QueueRepository } from "./queue-repository.js";
 import { maskSecrets } from "./credential-mask.js";
 import { SLACK_SECTION_CAP, escapeSlackText, redactSecrets } from "./gateway/slack/message.js";
+import { dialogExcerpt } from "./stuck-prompt-watch.js";
 import { ruleDecision, type ApprovalRule } from "./approval-rules.js";
 
 export type ApprovalDecision = "allow" | "deny";
@@ -59,6 +60,8 @@ export const APPROVAL_ABANDONED_MS = 120_000;
 export const APPROVAL_TIMEOUT_MS = 1_800_000;
 const QUESTION_ID = "approval";
 const MAX_PENDING_PER_SEAT = 3;
+/** What the card's thread can carry within Slack's 20 message parts, escaped, with half-full cuts. */
+const MAX_DETAIL_CHARS = 25_000;
 
 /** What the human approves, in full: the command or patch text as written (Bash, Codex's
  *  apply_patch), else the tool input as JSON. */
@@ -157,11 +160,17 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
       const cwd = deps.cwdOf?.(input.sessionName);
       const reason = approvalReason(input.toolInput);
       const subagent = input.agentType ? `Asked by its ${input.agentType.replace(/[`*_~<>]/g, "")} subagent\n` : "";
-      const body = `${cwd ? `In \`${cwd.replace(/`/g, "")}\`\n` : ""}${subagent}${reason ? `${reason}\n` : ""}\`\`\`\n${approvalText(input.toolName, input.toolInput)}\n\`\`\``;
-      if (escapeSlackText(redactSecrets(body)).length > SLACK_SECTION_CAP) {
-        log(`approval for ${input.sessionName} not sent: the ${input.toolName} input is too long to show in full`);
+      const text = approvalText(input.toolName, input.toolInput);
+      const head = `${cwd ? `In \`${cwd.replace(/`/g, "")}\`\n` : ""}${subagent}${reason ? `${reason}\n` : ""}`;
+      const whole = `${head}\`\`\`\n${text}\n\`\`\``;
+      // Too long for one card: the card shows the start and end, its thread the whole input.
+      const fits = escapeSlackText(redactSecrets(whole)).length <= SLACK_SECTION_CAP;
+      if (!fits && escapeSlackText(redactSecrets(text)).length > MAX_DETAIL_CHARS) {
+        log(`approval for ${input.sessionName} not sent: the ${input.toolName} input is too long even for the card's thread`);
         return null;
       }
+      const body = fits ? whole : `${head}\`\`\`\n${dialogExcerpt(text)}\n\`\`\`\nFull ${input.toolName} input in this card's thread.`;
+      const humanDetail = fits ? undefined : `Full ${input.toolName} input:\n\`\`\`\n${text}\n\`\`\``;
       const open = deps.queueRepo.list({ tag: "approval-request", state: "pending", limit: 200 }).filter((q) => q.state === "pending" && q.sourceSession === input.sessionName && q.tags?.includes("approval-request"));
       if (open.length >= MAX_PENDING_PER_SEAT) {
         log(`approval for ${input.sessionName} not sent: ${open.length} requests already open`);
@@ -175,6 +184,7 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
         humanIntent: "decision",
         summary: `Approve ${input.toolName} for ${input.sessionName}?`,
         body,
+        ...(humanDetail ? { humanDetail } : {}),
         tags: ["approval-request"],
         humanQuestions: [{ id: QUESTION_ID, question: `Allow ${input.sessionName} to run this ${input.toolName}?`, options: [{ id: "allow", label: "Approve" }, { id: "deny", label: "Deny" }] }],
         nudge: false,
@@ -195,13 +205,16 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
         const item = deps.queueRepo.getById(requestId);
         if (!item?.tags?.includes("approval-request") || item.sourceSession !== sessionName) return "expired";
         const answer = item.humanAnswers?.[QUESTION_ID];
-        if (answer === "allow" || answer === "deny") {
+        // A card split over its thread: its buttons count only once every part, the full input included, is in Slack.
+        if ((answer === "allow" || answer === "deny") && (!item.humanDetail || item.deliveryOutcome === "posted")) {
           if (!deps.queueRepo.transitionLog.listForQitem(requestId).some((t) => t.transitionNote?.startsWith("approval "))) {
             deps.queueRepo.update({ qitemId: requestId, actorSession: "daemon@kernel", transitionNote: `approval ${answer} by ${item.destinationSession} for ${item.summary ?? "the request"}` });
           }
           return answer;
         }
-        if (item.state !== "pending" || item.deliveryOutcome === "transport-failed") return "expired";
+        // Answered from the card's excerpt while its thread still posts: the answer stands once the thread lands.
+        const threadPending = (answer === "allow" || answer === "deny") && !!item.humanDetail && item.deliveryOutcome !== "transport-failed" && item.deliveryOutcome !== "never-posted";
+        if (!threadPending && (item.state !== "pending" || item.deliveryOutcome === "transport-failed")) return "expired";
         if (now() - Date.parse(item.tsCreated) >= timeoutMs()) {
           await expire(requestId, "no answer in time");
           return "expired";

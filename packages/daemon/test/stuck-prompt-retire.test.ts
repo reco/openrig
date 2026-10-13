@@ -12,7 +12,8 @@ import { QueueRepository } from "../src/domain/queue-repository.js";
 import { buildSlackGatewayWire } from "../src/domain/gateway/slack/slack-subsystem.js";
 import { DEFAULT_CONFIG, saveConfig } from "../src/domain/gateway/slack/config.js";
 import { resolveSlackHandle } from "../src/domain/gateway/human-registry.js";
-import { hasRecentPromptCard, retireStalePromptNotices, supersedePromptNotices } from "../src/domain/stuck-prompt-watch.js";
+import { makeApprovalService } from "../src/domain/approvals.js";
+import { hasRecentPromptCard, promptCardBody, promptCardDetail, retireStalePromptNotices, supersedePromptNotices } from "../src/domain/stuck-prompt-watch.js";
 
 const founder = { entityId: "reco", class: "human" as const, displayName: "reco", address: "reco@external", connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:SLACK_BOT_TOKEN", role: "primary" as const, handle: "UFOUNDER" }], prefs: { deliveryClass: "A" as const } };
 const registry = { ok: true as const, entities: [founder] };
@@ -25,8 +26,10 @@ describe("stale stuck-prompt cards are retired", () => {
   let posts: Array<Record<string, unknown>>;
   let updates: Array<Record<string, unknown>>;
   const stops: Array<() => void> = [];
+  let threadDelayMs = 0;
 
   beforeEach(() => {
+    threadDelayMs = 0;
     home = mkdtempSync(join(tmpdir(), "prompt-retire-"));
     db = createDb(); migrate(db, ALL_MIGRATIONS);
     repo = new QueueRepository(db, new EventBus(db), { loadHumanRegistry: () => registry });
@@ -37,7 +40,11 @@ describe("stale stuck-prompt cards are retired", () => {
       home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, requestSweepIntervalMs: 50,
       fetchImpl: async (url, init) => {
         if (url.endsWith("chat.update")) { updates.push(JSON.parse(String(init?.body))); return reply({ ok: true }); }
-        if (url.endsWith("chat.postMessage")) { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); }
+        if (url.endsWith("chat.postMessage")) {
+          const body = JSON.parse(String(init?.body));
+          if (body.thread_ts && threadDelayMs) await new Promise((r) => setTimeout(r, threadDelayMs));
+          posts.push(body); return reply({ ok: true, ts: `${posts.length}.1` });
+        }
         return reply({ ok: true });
       },
     });
@@ -75,6 +82,47 @@ describe("stale stuck-prompt cards are retired", () => {
     expect(retireStalePromptNotices(repo, ["dev@rig"], new Map())).toEqual([replaced.id]);
     await closedWith(replaced.ts, "Closed: answered in the terminal.");
     expect(repo.getById(unread.id)?.state).toBe("pending");
+  });
+
+  it("a long dialog's card keeps its buttons and its thread carries the whole dialog in order", async () => {
+    const dialog = Array.from({ length: 300 }, (_, i) => `echo line ${String(i).padStart(3, "0")} of the generated script`).join("\n");
+    const card = { session: "cfo@finance", reason: "permission_prompt", promptLine: "Do you want to proceed?", attach: "tmux attach -t cfo@finance", waitingMinutes: 0, episodeId: "e1", since: 0, key: "k9", dialog,
+      choices: { allow: { key: "1", label: "Yes" }, deny: { key: "3", label: "No" } } };
+    await repo.create({ tags: ["stuck-prompt", "stuck-prompt:k9", "stuck-prompt-session:cfo@finance", "stuck-prompt-key:k9", "stuck-prompt-allow:1", "stuck-prompt-deny:3"],
+      sourceSession: "cfo@finance", destinationSession: "reco@external", humanIntent: "decision", summary: "cfo@finance is waiting at a permission prompt",
+      body: promptCardBody(card), humanDetail: promptCardDetail(card),
+      humanQuestions: [{ id: "answer", question: "Answer cfo@finance's prompt?", options: [{ id: "allow", label: "Approve" }, { id: "deny", label: "Deny" }] }], nudge: false });
+    await vi.waitFor(() => expect(posts.filter((p) => p.thread_ts).length).toBeGreaterThan(1));
+    const primary = posts.find((p) => String(p.text).includes("Full dialog in this card's thread."))!;
+    expect(actionable(primary)).toBe(true);
+    const thread = posts.filter((p) => p.thread_ts).map((p) => String(p.text)).join("\n");
+    const order = Array.from({ length: 300 }, (_, i) => thread.indexOf(`echo line ${String(i).padStart(3, "0")} of`));
+    expect(order.every((at) => at >= 0)).toBe(true);
+    expect(order.every((at, i) => i === 0 || at > order[i - 1]!)).toBe(true);
+  });
+
+  it("a split approval card's click, resolved the way Slack resolves it, returns the answer once its thread is posted", async () => {
+    const service = makeApprovalService({ queueRepo: repo, optedIn: () => ["cfo@finance"], approver: () => "reco@external", verifySeat: () => true, pollMs: 10 });
+    const command = Array.from({ length: 200 }, (_, i) => `echo step ${i} of the generated migration`).join("\n");
+    const id = (await service.start({ sessionName: "cfo@finance", toolName: "Bash", toolInput: { command } }))!;
+    expect(repo.getById(id)!.humanDetail).toContain("echo step 100 of");
+    await vi.waitFor(() => expect(repo.getById(id)!.deliveryOutcome).toBe("posted"));
+    expect(posts.filter((p) => p.thread_ts).length).toBeGreaterThan(0);
+    repo.recordHumanAnswer({ qitemId: id, actorSession: "reco@external", questionId: "approval", optionId: "allow" });
+    repo.resolveDirectHumanReply({ qitemId: id, actorSession: "reco@external", decision: "allow" });
+    expect(await service.wait(id, "cfo@finance", 50)).toBe("allow");
+  });
+
+  it("a split approval card answered before its thread finished posting keeps the answer", async () => {
+    const service = makeApprovalService({ queueRepo: repo, optedIn: () => ["cfo@finance"], approver: () => "reco@external", verifySeat: () => true, pollMs: 10 });
+    const command = Array.from({ length: 200 }, (_, i) => `echo step ${i} of the generated migration`).join("\n");
+    threadDelayMs = 100;
+    const id = (await service.start({ sessionName: "cfo@finance", toolName: "Bash", toolInput: { command } }))!;
+    await vi.waitFor(() => expect(posts.some((p) => String(p.text).includes("Full Bash input in this card's thread."))).toBe(true));
+    expect(repo.getById(id)!.deliveryOutcome).not.toBe("posted");
+    repo.recordHumanAnswer({ qitemId: id, actorSession: "reco@external", questionId: "approval", optionId: "allow" });
+    repo.resolveDirectHumanReply({ qitemId: id, actorSession: "reco@external", decision: "allow" });
+    expect(await service.wait(id, "cfo@finance", 3000)).toBe("allow");
   });
 
   it("a newer card for the seat closes its earlier ones, saying a newer card replaced them", async () => {
