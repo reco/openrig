@@ -52,6 +52,12 @@ export function sessionClaudeConfigDir(db: Database.Database, sessionName: strin
   return sessionRuntimeHomes(db, sessionName).claude;
 }
 
+export function seatCodexHomeDirs(db: Database.Database): string[] {
+  const hasColumn = (db.prepare("PRAGMA table_info(nodes)").all() as Array<{ name: string }>).some((c) => c.name === "codex_home");
+  if (!hasColumn) return [];
+  return (db.prepare("SELECT DISTINCT codex_home FROM nodes WHERE codex_home IS NOT NULL").all() as Array<{ codex_home: string }>).map((r) => r.codex_home);
+}
+
 /** A database without a home column (migrations 102, 103) has no seat with that home. */
 export function nodeRuntimeHomes(db: Database.Database, nodeId: string): RuntimeHomes {
   const columns = (db.prepare("PRAGMA table_info(nodes)").all() as Array<{ name: string }>).map((c) => c.name)

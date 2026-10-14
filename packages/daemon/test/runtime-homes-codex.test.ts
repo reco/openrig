@@ -181,6 +181,18 @@ describe("runtime_homes.codex: a seat runs on its own Codex account", () => {
     expect(cmd).toContain(`CODEX_HOME=${shellQuote(f.tvHome)}`);
   });
 
+  it.skipIf(process.platform === "win32")("restore stays on the seat's home when the typed launch falls back", async () => {
+    const f = fixture();
+    const sendShellCommand = vi.fn(async (_s: string, _cmd: string) => ({ ok: true }));
+    const tmux = { sendShellCommand, getPaneCommand: vi.fn(async () => "bash"), getSessionEnv: vi.fn(async () => { throw new Error("unavailable"); }) } as unknown as TmuxAdapter;
+    const launch = new SeatLaunchEnvironment(tmux, f.env, f.root, path.join(f.bin, "rig"), f.daemonHome);
+    const resume = new CodexResumeAdapter(tmux, { seatLaunchEnvironment: launch, codexHome: f.daemonHome, launchPath: f.env.PATH,
+      seatHomeServices: (sessionName) => sessionName === "checker@device-io" ? { codexHome: f.tvHome } : undefined });
+    vi.spyOn(resume as never, "verifyResume").mockResolvedValue({ ok: true } as never);
+    expect((await resume.resume("checker@device-io", "codex_id", "tv-thread", f.cwd)).ok).toBe(true);
+    expect(await f.run(sendShellCommand.mock.calls[0]![1])).toBe(f.tvHome);
+  });
+
   it("startup gives a seat's own home the shared rules and the activity hooks", async () => {
     const f = fixture();
     vi.spyOn(os, "homedir").mockReturnValue(f.home);
@@ -198,6 +210,9 @@ describe("runtime_homes.codex: a seat runs on its own Codex account", () => {
       expect(fs.existsSync(path.join(f.tvHome, "rules", "openrig.rules"))).toBe(true);
       expect(fs.readFileSync(path.join(f.tvHome, "config.toml"), "utf8")).toContain("# BEGIN OPENRIG MANAGED ACTIVITY HOOKS");
       expect(fs.readdirSync(f.tvHome).sort()).toEqual(["config.toml", "rules"]);
+      seedThread(f.tvHome, "tv-thread");
+      expect((daemon.deps.contextUsageStore as unknown as { readCodexThread(id: string): { rollout_path: string } | null }).readCodexThread("tv-thread")?.rollout_path)
+        .toBe(path.join(f.tvHome, "rollout-tv-thread.jsonl"));
     } finally { daemon.db.close(); }
   }, 60000);
 });

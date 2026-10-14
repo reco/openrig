@@ -105,9 +105,9 @@ export class SeatLaunchEnvironment {
     return bin;
   }
 
-  async command(session: string, command: string, target: { codexCwd?: string; nodeId?: string; generation?: string; runtime?: string } = {}): Promise<string> {
+  async command(session: string, command: string, target: { codexCwd?: string; codexHome?: string; nodeId?: string; generation?: string; runtime?: string } = {}): Promise<string> {
     const searchPath = this.sessionEnv.PATH;
-    const targetCodexHome = (target.nodeId ? this.runtimeHomes(target.nodeId).codex : undefined) ?? this.codexHome;
+    const targetCodexHome = target.codexHome ?? (target.nodeId ? this.runtimeHomes(target.nodeId).codex : undefined) ?? this.codexHome;
     const codexEnv = target.codexCwd !== undefined
       ? [searchPath ? `PATH=${shellQuote(searchPath)}` : "", targetCodexHome ? `CODEX_HOME=${shellQuote(targetCodexHome)}` : ""].filter(Boolean)
       : [];

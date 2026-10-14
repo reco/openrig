@@ -173,7 +173,7 @@ import { materializeBuiltinPolicyReference } from "./domain/builtin-policy-refer
 import { ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, readActivityEndpointFile } from "./domain/activity-endpoint.js";
 import { makeCodexPriorPolicyReader } from "./domain/codex-prior-policy.js";
 import { alwaysRuleFor, projectCodexRules, saveAlwaysRule, seedApprovalRules } from "./domain/approval-rules.js";
-import { nodeRuntimeHomes, sessionClaudeConfigDir, sessionRuntimeHomes } from "./domain/runtime-homes.js";
+import { nodeRuntimeHomes, seatCodexHomeDirs, sessionClaudeConfigDir, sessionRuntimeHomes } from "./domain/runtime-homes.js";
 import {
   getCompatibleOpenRigPath,
   getDefaultOpenRigPath,
@@ -1142,6 +1142,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const contextUsageStore = new ContextUsageStore(db, {
     stateDir: OPENRIG_HOME,
     codexHome: configuredCodexHome,
+    seatCodexHomes: () => seatCodexHomeDirs(db).filter((dir) => dir !== codexHome),
     // GHOST-STAGE (c-id): reject context readings from before the live occupant booted (prior
     // generation) so a frozen pre-handover sample can't drive the threshold. null = UNKNOWN (inert).
     resolveOccupantBootAt: (nodeId) => sessionRegistry.currentOccupantTenure(nodeId)?.bootAt ?? null,
