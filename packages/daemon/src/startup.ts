@@ -2275,8 +2275,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       const surfaceSkippedAllows = async () => {
         const skipped = readRulesFile(OPENRIG_HOME).skipped.map((r) => JSON.stringify(r));
         if (JSON.stringify(skipped) === skippedSeen) return;
-        skippedSeen = JSON.stringify(skipped);
-        if (!skipped.length) return;
+        if (!skipped.length) { skippedSeen = "[]"; return; }
         console.log(`[approvals] skipped ${skipped.length} invalid allow rule(s) in ${approvalRulesPath(OPENRIG_HOME)}: ${skipped.join(" ")}`);
         const registry = loadHumanRegistryForDelivery(OPENRIG_HOME);
         const human = registry.ok ? registry.entities.find((e) => e.role !== "requester") : undefined;
@@ -2284,13 +2283,14 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         await queueRepoInstance.create({ tags: ["approval-rules-skipped"], sourceSession: "daemon@kernel", destinationSession: human.address, humanIntent: "update",
           summary: `${skipped.length} approval rule(s) skipped: not a valid allow`, nudge: false,
           body: `These allow rules in ${approvalRulesPath(OPENRIG_HOME)} are not valid (expected Tool or Tool(pattern)), so they allow nothing and prompts they meant to cover still ask you. Every other rule, every deny included, still applies. Fix them in the file or re-add them with rig approvals allow; the next rule write (rig approvals, an Always click) drops them.\n\n${skipped.join("\n")}` });
+        skippedSeen = JSON.stringify(skipped);
       };
       void surfaceSkippedAllows().catch((e) => console.log(`[approvals] rules check failed: ${(e as Error).message}`));
       const recheckOpenPrompts = async () => {
         const stamp = rulesStamp();
         if (stamp === rulesSeen) return;
         rulesSeen = stamp;
-        await surfaceSkippedAllows();
+        await surfaceSkippedAllows().catch((e) => console.log(`[approvals] rules check failed: ${(e as Error).message}`));
         const rules = readApprovalRules(OPENRIG_HOME);
         for (const id of deps.approvalService?.recheck() ?? []) console.log(`[approvals] ${id} answered by a rule added after it was asked`);
         for (const id of await answerPromptsByRule(queueRepoInstance, { ...answerDeps, rules })) console.log(`[stuck-prompt] ${id} answered by a rule added after it was asked`);
