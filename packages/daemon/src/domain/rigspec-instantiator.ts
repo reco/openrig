@@ -312,7 +312,8 @@ import { planProjection, claudeConflictTargetPath, projectionConflictWarnings, f
 import { ProjectionManifestStore } from "./projection-manifest-store.js";
 import { StartupOrchestrator } from "./startup-orchestrator.js";
 import { PodRepository } from "./pod-repository.js";
-import type { RigSpec as PodRigSpec, RigSpecPod, RigSpecPodMember, StartupAction, StartupFile } from "./types.js";
+import type { RigSpec as PodRigSpec, RigSpecPod, RigSpecPodMember, RuntimeHomes, StartupAction, StartupFile } from "./types.js";
+import { resolveRuntimeHomes } from "./runtime-homes.js";
 import type { RuntimeAdapter, NodeBinding, ResolvedStartupFile } from "./runtime-adapter.js";
 import { resolveConcreteHint } from "./runtime-adapter.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
@@ -736,6 +737,7 @@ export class PodRigInstantiator {
               podId: podRecord.id,
               rigRoot,
               cwdOverride: opts?.cwdOverride,
+              rigRuntimeHomes: rigSpec.runtimeHomes,
             });
             logicalIdToNodeId.set(qualifiedId, node.id);
             // Seam B R2: restart-stable provenance persists AT MATERIALIZE (a
@@ -1516,6 +1518,7 @@ export class PodRigInstantiator {
             // site (see the role wire note above) — same member-ref persistence as
             // createMemberNode or `rig up <spec>` seats lose their policy ref.
             permissionPolicy: member.permissionPolicy,
+            runtimeHomes: resolveRuntimeHomes(rigSpec.runtimeHomes, member.runtimeHomes),
             sessionSource: member.sessionSource,
             cwd: configResult.config.cwd,
             restorePolicy: configResult.config.restorePolicy,
@@ -1861,6 +1864,7 @@ export class PodRigInstantiator {
     podId: string;
     rigRoot: string;
     cwdOverride?: string;
+    rigRuntimeHomes?: RuntimeHomes;
   }) {
     const effectiveCwd = resolveLaunchCwd(input.member.cwd, input.rigRoot, input.cwdOverride);
     const node = this.deps.rigRepo.addNode(input.rigId, input.qualifiedId, {
@@ -1872,6 +1876,7 @@ export class PodRigInstantiator {
       // OPR.0.4.8.3 Seam B: the member's OWN raw ref persists on the node (like role);
       // rig-level lives on the rig row; precedence applies at RESOLUTION, not storage.
       permissionPolicy: input.member.permissionPolicy,
+      runtimeHomes: resolveRuntimeHomes(input.rigRuntimeHomes, input.member.runtimeHomes),
       sessionSource: input.member.sessionSource,
       cwd: effectiveCwd,
       restorePolicy: input.member.restorePolicy,

@@ -10,6 +10,8 @@ import { isShellForeground } from "./shell-classifier.js";
 import { resolveReadinessTimeoutMs } from "./readiness-timeout.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { seatTokenEnv } from "./seat-token.js";
+import { runtimeHomeEnv } from "./runtime-homes.js";
+import type { RuntimeHomes } from "./types.js";
 
 /**
  * OPR.0.4.3.04 — the explicit successor-creation seam for the seat-handover
@@ -62,6 +64,7 @@ export interface SuccessorNode {
    *  Same continuity rationale as model — populated by the caller from node provenance; absent → the
    *  adapter emits no -p flag (unchanged for legacy/unpinned seats). */
   codexConfigProfile?: string | null;
+  runtimeHomes?: RuntimeHomes;
 }
 
 export type SuccessorLaunchResult =
@@ -181,6 +184,7 @@ export class SuccessorSessionLauncher {
       OPENRIG_RUNTIME: input.node.runtime ?? undefined,
       ...this.sessionEnv,
       ...(input.node.runtime ? this.runtimeSessionEnv[input.node.runtime] : undefined),
+      ...runtimeHomeEnv(input.node.runtimeHomes ?? {}, input.node.runtime),
       OPENRIG_OCCUPANT_GENERATION: input.occupantGeneration ?? undefined,
       ...seatTokenEnv(this.sessionEnv.OPENRIG_HOME, input.node.id, departingSession, input.occupantGeneration),
     });

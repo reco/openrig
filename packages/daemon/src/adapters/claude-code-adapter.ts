@@ -315,7 +315,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       // token IMMEDIATELY after Enter, which always returned undefined
       // against a real binary. Poll on the
       // verifyResumeLaunch cadence (12 × 500ms = 6s ceiling).
-      const newToken = await this.pollForResumeToken(opts.name, FORK_POLL_ATTEMPTS, FORK_POLL_DELAY_MS, managed?.configDir);
+      const newToken = await this.pollForResumeToken(opts.name, FORK_POLL_ATTEMPTS, FORK_POLL_DELAY_MS, managed?.configDir ?? this.claudeManagedLaunch?.seatConfigDir(binding.nodeId));
       if (!newToken) {
         return {
           ok: false,
@@ -751,7 +751,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     const statePaths: string[] = [];
     const failures: string[] = [];
     if (managed) {
-      if (cwd) statePaths.push(managed.configPaths(cwd).statePath);
+      if (cwd) statePaths.push(managed.configPaths(cwd, binding.nodeId).statePath);
     } else {
       if (home) statePaths.push(nodePath.join(home, ".claude.json"));
       // A classic seat types `claude` into its pane's shell, which inherits the tmux server's
@@ -761,7 +761,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       // selected home untouched: a child that inherits the daemon's selection read neither.
       try {
         const selectedCwd = cwd ?? (binding.nodeId ? this.claudeManagedLaunch?.boundCwd(binding.nodeId) : undefined);
-        const selected = selectedCwd ? this.claudeManagedLaunch?.selectedStatePath(selectedCwd) : undefined;
+        const selected = selectedCwd ? this.claudeManagedLaunch?.selectedStatePath(selectedCwd, binding.nodeId) : undefined;
         if (selected && !statePaths.includes(selected)) statePaths.push(selected);
       } catch (err) {
         failures.push((err as Error).message);

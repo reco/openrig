@@ -16,6 +16,7 @@ import type {
   Snapshot,
   SnapshotData,
   SessionSourceSpec,
+  RuntimeHomes,
 } from "./types.js";
 
 /**
@@ -125,6 +126,7 @@ interface NodeOptions {
   codexConfigProfile?: string;
   /** OPR.0.4.8.3 Seam B: per-seat permission_policy REF (builtin:<name> or spec-relative path). */
   permissionPolicy?: string;
+  runtimeHomes?: RuntimeHomes;
   cwd?: string;
   surfaceHint?: string;
   workspace?: string;
@@ -460,6 +462,10 @@ export class RigRepository {
         .run(opts.effort, id);
     }
 
+    if (opts?.runtimeHomes?.claude && this.hasNodeColumn("claude_config_dir")) {
+      this.db.prepare("UPDATE nodes SET claude_config_dir = ? WHERE id = ?").run(opts.runtimeHomes.claude, id);
+    }
+
     return this.rowToNode(
       this.db.prepare("SELECT * FROM nodes WHERE id = ?").get(id) as NodeRow
     );
@@ -735,6 +741,7 @@ export class RigRepository {
       effort: row.effort ?? null,
       codexConfigProfile: row.codex_config_profile ?? null,
       permissionPolicy: row.permission_policy ?? null,
+      runtimeHomes: row.claude_config_dir ? { claude: row.claude_config_dir } : {},
       cwd: row.cwd,
       surfaceHint: row.surface_hint ?? null,
       workspace: row.workspace ?? null,
@@ -824,6 +831,7 @@ interface NodeRow {
   effort?: string | null;
   codex_config_profile?: string | null;
   permission_policy?: string | null;
+  claude_config_dir?: string | null;
   cwd: string | null;
   surface_hint: string | null;
   workspace: string | null;

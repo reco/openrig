@@ -172,6 +172,7 @@ import { materializeBuiltinPolicyReference } from "./domain/builtin-policy-refer
 import { ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, readActivityEndpointFile } from "./domain/activity-endpoint.js";
 import { makeCodexPriorPolicyReader } from "./domain/codex-prior-policy.js";
 import { alwaysRuleFor, projectCodexRules, saveAlwaysRule, seedApprovalRules } from "./domain/approval-rules.js";
+import { nodeRuntimeHomes, sessionClaudeConfigDir } from "./domain/runtime-homes.js";
 import {
   getCompatibleOpenRigPath,
   getDefaultOpenRigPath,
@@ -298,6 +299,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // reader. The resolved default remains the writer/network-reader/session root.
   const dbPath = opts?.dbPath ?? ":memory:";
   const db = createDb(dbPath);
+  const nodeRuntimeHomesNow = (nodeId: string) => nodeRuntimeHomes(db, nodeId);
   migrate(db, ALL_MIGRATIONS);
 
   // 51-09 increment 1 — establish the daemon's durable self-host identity at
@@ -509,7 +511,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // S19 — the Claude self-report rung (pid.json), consulted per sweep for seats whose
     // declared inventory staffs it; unreadable = null = the ladder falls, never errors.
     selfReportReader: (sessionName, seatNodeId) => {
-      const sessionsDir = nodePath.join(process.env.CLAUDE_CONFIG_DIR ?? nodePath.join(os.homedir(), ".claude"), "sessions");
+      const sessionsDir = nodePath.join(nodeRuntimeHomesNow(seatNodeId).claude ?? process.env.CLAUDE_CONFIG_DIR ?? nodePath.join(os.homedir(), ".claude"), "sessions");
       return readClaudeSelfReportEvidence({ sessionsDir, sessionName, seatNodeId });
     },
   });
@@ -607,7 +609,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     },
   });
   const { SeatLaunchEnvironment } = await import("./domain/seat-launch-environment.js");
-  const seatLaunchEnvironment = new SeatLaunchEnvironment(tmuxAdapter, launchSessionEnv, process.cwd(), undefined, configuredCodexHome);
+  const seatLaunchEnvironment = new SeatLaunchEnvironment(tmuxAdapter, launchSessionEnv, process.cwd(), undefined, configuredCodexHome, nodeRuntimeHomesNow);
   const nodeLauncher = new NodeLauncher({
     db,
     rigRepo,
@@ -992,12 +994,12 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const continuityPolicyMaterializer = new ContinuityPolicyMaterializer(
     watchdogJobsRepoInstance,
     ({ sessionId }) => {
-      const row = db.prepare("SELECT resume_token FROM sessions WHERE id = ?").get(sessionId) as
-        | { resume_token: string | null }
+      const row = db.prepare("SELECT resume_token, node_id FROM sessions WHERE id = ?").get(sessionId) as
+        | { resume_token: string | null; node_id: string }
         | undefined;
       const token = row?.resume_token;
       if (!token) return null;
-      const claudeRoot = process.env.CLAUDE_CONFIG_DIR ?? nodePath.join(os.homedir(), ".claude");
+      const claudeRoot = nodeRuntimeHomesNow(row.node_id).claude ?? process.env.CLAUDE_CONFIG_DIR ?? nodePath.join(os.homedir(), ".claude");
       return findClaudeTranscriptByToken(nodePath.join(claudeRoot, "projects"), token);
     },
   );
@@ -1147,7 +1149,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // #421 — the pane's current Claude process start time; a sidecar sampled earlier is not this
   // process's, so capture and null-fill skip it.
   const claudeProcessStartedAt = (sessionName: string) => observeClaudePaneStartedAt({ target: sessionName, tmux: tmuxAdapter });
-  const resumeMetadataRefresher = new ResumeMetadataRefresher({ sessionRegistry, tmuxAdapter, contextUsageStore, claudeProcessStartedAt, codexHome: configuredCodexHome });
+  const resumeMetadataRefresher = new ResumeMetadataRefresher({ sessionRegistry, tmuxAdapter, contextUsageStore, claudeProcessStartedAt, codexHome: configuredCodexHome,
+    seatClaudeConfigDir: (sessionName) => sessionClaudeConfigDir(db, sessionName) });
   const claimService = new ClaimService({
     db, rigRepo, sessionRegistry, discoveryRepo, eventBus, tmuxAdapter, transcriptStore,
     claudeContextProvisioner: claudeAdapter,

@@ -105,6 +105,7 @@ import { threadPartMapSchema } from "./migrations/097_thread_part_map.js";
 import { queueTransitionsQitemIdOrderSchema } from "./migrations/098_queue_transitions_qitem_id_order.js";
 import { queueItemsRecoveryTagsSchema } from "./migrations/099_queue_items_recovery_tags.js";
 import { resumeRotationSchema } from "./migrations/101_claude_resume_rotation.js";
+import { nodeRuntimeHomesSchema } from "./migrations/102_node_runtime_homes.js";
 
 /** Ordered migrations; numbers may be reserved by independent changes. */
 
@@ -209,4 +210,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   queueTransitionsQitemIdOrderSchema,
   queueItemsRecoveryTagsSchema,
   resumeRotationSchema,
+  nodeRuntimeHomesSchema,
 ];

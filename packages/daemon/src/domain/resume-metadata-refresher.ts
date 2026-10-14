@@ -20,6 +20,7 @@ import { runAsyncSite } from "./sync-site-wrap.js";
 import { isClaudeSidecarFromEarlierProcess, type ResumeTokenCaptureDeps } from "./resume-token-capture.js";
 import { observeClaudePaneRuntime, type NativeProcessLister } from "./native-process-lineage.js";
 import { validateResumeToken } from "./resume-token-validation.js";
+import { shellQuote } from "../adapters/shell-quote.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -53,6 +54,8 @@ interface ResumeMetadataRefresherDeps {
   claudeProcessStartedAt?: ResumeTokenCaptureDeps["claudeProcessStartedAt"];
   /** Provider root used by the daemon's Claude launches; no scan of other homes. */
   claudeConfigDir?: string;
+  /** A seat's own config dir (runtime_homes.claude), which wins over claudeConfigDir for that seat. */
+  seatClaudeConfigDir?: (sessionName: string) => string | undefined;
   listClaudeProcesses?: NativeProcessLister;
 }
 
@@ -68,6 +71,7 @@ export class ResumeMetadataRefresher {
   private contextUsageStore: ResumeMetadataRefresherDeps["contextUsageStore"] | null;
   private claudeProcessStartedAt: ResumeMetadataRefresherDeps["claudeProcessStartedAt"] | null;
   private claudeConfigDir: string;
+  private seatClaudeConfigDir: (sessionName: string) => string | undefined;
   private listClaudeProcesses: NativeProcessLister | undefined;
 
   constructor(deps: ResumeMetadataRefresherDeps) {
@@ -94,6 +98,7 @@ export class ResumeMetadataRefresher {
     this.contextUsageStore = deps.contextUsageStore ?? null;
     this.claudeProcessStartedAt = deps.claudeProcessStartedAt ?? null;
     this.claudeConfigDir = deps.claudeConfigDir ?? process.env.CLAUDE_CONFIG_DIR ?? nodePath.join(this.homeDir, ".claude");
+    this.seatClaudeConfigDir = deps.seatClaudeConfigDir ?? (() => undefined);
     this.listClaudeProcesses = deps.listClaudeProcesses;
   }
 
@@ -234,7 +239,7 @@ export class ResumeMetadataRefresher {
       if (!first) return undefined;
       const started = Date.parse(first.process.startedAt ?? "");
       if (!Number.isFinite(started)) return undefined;
-      const configDir = nodePath.resolve(session.cwd ?? process.cwd(), this.claudeConfigDir);
+      const configDir = nodePath.resolve(session.cwd ?? process.cwd(), this.seatClaudeConfigDir(session.sessionName) ?? this.claudeConfigDir);
       const file = nodePath.join(configDir, "sessions", `${first.process.pid}.json`);
       const fd = fs.openSync(file, "r");
       let record: { name?: unknown; sessionId?: unknown };
@@ -293,10 +298,12 @@ export class ResumeMetadataRefresher {
     resumeToken: string,
     cwd?: string | null,
   ): Promise<"resumable" | "not_resumable" | "inconclusive"> {
-    const command = buildNativeResumeCommand("claude-code", resumeToken, sessionName);
-    if (!command) {
+    const resume = buildNativeResumeCommand("claude-code", resumeToken, sessionName);
+    if (!resume) {
       return "not_resumable";
     }
+    const seatDir = this.seatClaudeConfigDir(sessionName);
+    const command = seatDir ? `CLAUDE_CONFIG_DIR=${shellQuote(seatDir)} ${resume}` : resume;
 
     const probeSession = `rigged-refresh-${sanitizeTmuxName(sessionName)}-${Date.now().toString(36)}`;
     const create = this.tmuxAdapter.deliveryGuard
