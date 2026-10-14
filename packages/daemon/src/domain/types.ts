@@ -28,6 +28,7 @@ export interface ContinuityState {
 
 export interface RuntimeHomes {
   claude?: string;
+  codex?: string;
 }
 
 export interface Node {

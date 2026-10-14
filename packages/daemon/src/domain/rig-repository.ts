@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { ulid } from "ulid";
 import { deriveComposeProjectName } from "./compose-project-name.js";
 import type { ClaudeManagedBlockFile } from "./managed-blocks.js";
+import { homesFromColumns, type HomeColumns } from "./runtime-homes.js";
 import type {
   Rig,
   Node,
@@ -221,12 +222,14 @@ export class RigRepository {
     if (!this.hasRigColumn("claude_config_dir")) return;
     this.db.prepare("UPDATE rigs SET claude_config_dir = ?, updated_at = ? WHERE id = ?")
       .run(homes.claude ?? null, new Date().toISOString(), rigId);
+    if (this.hasRigColumn("codex_home")) this.db.prepare("UPDATE rigs SET codex_home = ? WHERE id = ?").run(homes.codex ?? null, rigId);
   }
 
   getRigRuntimeHomes(rigId: string): RuntimeHomes {
     if (!this.hasRigColumn("claude_config_dir")) return {};
-    const row = this.db.prepare("SELECT claude_config_dir FROM rigs WHERE id = ?").get(rigId) as { claude_config_dir: string | null } | undefined;
-    return row?.claude_config_dir ? { claude: row.claude_config_dir } : {};
+    const codex = this.hasRigColumn("codex_home") ? ", codex_home" : "";
+    const row = this.db.prepare(`SELECT claude_config_dir${codex} FROM rigs WHERE id = ?`).get(rigId) as HomeColumns | undefined;
+    return row ? homesFromColumns(row) : {};
   }
 
   /** OPR.0.4.8.3 Seam B — persist a rig's attached permission_policy REF (builtin:<name> or a
@@ -477,6 +480,10 @@ export class RigRepository {
 
     if (opts?.runtimeHomes?.claude && this.hasNodeColumn("claude_config_dir")) {
       this.db.prepare("UPDATE nodes SET claude_config_dir = ? WHERE id = ?").run(opts.runtimeHomes.claude, id);
+    }
+
+    if (opts?.runtimeHomes?.codex && this.hasNodeColumn("codex_home")) {
+      this.db.prepare("UPDATE nodes SET codex_home = ? WHERE id = ?").run(opts.runtimeHomes.codex, id);
     }
 
     return this.rowToNode(
@@ -754,7 +761,7 @@ export class RigRepository {
       effort: row.effort ?? null,
       codexConfigProfile: row.codex_config_profile ?? null,
       permissionPolicy: row.permission_policy ?? null,
-      runtimeHomes: row.claude_config_dir ? { claude: row.claude_config_dir } : {},
+      runtimeHomes: homesFromColumns(row),
       cwd: row.cwd,
       surfaceHint: row.surface_hint ?? null,
       workspace: row.workspace ?? null,
@@ -845,6 +852,7 @@ interface NodeRow {
   codex_config_profile?: string | null;
   permission_policy?: string | null;
   claude_config_dir?: string | null;
+  codex_home?: string | null;
   cwd: string | null;
   surface_hint: string | null;
   workspace: string | null;

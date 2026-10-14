@@ -225,7 +225,7 @@ export class RigSpecExporter {
       version: "0.2",
       name: rig.rig.name,
       ...(rigPermissionPolicy ? { permissionPolicy: rigPermissionPolicy } : {}),
-      ...(rigRuntimeHomes.claude ? { runtimeHomes: rigRuntimeHomes } : {}),
+      ...(Object.keys(rigRuntimeHomes).length ? { runtimeHomes: rigRuntimeHomes } : {}),
       ...(this.rigRepo.getRigNonInterruptive(rigId) ? { nonInterruptive: true } : {}),
       ...(claudeManagedBlockFile ? { managedBlocks: { "claude-code": claudeManagedBlockFile } } : {}),
       ...(workspace ? { workspace } : {}),

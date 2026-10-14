@@ -107,8 +107,9 @@ export class SeatLaunchEnvironment {
 
   async command(session: string, command: string, target: { codexCwd?: string; nodeId?: string; generation?: string; runtime?: string } = {}): Promise<string> {
     const searchPath = this.sessionEnv.PATH;
+    const targetCodexHome = (target.nodeId ? this.runtimeHomes(target.nodeId).codex : undefined) ?? this.codexHome;
     const codexEnv = target.codexCwd !== undefined
-      ? [searchPath ? `PATH=${shellQuote(searchPath)}` : "", this.codexHome ? `CODEX_HOME=${shellQuote(this.codexHome)}` : ""].filter(Boolean)
+      ? [searchPath ? `PATH=${shellQuote(searchPath)}` : "", targetCodexHome ? `CODEX_HOME=${shellQuote(targetCodexHome)}` : ""].filter(Boolean)
       : [];
     const fallbackHome = target.nodeId ? runtimeHomeEnv(this.runtimeHomes(target.nodeId), target.runtime) : {};
     const fallbackPrefix = Object.entries(fallbackHome).map(([key, value]) => `${key}=${shellQuote(value)} `).join("");
@@ -141,7 +142,7 @@ export class SeatLaunchEnvironment {
         if (!searchPath || !command.startsWith("codex ")) throw new Error("Expected a Codex launch command and PATH.");
         command = codexEntry(searchPath, target.codexCwd) + command.slice(5);
         try {
-          const codexConfig = path.join(this.codexHome ?? path.join(homedir(), ".codex"), "config.toml");
+          const codexConfig = path.join(this.runtimeHomes(identity.OPENRIG_NODE_ID).codex ?? this.codexHome ?? path.join(homedir(), ".codex"), "config.toml");
           const configText = existsSync(codexConfig) ? readFileSync(codexConfig, "utf8") : "";
           recordLaunchFingerprint(path.resolve(this.daemonCwd, this.sessionEnv.OPENRIG_HOME ?? ""), identity.OPENRIG_NODE_ID, identity.OPENRIG_SESSION_NAME, [
             { label: "Codex", file: launchExecutable("codex", searchPath, target.codexCwd) },

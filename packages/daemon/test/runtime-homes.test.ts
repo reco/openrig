@@ -46,7 +46,7 @@ describe("runtime_homes: a seat runs on its own Claude account", () => {
     expect(RigSpecSchema.validate(spec({ claude: "~/.claude-tv" })).valid).toBe(true);
     expect(RigSpecSchema.validate(spec(undefined, { claude: TV })).valid).toBe(true);
     expect(RigSpecSchema.validate(spec({ claude: "relative/dir" })).errors).toContain("runtime_homes.claude: must be an absolute path or start with ~/");
-    expect(RigSpecSchema.validate(spec(undefined, { codex: "/x" })).errors.join()).toMatch(/codex: a per-seat Codex home is not supported yet/);
+    expect(RigSpecSchema.validate(spec(undefined, { gemini: "/x" })).errors.join()).toMatch(/gemini: unknown runtime home/);
     expect(resolveRuntimeHomes({ claude: "~/.claude-tv" }, undefined, "/Users/someone")).toEqual({ claude: TV });
     expect(resolveRuntimeHomes({ claude: "/rig" }, { claude: "/seat" })).toEqual({ claude: "/seat" });
     expect(resolveRuntimeHomes(undefined, undefined)).toEqual({});

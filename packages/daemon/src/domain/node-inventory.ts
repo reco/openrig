@@ -21,7 +21,8 @@ import { deriveCanonicalSessionName } from "./session-name.js";
 import { buildNativeResumeCommand, buildCodexResumeCore } from "./native-resume-probe.js";
 import { tmuxAttachCommand } from "../adapters/tmux-server.js";
 import { shellQuote } from "../adapters/shell-quote.js";
-import { nodeRuntimeHomes } from "./runtime-homes.js";
+import { homesFromColumns, nodeRuntimeHomes, runtimeHomeEnv } from "./runtime-homes.js";
+import type { RuntimeHomes } from "./types.js";
 
 // -- Row types for SQL results --
 
@@ -37,6 +38,7 @@ interface InventoryRow {
   model: string | null;
   codex_config_profile: string | null;
   claude_config_dir: string | null;
+  codex_home: string | null;
   agent_ref: string | null;
   profile: string | null;
   cwd: string | null;
@@ -94,13 +96,13 @@ interface BindingRow {
 
 // -- Helpers --
 
-/** A seat on its own Claude account resumes only from that account's config dir. */
-const withClaudeConfigDir = (command: string, runtime: string | null, claudeConfigDir?: string | null) =>
-  runtime === "claude-code" && claudeConfigDir ? `CLAUDE_CONFIG_DIR=${shellQuote(claudeConfigDir)} ${command}` : command;
+/** A seat on its own account resumes only from that account's home. */
+const withRuntimeHome = (command: string, runtime: string | null, homes: RuntimeHomes = {}) =>
+  Object.entries(runtimeHomeEnv(homes, runtime)).map(([key, dir]) => `${key}=${shellQuote(dir)} `).join("") + command;
 
-function computeResumeCommand(runtime: string | null, resumeToken: string | null, codexConfigProfile?: string | null, claudeConfigDir?: string | null): string | null {
+function computeResumeCommand(runtime: string | null, resumeToken: string | null, codexConfigProfile?: string | null, homes?: RuntimeHomes): string | null {
   const command = buildNativeResumeCommand(runtime, resumeToken, null, codexConfigProfile);
-  return command && withClaudeConfigDir(command, runtime, claudeConfigDir);
+  return command && withRuntimeHome(command, runtime, homes);
 }
 
 function computeRecoveryGuidance(input: {
@@ -109,9 +111,9 @@ function computeRecoveryGuidance(input: {
   cwd: string | null;
   sessionName: string | null;
   codexConfigProfile?: string | null;
-  claudeConfigDir?: string | null;
+  homes?: RuntimeHomes;
 }): NodeRecoveryGuidance | null {
-  const { runtime, resumeToken, cwd, sessionName, codexConfigProfile, claudeConfigDir } = input;
+  const { runtime, resumeToken, cwd, sessionName, codexConfigProfile, homes } = input;
 
   if (runtime === "claude-code") {
     const commands: string[] = [];
@@ -119,12 +121,12 @@ function computeRecoveryGuidance(input: {
 
     if (resumeToken) {
       const cmd = buildNativeResumeCommand(runtime, resumeToken, sessionName);
-      if (cmd) commands.push(withClaudeConfigDir(cmd, runtime, claudeConfigDir));
+      if (cmd) commands.push(withRuntimeHome(cmd, runtime, homes));
     }
     if (cwd) {
       commands.push(`cd ${cwd}`);
     }
-    commands.push(withClaudeConfigDir("claude --resume", runtime, claudeConfigDir));
+    commands.push(withRuntimeHome("claude --resume", runtime, homes));
 
     if (sessionName) {
       notes.push(`Look for session name: ${sessionName}`);
@@ -145,13 +147,13 @@ function computeRecoveryGuidance(input: {
     const notes: string[] = [];
 
     if (resumeToken) {
-      commands.push(buildCodexResumeCore(resumeToken, codexConfigProfile));
+      commands.push(withRuntimeHome(buildCodexResumeCore(resumeToken, codexConfigProfile), runtime, homes));
     }
     if (cwd) {
       commands.push(`cd ${cwd}`);
     }
     if (!resumeToken) {
-      commands.push(buildCodexResumeCore("", codexConfigProfile, true));
+      commands.push(withRuntimeHome(buildCodexResumeCore("", codexConfigProfile, true), runtime, homes));
     }
 
     notes.push("Use workspace and recent prompt text to identify the right conversation.");
@@ -548,8 +550,9 @@ function runInventoryRowQuery(db: Database.Database, whereClause: string, orderC
   const codexConfigProfileSelect = hasCodexConfigProfile
     ? "n.codex_config_profile"
     : "NULL";
-  const claudeConfigDirSelect = db.prepare("PRAGMA table_info(nodes)").all()
-    .some((row) => (row as { name?: string }).name === "claude_config_dir") ? "n.claude_config_dir" : "NULL";
+  const nodeColumns = (db.prepare("PRAGMA table_info(nodes)").all() as Array<{ name?: string }>).map((row) => row.name);
+  const claudeConfigDirSelect = nodeColumns.includes("claude_config_dir") ? "n.claude_config_dir" : "NULL";
+  const codexHomeSelect = nodeColumns.includes("codex_home") ? "n.codex_home" : "NULL";
   const stmt = db.prepare(`
     SELECT
       n.id as node_id,
@@ -563,6 +566,7 @@ function runInventoryRowQuery(db: Database.Database, whereClause: string, orderC
       n.model,
       ${codexConfigProfileSelect} as codex_config_profile,
       ${claudeConfigDirSelect} as claude_config_dir,
+      ${codexHomeSelect} as codex_home,
       n.agent_ref,
       n.profile,
       n.cwd,
@@ -708,7 +712,7 @@ function buildInventoryEntry(
     previousOccupant: row.previous_occupant,
     handoverAt: row.handover_at,
     tmuxAttachCommand: row.binding_attachment_type === "tmux" && row.session_name ? tmuxAttachCommand(row.session_name) : null,
-    resumeCommand: computeResumeCommand(row.runtime, row.resume_token, row.codex_config_profile, row.claude_config_dir),
+    resumeCommand: computeResumeCommand(row.runtime, row.resume_token, row.codex_config_profile, homesFromColumns(row)),
     // OPR.0.4.0.26: recoveryGuidance is NOT inlined per node in the LIST
     // payload. It duplicated ~47KB of templated prose across all nodes and
     // no node-list consumer reads it. The full guidance is recomputed on
@@ -984,7 +988,7 @@ export function getNodeDetail(
       cwd: entry.cwd,
       sessionName: entry.canonicalSessionName,
       codexConfigProfile: entry.codexConfigProfile,
-      claudeConfigDir: nodeRuntimeHomes(db, entry.nodeId).claude,
+      homes: nodeRuntimeHomes(db, entry.nodeId),
     }),
     binding,
     startupFiles,

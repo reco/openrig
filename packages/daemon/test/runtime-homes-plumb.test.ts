@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import os from "node:os";
+import { mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
@@ -63,6 +64,24 @@ describe("runtime_homes reaches every node-creation path", () => {
     expect(expanded.ok, JSON.stringify(expanded)).toBe(true);
     expect(dirOf("qa.reviewer")).toBe(TV);
     expect(dirOf("qa.own")).toBe("/accounts/qa");
+  });
+
+  it("a rig's Codex home reaches its Codex seats, seats added later, and the resume hint", async () => {
+    const codexHome = mkdtempSync(path.join(os.tmpdir(), "codex-tvlabs-"));
+    try {
+      const codexMember = (id: string) => rawMember(id, { runtime: "codex" });
+      const yaml = RigSpecCodec.serialize(RigSpecSchema.normalize(rawSpec([codexMember("checker")], { codex: codexHome })) as unknown as RigSpec);
+      const outcome = await setup.podInstantiator.instantiate(yaml, RIG_ROOT);
+      expect(outcome.ok, JSON.stringify(outcome)).toBe(true);
+      const rigId = (outcome as { result: { rigId: string } }).result.rigId;
+      expect((await setup.podInstantiator.addMemberToPod(rigId, "dev", codexMember("late"), RIG_ROOT)).ok).toBe(true);
+      const homeOf = (logicalId: string) => (db.prepare("SELECT codex_home FROM nodes WHERE logical_id = ?").get(logicalId) as { codex_home: string | null }).codex_home;
+      expect(homeOf("dev.checker")).toBe(codexHome);
+      expect(homeOf("dev.late")).toBe(codexHome);
+      db.prepare("UPDATE sessions SET resume_token = 'thread-1', resume_type = 'codex_id' WHERE node_id = (SELECT id FROM nodes WHERE logical_id = 'dev.checker')").run();
+      const entry = getNodeInventory(db, rigId).find((e) => e.logicalId === "dev.checker");
+      expect(entry?.resumeCommand).toContain(`CODEX_HOME='${codexHome}'`);
+    } finally { rmSync(codexHome, { recursive: true, force: true }); }
   });
 
   it("rig up from YAML stores the rig's dir and shows it in the resume hint", async () => {

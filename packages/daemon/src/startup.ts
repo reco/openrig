@@ -38,6 +38,7 @@ import { RestoreOrchestrator } from "./domain/restore-orchestrator.js";
 import { ClaudeManagedLaunch } from "./domain/claude-managed-launch.js";
 import { ClaudeResumeAdapter } from "./adapters/claude-resume.js";
 import { CodexResumeAdapter } from "./adapters/codex-resume.js";
+import type { CodexHomeServices } from "./adapters/codex-runtime-adapter.js";
 import { codexDaemonSupportProbe, sharedCodexDaemonRunning } from "./domain/codex-daemon-support.js";
 import { codexNetworkDefaultReader } from "./domain/codex-network-default.js";
 import { prepareCodexTeamWorkspace } from "./domain/codex-team-workspace.js";
@@ -172,7 +173,7 @@ import { materializeBuiltinPolicyReference } from "./domain/builtin-policy-refer
 import { ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, readActivityEndpointFile } from "./domain/activity-endpoint.js";
 import { makeCodexPriorPolicyReader } from "./domain/codex-prior-policy.js";
 import { alwaysRuleFor, projectCodexRules, saveAlwaysRule, seedApprovalRules } from "./domain/approval-rules.js";
-import { nodeRuntimeHomes, sessionClaudeConfigDir } from "./domain/runtime-homes.js";
+import { nodeRuntimeHomes, sessionClaudeConfigDir, sessionRuntimeHomes } from "./domain/runtime-homes.js";
 import {
   getCompatibleOpenRigPath,
   getDefaultOpenRigPath,
@@ -638,10 +639,33 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const projectCodexRulesNow = () => {
     try { projectCodexRules(OPENRIG_HOME, codexHome); } catch (e) { console.log(`[approvals] Codex rules not updated: ${(e as Error).message}`); }
   };
+  // runtime_homes.codex: a seat on its own Codex home gets the same rules, hooks and probes, read from that home.
+  let codexHooksEnabled: boolean | undefined;
+  const seatCodexHomes = new Map<string, CodexHomeServices>();
+  const codexHomeServices = (dir: string | undefined): CodexHomeServices | undefined => {
+    if (!dir || dir === codexHome) return undefined;
+    let services = seatCodexHomes.get(dir);
+    if (!services) seatCodexHomes.set(dir, services = {
+      codexHome: dir,
+      detectDaemonSupport: codexDaemonSupportProbe(process.env.PATH, undefined, dir),
+      sharedDaemonRunning: () => sharedCodexDaemonRunning(dir),
+      readNetworkDefault: codexNetworkDefaultReader({ launchPath: process.env.PATH, home: daemonHome, codexHome: dir }),
+      readPriorPolicy: makeCodexPriorPolicyReader(dir),
+      projectRules: () => {
+        try { projectCodexRules(OPENRIG_HOME, dir); } catch (e) { console.log(`[approvals] Codex rules not updated in ${dir}: ${(e as Error).message}`); }
+        try {
+          if (codexHooksEnabled === true) codexAdapter.ensureCodexActivityHooks(dir);
+          if (codexHooksEnabled === false) codexAdapter.removeCodexActivityHooks(dir);
+        } catch (e) { console.error(`[openrig] codex hooks not updated in ${dir}: ${(e as Error).message}`); }
+      },
+    });
+    return services;
+  };
   const prepareTeamWorkspace = (sessionName: string) => prepareCodexTeamWorkspace(sessionName,
     new ContextPackSettingsStore().resolveConfig().workspaceRoot,
     process.env.OPENRIG_SHARED_DOCS_ROOT?.trim() || nodePath.join(daemonHome, ".openrig", "shared-docs"), daemonHome);
-  const codexResume = new CodexResumeAdapter(tmuxAdapter, { prepareTeamWorkspace, seatLaunchEnvironment, codexHome: configuredCodexHome, launchPath: process.env.PATH, detectDaemonSupport: codexDaemonSupportProbe(process.env.PATH, undefined, configuredCodexHome), sharedDaemonRunning: () => sharedCodexDaemonRunning(codexHome), readNetworkDefault: readCodexNetworkDefault, readPriorPolicy: makeCodexPriorPolicyReader(codexHome), projectRules: projectCodexRulesNow });
+  const codexResume = new CodexResumeAdapter(tmuxAdapter, { prepareTeamWorkspace, seatLaunchEnvironment, codexHome: configuredCodexHome, launchPath: process.env.PATH, detectDaemonSupport: codexDaemonSupportProbe(process.env.PATH, undefined, configuredCodexHome), sharedDaemonRunning: () => sharedCodexDaemonRunning(codexHome), readNetworkDefault: readCodexNetworkDefault, readPriorPolicy: makeCodexPriorPolicyReader(codexHome), projectRules: projectCodexRulesNow,
+    seatHomeServices: (sessionName) => codexHomeServices(sessionRuntimeHomes(db, sessionName).codex) });
   // OPR.0.4.6.PI1 — the Pi seat-state root + the compiled runner entry (daemon
   // dist). Shared by the Pi runtime adapter, the resume adapter, and the
   // resume-token capture sidecar reader.
@@ -798,7 +822,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter, readFile: (p: string) => fs.readFileSync(p, "utf-8") });
   const runtimeSettings = new ContextPackSettingsStore().resolveConfig();
   const claudeAdapter = new ClaudeCodeAdapter({ tmux: tmuxAdapter, seatLaunchEnvironment, claudeManagedLaunch, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), copyFile: (src: string, dest: string) => fs.copyFileSync(src, dest), listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, readdir: (dir: string) => fs.readdirSync(dir), statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m), homedir: os.homedir() }, stateDir: OPENRIG_HOME, collectorAssetPath: nodePath.resolve(import.meta.dirname, "../assets/claude-statusline-context.cjs"), autoDriveProviderPrompts: runtimeSettings.recoveryAutoDriveProviderPrompts, activityRelayPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs"), claudeHooksManifestPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/claude.json"), recordProjection: (targetPath: string, content: string) => projectionManifestStore.record({ targetPath, lastHash: hashContent(content), writtenAt: new Date().toISOString() }) });
-  const codexAdapter = new CodexRuntimeAdapter({ prepareTeamWorkspace, tmux: tmuxAdapter, seatLaunchEnvironment, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m), homedir: daemonHome }, codexHome: configuredCodexHome, launchPath: process.env.PATH, detectDaemonSupport: codexDaemonSupportProbe(process.env.PATH, undefined, configuredCodexHome), sharedDaemonRunning: () => sharedCodexDaemonRunning(codexHome), readNetworkDefault: readCodexNetworkDefault, readPriorPolicy: makeCodexPriorPolicyReader(codexHome), projectRules: projectCodexRulesNow, activityRelayPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs") });
+  const codexAdapter = new CodexRuntimeAdapter({ prepareTeamWorkspace, tmux: tmuxAdapter, seatLaunchEnvironment, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m), homedir: daemonHome }, codexHome: configuredCodexHome, launchPath: process.env.PATH, detectDaemonSupport: codexDaemonSupportProbe(process.env.PATH, undefined, configuredCodexHome), sharedDaemonRunning: () => sharedCodexDaemonRunning(codexHome), readNetworkDefault: readCodexNetworkDefault, readPriorPolicy: makeCodexPriorPolicyReader(codexHome), projectRules: projectCodexRulesNow, seatHomeServices: (nodeId) => codexHomeServices(nodeRuntimeHomesNow(nodeId).codex), activityRelayPath: nodePath.resolve(import.meta.dirname, "../assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs") });
   // OPR.0.4.6.PI1 — the RPC-first Pi adapter (runner-in-a-pane). Same fsOps
   // shape as the Codex adapter; seat isolation roots under piStateRoot.
   const piAdapter = new PiRuntimeAdapter({ tmux: tmuxAdapter, seatLaunchEnvironment, fsOps: { readFile: (p: string) => fs.readFileSync(p, "utf-8"), writeFile: (p: string, c: string) => fs.writeFileSync(p, c, "utf-8"), exists: (p: string) => fs.existsSync(p), mkdirp: (p: string) => fs.mkdirSync(p, { recursive: true }), listFiles: (dir: string) => { const r: string[] = []; function w(d: string, pre: string) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) w(nodePath.join(d, e.name), nodePath.join(pre, e.name)); else r.push(pre ? nodePath.join(pre, e.name) : e.name); } } w(dir, ""); return r; }, statMode: (p: string) => fs.statSync(p).mode, chmod: (p: string, m: number) => fs.chmodSync(p, m) }, stateRoot: piStateRoot, runnerEntryPath: piRunnerEntryPath });
@@ -823,6 +847,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     ensureDefaultClaudeCompactionFiles(OPENRIG_HOME);
     const settingsStore = new SettingsStore();
     const enabled = settingsStore.resolveOne("runtime.codex.hooks_enabled").value as boolean;
+    codexHooksEnabled = enabled;
     let codexVersion: string | undefined;
     const codexVersionRow = db.prepare(
       "SELECT version FROM runtime_verifications WHERE runtime = 'codex' ORDER BY verified_at DESC LIMIT 1"
@@ -1150,7 +1175,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // process's, so capture and null-fill skip it.
   const claudeProcessStartedAt = (sessionName: string) => observeClaudePaneStartedAt({ target: sessionName, tmux: tmuxAdapter });
   const resumeMetadataRefresher = new ResumeMetadataRefresher({ sessionRegistry, tmuxAdapter, contextUsageStore, claudeProcessStartedAt, codexHome: configuredCodexHome,
-    seatClaudeConfigDir: (sessionName) => sessionClaudeConfigDir(db, sessionName) });
+    seatClaudeConfigDir: (sessionName) => sessionClaudeConfigDir(db, sessionName),
+    seatCodexHome: (sessionName) => sessionRuntimeHomes(db, sessionName).codex });
   const claimService = new ClaimService({
     db, rigRepo, sessionRegistry, discoveryRepo, eventBus, tmuxAdapter, transcriptStore,
     claudeContextProvisioner: claudeAdapter,
