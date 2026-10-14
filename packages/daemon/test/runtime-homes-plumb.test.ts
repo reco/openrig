@@ -7,6 +7,9 @@ import { RigSpecSchema } from "../src/domain/rigspec-schema.js";
 import { RigSpecCodec } from "../src/domain/rigspec-codec.js";
 import { getNodeInventory } from "../src/domain/node-inventory.js";
 import type { RigSpec } from "../src/domain/types.js";
+import { RigSpecExporter } from "../src/domain/rigspec-exporter.js";
+import { SessionRegistry } from "../src/domain/session-registry.js";
+import { PodRepository } from "../src/domain/pod-repository.js";
 
 const RIG_ROOT = "/project/rigs/tv";
 const TV = path.join(os.homedir(), ".claude-tv");
@@ -37,10 +40,12 @@ describe("runtime_homes reaches every node-creation path", () => {
     return (outcome as { result: { rigId: string } }).result.rigId;
   }
 
-  it("materialize: the rig's dir lands on every seat, a member's own dir wins", async () => {
-    await tvRig();
+  it("materialize: the rig's dir lands on every seat, a member's own dir wins, and export keeps the rig's", async () => {
+    const rigId = await tvRig();
     expect(dirOf("dev.impl")).toBe(TV);
     expect(dirOf("dev.own")).toBe("/accounts/own");
+    const exported = new RigSpecExporter({ rigRepo: setup.rigRepo, sessionRegistry: new SessionRegistry(db), podRepo: new PodRepository(db) }).exportRig(rigId) as RigSpec;
+    expect(exported.runtimeHomes).toEqual({ claude: TV });
   });
 
   it("a member added later inherits the rig's dir", async () => {

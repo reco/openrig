@@ -219,11 +219,13 @@ export class RigSpecExporter {
     const workspace = this.rigRepo.getRigWorkspace(rigId);
     // #25: the selected Claude managed-block file is also a rig-row field.
     const claudeManagedBlockFile = this.rigRepo.getRigClaudeManagedBlockFile(rigId);
+    const rigRuntimeHomes = this.rigRepo.getRigRuntimeHomes(rigId);
 
     return {
       version: "0.2",
       name: rig.rig.name,
       ...(rigPermissionPolicy ? { permissionPolicy: rigPermissionPolicy } : {}),
+      ...(rigRuntimeHomes.claude ? { runtimeHomes: rigRuntimeHomes } : {}),
       ...(this.rigRepo.getRigNonInterruptive(rigId) ? { nonInterruptive: true } : {}),
       ...(claudeManagedBlockFile ? { managedBlocks: { "claude-code": claudeManagedBlockFile } } : {}),
       ...(workspace ? { workspace } : {}),
