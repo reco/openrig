@@ -98,6 +98,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   // Default = the real resolver; tests may inject a controlled one.
   private resolveGitAddDirs: CodexGitAddDirResolver;
   private prepareTeamWorkspace?: PrepareCodexTeamWorkspace;
+  private revealing = new Set<string>();
   // OPR.0.4.1.10 FR-B — absolute path to the daemon's own shipped activity-relay.cjs,
   // resolved by startup from import.meta.dirname. Used by ensureCodexActivityHooks
   // (FR-A) to write config-layer [hooks] command entries that are cwd-independent and
@@ -516,7 +517,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     return await this.tmux.capturePaneContent(target, 40) ?? "";
   }
 
-  async checkReady(binding: NodeBinding): Promise<ReadinessResult> {
+  async checkReady(binding: NodeBinding, opts: { revealNarrowScreen?: boolean } = {}): Promise<ReadinessResult> {
     if (!binding.tmuxSession) {
       return { ready: false, reason: "No tmux session bound" };
     }
@@ -532,7 +533,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     if (!await observeCodexPaneProcess({ target, tmux: this.tmux, listProcesses: this.listProcesses })) {
       return { ready: false, reason: probe.detail, code: probe.code };
     }
-    const enlarged = await this.captureEnlargedScreen(target);
+    const enlarged = opts.revealNarrowScreen ? await this.captureEnlargedScreen(binding.tmuxPane ?? target) : null;
     if (enlarged !== null) probe = assessNativeResumeProbe({ runtime: "codex", paneCommand, paneContent: enlarged });
     if (probe.status === "resumed") return { ready: true };
     if (probe.code === "returned_to_shell") {
@@ -542,15 +543,18 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   }
 
   private async captureEnlargedScreen(target: string): Promise<string | null> {
+    if (this.revealing.has(target)) return null;
+    this.revealing.add(target);
     try {
-      const pane = (await this.tmux.listPanes(target)).find((p) => p.active);
+      const panes = await this.tmux.listPanes(target);
+      const pane = panes.length === 1 ? panes[0]! : null;
       if (!pane || (pane.width >= PROBE_MIN_COLS && pane.height >= PROBE_MIN_ROWS)) return null;
       const priorSize = await this.tmux.getWindowOption(target, "window-size");
       const resized = await this.tmux.resizeWindow(target, Math.max(pane.width, PROBE_MIN_COLS), Math.max(pane.height, PROBE_MIN_ROWS));
       if (!resized.ok) return null;
       try {
         await this.sleep(PROBE_REDRAW_MS);
-        return await this.captureProbeScreen(target);
+        return await this.captureProbeScreen(pane.id);
       } finally {
         await this.tmux.resizeWindow(target, pane.width, pane.height);
         if (priorSize === null) await this.tmux.unsetWindowOption(target, "window-size");
@@ -558,6 +562,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       }
     } catch {
       return null;
+    } finally {
+      this.revealing.delete(target);
     }
   }
 

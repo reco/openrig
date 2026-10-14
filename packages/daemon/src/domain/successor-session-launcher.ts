@@ -406,7 +406,7 @@ export class SuccessorSessionLauncher {
     const maxDelay = 16_000;
 
     while (true) {
-      const result = await adapter.checkReady(binding);
+      const result = await adapter.checkReady(binding, { revealNarrowScreen: true });
       if (result.ready) return result;
       if (isAttentionRequiredReadinessCode(result.code)) return result;
 

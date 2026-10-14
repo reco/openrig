@@ -61,35 +61,68 @@ async function server(cols: number, rows: number, command: string | null) {
   const geometry = async () => (await tmux("display-message", "-p", "-t", "seat", "#{pane_width}x#{pane_height}")).stdout.trim();
   const windowSize = async () => (await tmux("show-options", "-wqv", "-t", "seat:", "window-size")).stdout.trim();
   await new Promise((r) => setTimeout(r, 800));
-  return { codex, binding, geometry, windowSize };
+  binding.tmuxPane = (await tmux("display-message", "-p", "-t", "seat", "#{pane_id}")).stdout.trim();
+  return { codex, binding, geometry, windowSize, tmux };
 }
 
 describe.skipIf(process.platform === "win32")("Codex readiness in a narrow pane (real tmux)", () => {
-  it("a live Codex in a 97x2 pane is ready, and the pane returns to 97x2", async () => {
+  const reveal = { revealNarrowScreen: true };
+
+  it("a launch's wait sees a live Codex in a 97x2 pane as ready, and the pane returns to 97x2", async () => {
     const s = await server(97, 2, "");
     expect(await s.geometry()).toBe("97x2");
-    expect(await s.codex.checkReady(s.binding)).toEqual({ ready: true });
+    expect(await s.codex.checkReady(s.binding, reveal)).toEqual({ ready: true });
+    expect(await s.geometry()).toBe("97x2");
+    expect(await s.windowSize()).toBe("");
+  });
+
+  it("a window-level window-size is put back after the reveal", async () => {
+    const s = await server(97, 2, "");
+    await s.tmux("set-option", "-w", "-t", "seat:", "window-size", "smallest");
+    expect(await s.codex.checkReady(s.binding, reveal)).toEqual({ ready: true });
+    expect(await s.windowSize()).toBe("smallest");
+  });
+
+  it("overlapping reveals leave no window-local window-size behind", async () => {
+    const s = await server(97, 2, "");
+    const results = await Promise.all([s.codex.checkReady(s.binding, reveal), s.codex.checkReady(s.binding, reveal)]);
+    expect(results).toContainEqual({ ready: true });
     expect(await s.geometry()).toBe("97x2");
     expect(await s.windowSize()).toBe("");
   });
 
   it("a normal pane is ready without any resize", async () => {
     const s = await server(120, 40, "");
-    expect(await s.codex.checkReady(s.binding)).toEqual({ ready: true });
+    expect(await s.codex.checkReady(s.binding, reveal)).toEqual({ ready: true });
     expect(await s.geometry()).toBe("120x40");
     expect(await s.windowSize()).toBe("");
   });
 
-  it("a live Codex whose screen shows no conversation is awaiting, never returned to shell", async () => {
+  it("other callers never resize: a hidden live Codex is awaiting, never returned to shell", async () => {
+    const s = await server(97, 2, "");
+    expect(await s.codex.checkReady(s.binding)).toMatchObject({ ready: false, code: "awaiting_runtime" });
+    expect(await s.geometry()).toBe("97x2");
+    expect(await s.windowSize()).toBe("");
+  });
+
+  it("a split window is left alone", async () => {
+    const s = await server(97, 4, "");
+    await s.tmux("split-window", "-d", "-t", "seat:", "sleep 60");
+    const before = (await s.tmux("list-panes", "-t", "seat:", "-F", "#{pane_width}x#{pane_height}")).stdout;
+    expect(await s.codex.checkReady(s.binding, reveal)).toMatchObject({ ready: false, code: "awaiting_runtime" });
+    expect((await s.tmux("list-panes", "-t", "seat:", "-F", "#{pane_width}x#{pane_height}")).stdout).toBe(before);
+    expect(await s.windowSize()).toBe("");
+  });
+
+  it("a live Codex whose screen shows no conversation is awaiting after the reveal", async () => {
     const s = await server(97, 2, "hidden");
-    const result = await s.codex.checkReady(s.binding);
-    expect(result).toMatchObject({ ready: false, code: "awaiting_runtime" });
+    expect(await s.codex.checkReady(s.binding, reveal)).toMatchObject({ ready: false, code: "awaiting_runtime" });
     expect(await s.geometry()).toBe("97x2");
   });
 
   it("a pane with no Codex process still reports returned to shell and is not resized", async () => {
     const s = await server(97, 2, null);
-    expect(await s.codex.checkReady(s.binding)).toMatchObject({ ready: false, code: "returned_to_shell" });
+    expect(await s.codex.checkReady(s.binding, reveal)).toMatchObject({ ready: false, code: "returned_to_shell" });
     expect(await s.windowSize()).toBe("");
   });
 });

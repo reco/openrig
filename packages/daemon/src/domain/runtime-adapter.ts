@@ -176,6 +176,7 @@ export interface RuntimeAdapter {
     opts: { name: string; resumeToken?: string; forkSource?: ForkSource },
   ): Promise<HarnessLaunchResult>;
 
-  /** Check if the runtime harness is responsive and ready. */
-  checkReady(binding: NodeBinding): Promise<ReadinessResult>;
+  /** Check if the runtime harness is responsive and ready. `revealNarrowScreen`: a launch's own wait
+   *  may briefly enlarge a too-small window to read a live runtime's screen, restoring it after. */
+  checkReady(binding: NodeBinding, opts?: { revealNarrowScreen?: boolean }): Promise<ReadinessResult>;
 }
