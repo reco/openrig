@@ -2259,7 +2259,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       // A human's Approve / Deny on a stuck-prompt notice is typed into the seat's terminal once, and
       // only while the same prompt is up; the thread says what happened either way.
       const { actOnPromptAnswers, answerPromptsByRule } = await import("./domain/stuck-prompt-watch.js");
-      const { approvalRulesPath, readApprovalRules } = await import("./domain/approval-rules.js");
+      const { approvalRulesPath, readApprovalRules, readRulesFile } = await import("./domain/approval-rules.js");
       const answerDeps = {
         capture: (session: string) => tmuxAdapter.capturePaneContent(session, STUCK_PROMPT_CAPTURE_LINES),
         inMode: (session: string) => tmuxAdapter.isPaneInMode(session),
@@ -2270,10 +2270,27 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       // Any write to the rules file (rig approvals, an Always click, an editor) re-checks the open prompts once.
       const rulesStamp = () => { try { const s = fs.statSync(approvalRulesPath(OPENRIG_HOME)); return `${s.mtimeMs}|${s.size}`; } catch { return "none"; } };
       let rulesSeen = rulesStamp();
+      // An invalid allow is skipped on every read; the human hears about each new set of them once.
+      let skippedSeen = "[]";
+      const surfaceSkippedAllows = async () => {
+        const skipped = readRulesFile(OPENRIG_HOME).skipped.map((r) => JSON.stringify(r));
+        if (JSON.stringify(skipped) === skippedSeen) return;
+        skippedSeen = JSON.stringify(skipped);
+        if (!skipped.length) return;
+        console.log(`[approvals] skipped ${skipped.length} invalid allow rule(s) in ${approvalRulesPath(OPENRIG_HOME)}: ${skipped.join(" ")}`);
+        const registry = loadHumanRegistryForDelivery(OPENRIG_HOME);
+        const human = registry.ok ? registry.entities.find((e) => e.role !== "requester") : undefined;
+        if (!human) return;
+        await queueRepoInstance.create({ tags: ["approval-rules-skipped"], sourceSession: "daemon@kernel", destinationSession: human.address, humanIntent: "update",
+          summary: `${skipped.length} approval rule(s) skipped: not a valid allow`, nudge: false,
+          body: `These allow rules in ${approvalRulesPath(OPENRIG_HOME)} are not valid (expected Tool or Tool(pattern)), so they allow nothing and prompts they meant to cover still ask you. Every other rule, every deny included, still applies. Fix them in the file or re-add them with rig approvals allow; the next rule write (rig approvals, an Always click) drops them.\n\n${skipped.join("\n")}` });
+      };
+      void surfaceSkippedAllows().catch((e) => console.log(`[approvals] rules check failed: ${(e as Error).message}`));
       const recheckOpenPrompts = async () => {
         const stamp = rulesStamp();
         if (stamp === rulesSeen) return;
         rulesSeen = stamp;
+        await surfaceSkippedAllows();
         const rules = readApprovalRules(OPENRIG_HOME);
         for (const id of deps.approvalService?.recheck() ?? []) console.log(`[approvals] ${id} answered by a rule added after it was asked`);
         for (const id of await answerPromptsByRule(queueRepoInstance, { ...answerDeps, rules })) console.log(`[stuck-prompt] ${id} answered by a rule added after it was asked`);

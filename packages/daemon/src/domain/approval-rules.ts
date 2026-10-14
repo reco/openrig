@@ -39,14 +39,21 @@ export function isValidRule(rule: unknown): rule is ApprovalRule {
     && (r.exact === undefined || (typeof r.exact === "boolean" && (!r.exact || parseMatch(r.match)!.arg !== null)));
 }
 
-export function readApprovalRules(home: string): ApprovalRule[] {
+/** The file's valid rules, and the invalid allows left out of them: skipping an allow only asks the human more.
+ *  Any other invalid rule fails the whole file, so a mistyped deny never silently stops denying. */
+export function readRulesFile(home: string): { rules: ApprovalRule[]; skipped: unknown[] } {
   let raw: string;
-  try { raw = readFileSync(approvalRulesPath(home), "utf8"); } catch { return []; }
+  try { raw = readFileSync(approvalRulesPath(home), "utf8"); } catch { return { rules: [], skipped: [] }; }
   const rules = (JSON.parse(raw) as { rules?: unknown }).rules;
   if (!Array.isArray(rules)) throw new Error(`${APPROVAL_RULES_FILE} has no "rules" list`);
-  const invalid = rules.findIndex((r) => !isValidRule(r));
+  const isAllow = (r: unknown) => (r as { effect?: unknown } | null)?.effect === "allow";
+  const invalid = rules.findIndex((r) => !isValidRule(r) && !isAllow(r));
   if (invalid !== -1) throw new Error(`${APPROVAL_RULES_FILE} rule ${invalid + 1} is invalid: ${JSON.stringify(rules[invalid])}`);
-  return rules as ApprovalRule[];
+  return { rules: rules.filter(isValidRule), skipped: rules.filter((r) => !isValidRule(r)) };
+}
+
+export function readApprovalRules(home: string): ApprovalRule[] {
+  return readRulesFile(home).rules;
 }
 
 /** The rules a new home starts with: read-only inspection, git read verbs, test runners and the rig CLI,

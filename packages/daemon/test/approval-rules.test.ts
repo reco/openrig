@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeDenyRules, readApprovalRules, ruleDecision, type ApprovalRule } from "../src/domain/approval-rules.js";
+import { claudeDenyRules, readApprovalRules, readRulesFile, ruleDecision, saveAlwaysRule, type ApprovalRule } from "../src/domain/approval-rules.js";
 import { makeApprovalService } from "../src/domain/approvals.js";
 import { activityRoutes } from "../src/routes/activity.js";
 import { operationalLaunchArgs } from "../src/adapters/kernel-authority.js";
@@ -130,11 +130,37 @@ describe("approval rules", () => {
     expect(effect(rules, { sessionName: "a@b", toolName: "WebFetch", toolInput: { url: "https://x" } })).toBe("allow");
   });
 
-  it("reads rules from the home and refuses an invalid file rather than half-applying it", () => {
+  it("reads rules from the home, skips an invalid allow, and refuses a file with any other invalid rule", () => {
     expect(readApprovalRules(mkdtempSync(join(tmpdir(), "none-")))).toEqual([]);
     expect(readApprovalRules(home({ rules: [{ effect: "allow", match: "Bash(ps *)" }] }))).toHaveLength(1);
     expect(() => readApprovalRules(home({ rules: [{ effect: "maybe", match: "Bash(ps *)" }] }))).toThrow(/rule 1 is invalid/);
-    expect(() => readApprovalRules(home({ rules: [{ effect: "allow", match: "Bash()" }] }))).toThrow(/invalid/);
+    expect(() => readApprovalRules(home({ rules: [{ effect: "deny", match: "Bash(git push *" }] }))).toThrow(/rule 1 is invalid/);
+    const bad = { effect: "allow", match: "Bash(tmux *" };
+    const h = home({ rules: [{ effect: "allow", match: "Bash(ps *)" }, bad, { effect: "allow", match: "Bash()" }] });
+    expect(readApprovalRules(h)).toEqual([{ effect: "allow", match: "Bash(ps *)" }]);
+    expect(readRulesFile(h).skipped).toEqual([bad, { effect: "allow", match: "Bash()" }]);
+    expect(() => saveAlwaysRule(h, bad as ApprovalRule)).toThrow(/not a rule/);
+    saveAlwaysRule(h, { effect: "allow", match: "Bash(tmux ls *)" });
+    expect(readRulesFile(h)).toEqual({ rules: [{ effect: "allow", match: "Bash(ps *)" }, { effect: "allow", match: "Bash(tmux ls *)" }], skipped: [] });
+  });
+
+  it("an allow missing its closing paren leaves the deny check working for every seat", async () => {
+    const h = home({ rules: [{ effect: "allow", match: "Bash(env -u TMUX tmux *" }, { effect: "allow", match: "Bash(tmux *" },
+      { effect: "deny", match: "Bash(git push * main)", note: "merges go through review" }, { effect: "allow", match: "Bash(git status *)" }] });
+    const service = makeApprovalService({ queueRepo: {} as never, optedIn: () => [], approver: () => null, verifySeat: () => true, rules: () => readApprovalRules(h) });
+    const app = new Hono();
+    app.use("*", async (c, next) => {
+      c.set("activityHookToken" as never, "hook" as never);
+      c.set("approvalService" as never, service as never);
+      await next();
+    });
+    app.route("/api/activity", activityRoutes);
+    const check = (command: string) => app.request("/api/activity/deny-check", { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer hook" }, body: JSON.stringify({ sessionName: "dev@rig", command }) });
+    const pushed = await check("git push origin main");
+    expect(pushed.status).toBe(200);
+    expect(await pushed.json()).toMatchObject({ ok: true, deny: true });
+    expect(await (await check("git status")).json()).toEqual({ ok: true, deny: false });
+    expect(service.byRule(bash("tmux ls"))).toBeNull();
   });
 
   it("the approvals route answers from a rule before any human is asked, and the hook shows the rule's reason", async () => {

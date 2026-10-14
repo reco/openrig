@@ -17,15 +17,17 @@ export function approvalsCommand(deps: ApprovalsDeps = {}): Command {
   const home = () => deps.home ?? getOpenRigHome();
   const surface = async () => (await import("@openrig/daemon/approval-rules")) as RulesSurface;
   const describe = (r: Rule, i: number) => `${i + 1}. ${r.effect} ${r.match}${r.seats ? ` seats=${r.seats}` : ""}${r.note ? ` (${r.note})` : ""}`;
+  const skippedNote = (skipped: unknown[], verb: string) =>
+    skipped.length ? `\n${verb} ${skipped.length} invalid allow rule(s): ${skipped.map((r) => JSON.stringify(r)).join(" ")}` : "";
 
   const cmd = new Command("approvals").description(
     "Allow/deny rules for agent permission prompts (Claude and Codex seats). Deny wins over allow; a prompt no rule matches asks the human as before.",
   );
 
   cmd.command("list").description("List the rules, numbered").option("--json", "JSON output").action(async (opts: { json?: boolean }) => {
-    const rules = (await surface()).readApprovalRules(home());
-    if (opts.json) return log(JSON.stringify({ rules }, null, 2));
-    log(rules.length ? rules.map(describe).join("\n") : "No approval rules.");
+    const { rules, skipped } = (await surface()).readRulesFile(home());
+    if (opts.json) return log(JSON.stringify({ rules, skipped }, null, 2));
+    log((rules.length ? rules.map(describe).join("\n") : "No approval rules.") + skippedNote(skipped, "Skipped"));
   });
 
   for (const effect of ["allow", "deny"] as const) {
@@ -37,19 +39,20 @@ export function approvalsCommand(deps: ApprovalsDeps = {}): Command {
         const s = await surface();
         const rule: Rule = { effect, match, ...(opts.seats ? { seats: opts.seats } : {}), ...(opts.note ? { note: opts.note } : {}) };
         if (!s.isValidRule(rule)) throw new Error(`not a rule: ${match} (expected Tool or Tool(pattern))`);
-        const rules = [...s.readApprovalRules(home()), rule];
+        const file = s.readRulesFile(home());
+        const rules = [...file.rules, rule];
         s.writeApprovalRules(home(), rules);
-        log(`${describe(rule, rules.length - 1)}\n${APPLIES}`);
+        log(`${describe(rule, rules.length - 1)}\n${APPLIES}${skippedNote(file.skipped, "Dropped")}`);
       });
   }
 
   cmd.command("remove <number>").description("Remove a rule by its number in `rig approvals list`").action(async (n: string) => {
     const s = await surface();
-    const rules = s.readApprovalRules(home());
+    const { rules, skipped } = s.readRulesFile(home());
     const index = Number(n) - 1;
     if (!Number.isInteger(index) || !rules[index]) throw new Error(`no rule ${n}; see rig approvals list`);
     s.writeApprovalRules(home(), rules.filter((_, i) => i !== index));
-    log(`removed ${describe(rules[index]!, index)}`);
+    log(`removed ${describe(rules[index]!, index)}${skippedNote(skipped, "Dropped")}`);
   });
 
   return cmd;
