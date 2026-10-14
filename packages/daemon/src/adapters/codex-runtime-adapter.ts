@@ -46,6 +46,10 @@ interface UpdatePromptAttempt {
 
 type CodexProcess = NativeProcessRow;
 
+const PROBE_MIN_COLS = 80;
+const PROBE_MIN_ROWS = 24;
+const PROBE_REDRAW_MS = 500;
+
 export interface CodexAdapterFsOps {
   readFile(path: string): string;
   writeFile(path: string, content: string): void;
@@ -521,16 +525,40 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       return { ready: false, reason: "tmux session not responsive" };
     }
 
-    const paneCommand = await this.tmux.getPaneCommand(binding.tmuxSession);
-    const paneContent = await this.captureProbeScreen(binding.tmuxSession);
-    const probe = assessNativeResumeProbe({
-      runtime: "codex",
-      paneCommand,
-      paneContent,
-    });
-
+    const target = binding.tmuxSession;
+    const paneCommand = await this.tmux.getPaneCommand(target);
+    let probe = assessNativeResumeProbe({ runtime: "codex", paneCommand, paneContent: await this.captureProbeScreen(target) });
     if (probe.status === "resumed") return { ready: true };
+    if (!await observeCodexPaneProcess({ target, tmux: this.tmux, listProcesses: this.listProcesses })) {
+      return { ready: false, reason: probe.detail, code: probe.code };
+    }
+    const enlarged = await this.captureEnlargedScreen(target);
+    if (enlarged !== null) probe = assessNativeResumeProbe({ runtime: "codex", paneCommand, paneContent: enlarged });
+    if (probe.status === "resumed") return { ready: true };
+    if (probe.code === "returned_to_shell") {
+      return { ready: false, code: "awaiting_runtime", reason: "Codex is running in the pane, but its screen does not show a conversation yet." };
+    }
     return { ready: false, reason: probe.detail, code: probe.code };
+  }
+
+  private async captureEnlargedScreen(target: string): Promise<string | null> {
+    try {
+      const pane = (await this.tmux.listPanes(target)).find((p) => p.active);
+      if (!pane || (pane.width >= PROBE_MIN_COLS && pane.height >= PROBE_MIN_ROWS)) return null;
+      const priorSize = await this.tmux.getWindowOption(target, "window-size");
+      const resized = await this.tmux.resizeWindow(target, Math.max(pane.width, PROBE_MIN_COLS), Math.max(pane.height, PROBE_MIN_ROWS));
+      if (!resized.ok) return null;
+      try {
+        await this.sleep(PROBE_REDRAW_MS);
+        return await this.captureProbeScreen(target);
+      } finally {
+        await this.tmux.resizeWindow(target, pane.width, pane.height);
+        if (priorSize === null) await this.tmux.unsetWindowOption(target, "window-size");
+        else if (priorSize !== "manual") await this.tmux.setWindowOption(target, "window-size", priorSize);
+      }
+    } catch {
+      return null;
+    }
   }
 
   private async dismissSkippableCodexUpdatePrompt(
