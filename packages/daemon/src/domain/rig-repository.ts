@@ -216,6 +216,19 @@ export class RigRepository {
     return row?.non_interruptive === 1;
   }
 
+  /** The rig-level runtime homes every new seat in this rig inherits (members override key by key). */
+  setRigRuntimeHomes(rigId: string, homes: RuntimeHomes): void {
+    if (!this.hasRigColumn("claude_config_dir")) return;
+    this.db.prepare("UPDATE rigs SET claude_config_dir = ?, updated_at = ? WHERE id = ?")
+      .run(homes.claude ?? null, new Date().toISOString(), rigId);
+  }
+
+  getRigRuntimeHomes(rigId: string): RuntimeHomes {
+    if (!this.hasRigColumn("claude_config_dir")) return {};
+    const row = this.db.prepare("SELECT claude_config_dir FROM rigs WHERE id = ?").get(rigId) as { claude_config_dir: string | null } | undefined;
+    return row?.claude_config_dir ? { claude: row.claude_config_dir } : {};
+  }
+
   /** OPR.0.4.8.3 Seam B — persist a rig's attached permission_policy REF (builtin:<name> or a
    *  spec-relative custom path), or null to clear. Mirrors setRigWorkspace (migration 056). */
   setRigPermissionPolicy(rigId: string, permissionPolicy: string | null): void {

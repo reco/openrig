@@ -171,6 +171,7 @@ function normalizeExpansionPodFragment(raw: Record<string, unknown>): ExpansionP
           : "permission_policy" in m
             ? { permissionPolicy: m["permission_policy"] }
             : {}),
+        ...("runtimeHomes" in m ? { runtimeHomes: m["runtimeHomes"] } : "runtime_homes" in m ? { runtimeHomes: m["runtime_homes"] } : {}),
         restorePolicy:
           typeof m["restorePolicy"] === "string"
             ? m["restorePolicy"]

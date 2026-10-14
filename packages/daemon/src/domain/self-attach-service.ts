@@ -183,6 +183,7 @@ export class SelfAttachService {
         runtime,
         cwd: opts.cwd,
         podId: pod.id,
+        runtimeHomes: this.rigRepo.getRigRuntimeHomes(opts.rigId),
       });
       const attached = this.attachExistingNodeWithinTransaction({
         rigId: opts.rigId,

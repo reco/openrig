@@ -699,6 +699,7 @@ export class ClaimService {
         runtime: discoveredRuntime,
         cwd: discovered.cwd ?? undefined,
         podId: opts.podId,
+        runtimeHomes: this.rigRepo.getRigRuntimeHomes(opts.rigId),
       });
 
       const session = this.sessionRegistry.registerClaimedSession(node.id, discovered.tmuxSession);

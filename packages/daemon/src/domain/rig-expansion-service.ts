@@ -151,6 +151,7 @@ export class RigExpansionService {
             ...("permissionPolicy" in member && member.permissionPolicy !== undefined
               ? { permission_policy: member.permissionPolicy }
               : {}),
+            ...("runtimeHomes" in member && member.runtimeHomes !== undefined ? { runtime_homes: member.runtimeHomes } : {}),
             ...(member.cwd ? { cwd: member.cwd } : {}),
             ...(member.model ? { model: member.model } : {}),
             // OPR.0.4.6.FAC1: role rides the fragment→spec map (a

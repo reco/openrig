@@ -1387,6 +1387,8 @@ export interface ExpansionPodFragment {
      *  invalid shapes — so the ONE canonical RigSpec validator rejects present-invalid
      *  values; the normalizer must never erase presence into absence/floor. */
     permissionPolicy?: unknown;
+    /** Raw like permissionPolicy, so the canonical validator rejects a present-invalid value. */
+    runtimeHomes?: unknown;
     restorePolicy?: string;
     label?: string;
     /**
