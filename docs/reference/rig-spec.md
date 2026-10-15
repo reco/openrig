@@ -383,6 +383,9 @@ running Codex seat at its next launch. A new override is excluded from git
 through `.git/info/exclude`. Codex stops reading project instructions at
 `project_doc_max_bytes` (32 KiB by default), and the copy counts toward it.
 
+An `AGENTS.override.md` you wrote yourself keeps its text, but it also gets the
+copy, so it no longer replaces `AGENTS.md`.
+
 Accepted values are `AGENTS.md` and `AGENTS.override.md`. Everything else in the
 Claude section above applies the same way: `rig down` cleans only the selected
 file, and blocks already in `AGENTS.md` stay until you remove them.
@@ -393,7 +396,10 @@ file, and blocks already in `AGENTS.md` stay until you remove them.
 `managed_blocks` from the spec and changes nothing else. A runtime left out of
 `managed_blocks` goes back to its default, so `managed_blocks: {}` undoes the
 change. Running seats and files are not touched: each seat writes the selected
-file at its next launch, restore or relaunch.
+file at its next launch, restore or relaunch. The change is refused while a
+member's previously selected file still holds OpenRig blocks, because nothing
+would remove them later; the error names each file. Remove the blocks from those
+files first (keeping the rest), then apply again.
 
 ---
 

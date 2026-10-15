@@ -393,6 +393,16 @@ describe("rig export + import", () => {
     expect(capturedImportPath).toBe("");
   });
 
+  it("import --workspace-only with --managed-blocks-only is refused before HTTP", async () => {
+    capturedImportPath = "";
+    const deps = importDeps(`managed_blocks: {}\n`);
+    const program = new Command();
+    program.addCommand(importCommand(deps));
+    const logs = await captureLogs(() => program.parseAsync(["node", "rig", "import", "rig.yaml", "--workspace-only", "--managed-blocks-only", "--target-rig", "rig-123"]));
+    expect(logs.join("\n")).toContain("--workspace-only cannot be combined");
+    expect(capturedImportPath).toBe("");
+  });
+
   // Test 8: import --instantiate with preflight fail (409)
   it("import --instantiate: preflight conflict (409)", async () => {
     const deps = importDeps("CONFLICT");

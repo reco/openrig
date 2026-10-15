@@ -65,8 +65,8 @@ export function importCommand(depsOverride?: ImportDeps): Command {
         process.exitCode = 1;
         return;
       }
-      if (opts.workspaceOnly && (opts.instantiate || opts.materializeOnly || opts.preflight)) {
-        console.error("--workspace-only cannot be combined with --instantiate, --materialize-only, or --preflight.");
+      if (opts.workspaceOnly && (opts.instantiate || opts.materializeOnly || opts.preflight || opts.managedBlocksOnly)) {
+        console.error("--workspace-only cannot be combined with --instantiate, --materialize-only, --managed-blocks-only, or --preflight.");
         process.exitCode = 1;
         return;
       }
@@ -96,8 +96,8 @@ export function importCommand(depsOverride?: ImportDeps): Command {
       }
 
       if (opts.managedBlocksOnly) {
-        if (opts.instantiate || opts.materializeOnly || opts.preflight || opts.workspaceOnly) {
-          console.error("--managed-blocks-only cannot be combined with --instantiate, --materialize-only, --workspace-only, or --preflight.");
+        if (opts.instantiate || opts.materializeOnly || opts.preflight) {
+          console.error("--managed-blocks-only cannot be combined with --instantiate, --materialize-only, or --preflight.");
           process.exitCode = 1;
           return;
         }
@@ -120,7 +120,7 @@ export function importCommand(depsOverride?: ImportDeps): Command {
         const data = res.data as { rigId: string; changed: boolean; before: Selection; managedBlocks: Selection };
         const show = (s: Selection) => `claude-code: ${s["claude-code"] ?? "CLAUDE.md (default)"}, codex: ${s.codex ?? "AGENTS.md (default)"}`;
         console.log(data.changed
-          ? `Managed blocks applied to rig ${data.rigId}: ${show(data.managedBlocks)} (was ${show(data.before)}). Seats pick this up at their next launch, restore or relaunch; files already written are not moved.`
+          ? `Managed blocks applied to rig ${data.rigId}: ${show(data.managedBlocks)} (was ${show(data.before)}). Seats write the selected file at their next launch, restore or relaunch.`
           : `Managed blocks already match rig ${data.rigId}: ${show(data.managedBlocks)}`);
         return;
       }

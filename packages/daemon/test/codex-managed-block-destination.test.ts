@@ -292,6 +292,38 @@ describe("POST /api/rigs/import/managed-blocks (rig import --managed-blocks-only
     db.close();
   });
 
+  it("refuses a switch while a member's previously selected file still holds blocks, naming it; a rollback the same", async () => {
+    const db = createFullTestDb();
+    const { app, rigRepo } = createTestApp(db);
+    const cwd = fs.mkdtempSync(nodePath.join(os.tmpdir(), "or-codex-local-switch-"));
+    tmpDirs.push(cwd);
+    const rig = rigRepo.createRig("Imago");
+    const pod = new PodRepository(db).createPod(rig.id, "dev", "Dev");
+    rigRepo.addNode(rig.id, "dev.owner", { runtime: "claude-code", podId: pod.id, agentRef: "local:a", profile: "default", cwd });
+    rigRepo.addNode(rig.id, "dev.check", { runtime: "codex", podId: pod.id, agentRef: "local:a", profile: "default", cwd });
+    const block = "\n<!-- BEGIN OpenRig MANAGED BLOCK: openrig-start.md -->\nx\n<!-- END OpenRig MANAGED BLOCK: openrig-start.md -->\n";
+    fs.writeFileSync(nodePath.join(cwd, "CLAUDE.md"), `# rules\n${block}`);
+    fs.writeFileSync(nodePath.join(cwd, "AGENTS.md"), `# rules\n${block}`);
+    const forward = "managed_blocks:\n  claude-code: CLAUDE.local.md\n  codex: AGENTS.override.md\n";
+
+    const refused = await post(app, forward, rig.id);
+    expect(refused.status).toBe(409);
+    const body = await refused.json() as { errors: string[] };
+    expect(body.errors.map((e) => e.split(" ")[0])).toEqual([nodePath.join(cwd, "CLAUDE.md"), nodePath.join(cwd, "AGENTS.md")]);
+    expect(rigRepo.getRigCodexManagedBlockFile(rig.id)).toBeNull();
+
+    fs.writeFileSync(nodePath.join(cwd, "CLAUDE.md"), "# rules\n");
+    fs.writeFileSync(nodePath.join(cwd, "AGENTS.md"), "# rules\n");
+    expect((await post(app, forward, rig.id)).status).toBe(200);
+
+    fs.writeFileSync(nodePath.join(cwd, "AGENTS.override.md"), `# rules\n${block}`);
+    const rollback = await post(app, "managed_blocks:\n  claude-code: CLAUDE.local.md\n", rig.id);
+    expect(rollback.status).toBe(409);
+    expect((await rollback.json() as { errors: string[] }).errors).toHaveLength(1);
+    expect(rigRepo.getRigCodexManagedBlockFile(rig.id)).toBe("AGENTS.override.md");
+    db.close();
+  });
+
   it("refuses invalid input or target before changing anything", async () => {
     const db = createFullTestDb();
     const { app, rigRepo } = createTestApp(db);

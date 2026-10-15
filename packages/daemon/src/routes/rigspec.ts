@@ -6,6 +6,8 @@ import type { RigInstantiator, PodRigInstantiator } from "../domain/rigspec-inst
 import type { RigSpecPreflight } from "../domain/rigspec-preflight.js";
 import type { RigRepository } from "../domain/rig-repository.js";
 import type { RigSpec } from "../domain/types.js";
+import nodePath from "node:path";
+import { DEFAULT_CLAUDE_MANAGED_BLOCK_FILE, DEFAULT_CODEX_MANAGED_BLOCK_FILE, stripManagedBlocks } from "../domain/managed-blocks.js";
 import { LegacyRigSpecCodec } from "../domain/rigspec-codec.js";
 import { RigSpecCodec } from "../domain/rigspec-codec.js";
 import { LegacyRigSpecSchema } from "../domain/rigspec-schema.js";
@@ -175,7 +177,10 @@ rigspecImportRoutes.post("/workspace", async (c) => {
 
 // POST /api/rigs/import/managed-blocks -> set an existing rig's managed-block files from the spec's
 // managed_blocks (a runtime left out goes back to its default). Files and running seats are not
-// touched: the next launch, restore or relaunch writes the selected file.
+// touched: the next launch, restore or relaunch writes the selected file. A change is refused while a
+// member's previously selected file still holds managed blocks, because nothing would clean that file
+// later (teardown cleans the selected file only) and Claude would load both copies, or an
+// AGENTS.override.md would keep hiding AGENTS.md.
 rigspecImportRoutes.post("/managed-blocks", async (c) => {
   const { rigRepo } = getDeps(c);
   const targetRigId = c.req.header("X-Target-Rig-Id");
@@ -196,13 +201,30 @@ rigspecImportRoutes.post("/managed-blocks", async (c) => {
   }
   const errors = RigSpecSchema.validateManagedBlocks(managedBlocks);
   if (errors.length) return c.json({ ok: false, code: "validation_failed", errors }, 400);
-  if (!rigRepo.getRig(targetRigId)) {
+  const rig = rigRepo.getRig(targetRigId);
+  if (!rig) {
     return c.json({ ok: false, code: "target_rig_not_found", error: `Rig not found: ${targetRigId}` }, 404);
   }
   const selected = managedBlocks as NonNullable<RigSpec["managedBlocks"]>;
   const before = { "claude-code": rigRepo.getRigClaudeManagedBlockFile(targetRigId), codex: rigRepo.getRigCodexManagedBlockFile(targetRigId) };
   const after = { "claude-code": selected["claude-code"] ?? null, codex: selected.codex ?? null };
   const changed = JSON.stringify(before) !== JSON.stringify(after);
+  const defaults = { "claude-code": DEFAULT_CLAUDE_MANAGED_BLOCK_FILE, codex: DEFAULT_CODEX_MANAGED_BLOCK_FILE };
+  const stale = new Set<string>();
+  for (const runtime of ["claude-code", "codex"] as const) {
+    const previous = before[runtime] ?? defaults[runtime];
+    if (previous === (after[runtime] ?? defaults[runtime])) continue;
+    for (const node of rig.nodes) {
+      if (node.runtime !== runtime || !node.cwd) continue;
+      const path = nodePath.join(node.cwd, previous);
+      const text = fs.existsSync(path) ? fs.readFileSync(path, "utf-8") : "";
+      if (stripManagedBlocks(text) !== text.trim()) stale.add(path);
+    }
+  }
+  if (stale.size) {
+    return c.json({ ok: false, code: "previous_file_has_managed_blocks", errors: [...stale].map((path) =>
+      `${path} still holds OpenRig managed blocks; remove each BEGIN/END OpenRig MANAGED BLOCK section (keep the rest of the file), then apply again`) }, 409);
+  }
   if (changed) {
     rigRepo.setRigClaudeManagedBlockFile(targetRigId, after["claude-code"]);
     rigRepo.setRigCodexManagedBlockFile(targetRigId, after.codex);
