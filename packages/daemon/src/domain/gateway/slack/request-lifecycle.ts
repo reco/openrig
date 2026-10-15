@@ -125,9 +125,8 @@ export async function closeRequest(deps: RequestLifecycleDeps, root: ThreadMappi
   const answeredInTerminal = reason === `prompt-cleared: ${ANSWERED_IN_TERMINAL}` || reason === `approval-expired: ${ANSWERED_IN_TERMINAL}`;
   const terminal = item && announce && answeredInTerminal ? item : null;
   if (terminal) {
-    const title = terminal.tags?.find((t) => t.startsWith(PROMPT_TITLE_TAG))?.slice(PROMPT_TITLE_TAG.length) ?? null;
-    if (await deps.postInThread(root.channel, root.threadTs, escapeSlackText(redactSecrets(terminalReceipt(terminal, title))))) {
-      await closeCard(deps, root.conversationId, root.channel, `Resolved in Terminal · ${title ?? `${terminal.sourceSession}'s prompt`}`, true);
+    if (await deps.postInThread(root.channel, root.threadTs, terminalReceipt(terminal))) {
+      await closeCard(deps, root.conversationId, root.channel, terminalLine(terminal), true);
       return;
     }
     deps.log?.(`request ${root.conversationId} answered in the terminal; its details reply was not posted, so its card keeps them`);
@@ -141,17 +140,44 @@ export async function closeRequest(deps: RequestLifecycleDeps, root: ThreadMappi
   if (!posted) deps.log?.(`request ${root.conversationId} closed; the closing line was not posted`);
 }
 
-/** The thread reply for a prompt answered in the terminal: who asked, what it showed, and only what is known
- *  of the outcome (the option typed there is not seen, and no Slack click saved a rule). */
-function terminalReceipt(item: QueueItem, title: string | null): string {
+type TerminalCard = Pick<QueueItem, "sourceSession" | "body" | "tags" | "humanDetail">;
+
+/** What the prompt was for: its card's title tag, else an approval card's "Reason:" line, else the description
+ *  line of a Claude Bash dialog the card shows. */
+function terminalTitle(item: TerminalCard): string | null {
+  return item.tags?.find((t) => t.startsWith(PROMPT_TITLE_TAG))?.slice(PROMPT_TITLE_TAG.length)
+    ?? /^Reason: (.+)$/m.exec(item.body ?? "")?.[1]?.trim() ?? shownDialogTitle(item.body ?? "");
+}
+
+/** A shown Claude Bash dialog reads: header, any "Tip:" line, the description, the command (behind a "│ " gutter
+ *  when it wraps), then its closing lines. The description is taken only when a command line follows it. */
+function shownDialogTitle(body: string): string | null {
+  const lines = (/```\n([\s\S]*?)\n```/.exec(body)?.[1] ?? "").split("\n");
+  const header = lines.indexOf("Bash command");
+  if (header < 0) return null;
+  const rest = lines.slice(header + 1).filter((l) => !l.startsWith("Tip:"));
+  const end = rest.findIndex((l) => l === "This command requires approval" || l === "Do you want to proceed?");
+  const said = rest.slice(0, end < 0 ? rest.length : end);
+  return said.length >= 2 && !said[0]!.startsWith("│") && (said[1]!.startsWith("│") || said.length === 2) ? said[0]! : null;
+}
+
+/** The one line a card answered in the terminal is reduced to. */
+export function terminalLine(item: TerminalCard): string {
+  return `Resolved in Terminal · ${terminalTitle(item) ?? `${item.sourceSession}'s prompt`}`;
+}
+
+/** The thread reply for a prompt answered in the terminal, ready to post: who asked, what it showed, and only
+ *  what is known of the outcome (the option typed there is not seen, and no Slack click saved a rule). */
+export function terminalReceipt(item: TerminalCard): string {
+  const title = terminalTitle(item);
   const shown = /```\n([\s\S]*?)\n```/.exec(item.body ?? "")?.[1];
-  return [
+  return escapeSlackText(redactSecrets([
     `*What:* The prompt for \`${item.sourceSession}\` was answered in the terminal. Which option was chosen there is not known here, so this does not mean it was approved or that it ran.`,
     title ? `*Why:* ${title}` : null,
     shown ? `\`\`\`\n${shown}\n\`\`\`` : null,
     item.humanDetail ? "Its full input is earlier in this thread." : null,
     "No rule was saved from Slack.",
-  ].filter(Boolean).join("\n");
+  ].filter(Boolean).join("\n")));
 }
 
 /** Its buttons can no longer do anything, so they go; the outcome is recorded on the row, and a
