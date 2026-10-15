@@ -68,6 +68,9 @@ export interface PickupFacts {
  *  prompt. A dialog actually shown arrives as its own permission_prompt notification. */
 export const PERMISSION_REQUEST_TELEMETRY = "permission_request";
 
+// ponytail: fixed 60 min (a CI run plus its fix-and-rerun), make it a setting if a team needs longer
+export const BACKGROUND_SHELL_GRACE_MS = 60 * 60_000;
+
 /** The owner facts every pickup surface passes from the arbitrated seat state. */
 export function ownerPickupFacts(state: { activity: string; needsInput: { count: number; reason: string | null }; backgroundShell?: boolean } | null | undefined):
   Pick<PickupFacts, "activity" | "needsInput" | "needsInputReason" | "backgroundShell"> {
@@ -93,14 +96,18 @@ export function derivePickup(facts: PickupFacts): PickupReceipt {
     return { state: "parked", evidence: "owner waits at a native prompt whose card was delivered to its human" };
   }
   const promptConfirmed = !!facts.needsInput && facts.needsInputReason !== PERMISSION_REQUEST_TELEMETRY;
-  const live = facts.activity === "working" || (facts.activity === "idle-at-prompt" && facts.backgroundShell === true);
-  if (live && !promptConfirmed) return { state: "working" };
+  if (facts.activity === "working" && !promptConfirmed) return { state: "working" };
   // Legacy callers without a timestamp retain their historical count contract.
   if (facts.lastMeaningfulAt === undefined && (facts.postClaimMotionCount > 0 || heartbeatAfterClaim)) return { state: "working" };
   const thresholdMs = (facts.thresholdMinutes ?? resolvePickupThresholdMinutes()) * 60_000;
   const anchor = Math.max(claimedMs, Date.parse(facts.lastMeaningfulAt ?? facts.claimedAt), heartbeatAfterClaim ? Date.parse(facts.lastHeartbeat!) : claimedMs);
   const ageMs = now.getTime() - anchor;
   if (ageMs <= thresholdMs) return { state: "working" };
+  // A background shell (a CI watch that resumes the seat) is liveness only for a bounded time: a
+  // dev server or tail that never resumes the seat must still age into a stall.
+  if (facts.activity === "idle-at-prompt" && facts.backgroundShell && !promptConfirmed && ageMs <= BACKGROUND_SHELL_GRACE_MS) {
+    return { state: "working" };
+  }
   const minutes = Math.floor(ageMs / 60_000);
   return {
     state: "stalled-after-claim",

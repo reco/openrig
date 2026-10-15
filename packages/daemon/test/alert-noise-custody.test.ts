@@ -51,6 +51,11 @@ describe("pickup derivation: liveness versus a person's prompt", () => {
     expect(derivePickup({ ...base, activity: "idle-at-prompt", backgroundShell: true }).state).toBe("working");
     expect(derivePickup({ ...base, activity: "idle-at-prompt" }).state).toBe("stalled-after-claim");
   });
+
+  it("a background shell that never resumes the seat (a dev server) still ages into a stall after the grace", () => {
+    const old = new Date(Date.now() - 61 * 60_000).toISOString();
+    expect(derivePickup({ ...base, claimedAt: old, lastMeaningfulAt: old, activity: "idle-at-prompt", backgroundShell: true }).state).toBe("stalled-after-claim");
+  });
 });
 
 describe("Claude self-report: status shell is a background shell, carried to the arbitrated state", () => {
