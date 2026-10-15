@@ -55,6 +55,20 @@ describe("approval rules", () => {
     expect(effect(rules, bash("git status && npm publish"))).toBeNull();
   });
 
+  it("allows a # inside a word (an owner/repo#PR@SHA ref is data to the shell), never a word that starts a comment", () => {
+    const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(rig *)" }, { effect: "allow", match: "Bash(rig queue *)" }, { effect: "deny", match: "Bash(rig queue delete *)" }];
+    const ref = "tv-labs/platform#11070@4b6d66947f09d374fbd127789ca4ec17e3922d6b";
+    expect(effect(rules, bash(`rig queue create --human-merge ${ref} --summary 'Merge the lockout fix'`))).toBe("allow");
+    expect(effect(rules, bash(`rig queue create --human-merge '${ref}' --summary "Merge the lockout fix"`))).toBe("allow");
+    expect(effect(rules, bash("rig queue show qitem-1 --note issue#42"))).toBe("allow");
+    expect(effect(rules, bash(`rig queue delete ${ref}`))).toBe("deny");
+    expect(effect(rules, bash("rig queue show x # a comment"))).toBeNull();
+    expect(effect(rules, bash("rig queue show x #comment"))).toBeNull();
+    expect(effect(rules, bash(`rig queue show ${ref}$(rm -rf ~)`))).toBeNull();
+    expect(effect(rules, bash(`rig queue show ${ref} && rm -rf x`))).toBeNull();
+    expect(effect(rules, bash("rig queue show a#{b,c}"))).toBeNull();
+  });
+
   it("allows quoted literals: single quotes, or double quotes without $, ` or \\ inside", () => {
     const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(sqlite3 -readonly -safe *)" }, { effect: "allow", match: "Bash(grep *)" }, { effect: "allow", match: "Bash(git log *)" }];
     expect(effect(rules, bash("sqlite3 -readonly -safe db.sqlite 'select count(*) from t where a = 1;'"))).toBe("allow");

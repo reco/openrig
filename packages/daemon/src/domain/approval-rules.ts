@@ -269,6 +269,8 @@ interface PlainCommand {
 const plain = createRequire(import.meta.url)("../../assets/plugins/openrig-core/hooks/scripts/plain-command.cjs") as PlainCommand;
 
 const PLAIN_WORD = /^[\w\-.:@%+,/=]+$/;
+/** An argument may also carry a # inside it (owner/repo#PR@SHA): the shell starts a comment only at a word's start. */
+const PLAIN_ARG = /^[\w\-.:@%+,/=#]+$/;
 
 /** What an allow rule matches of a simple part: the part after its leading literal assignments, whose words are
  *  plain or quoted literals: no glob, tilde, further assignment or executable path; a cd takes one plain directory
@@ -277,7 +279,7 @@ function allowForm(part: string): string | null {
   const parsed = plain.parse(part);
   if (!parsed || parsed.length !== 1) return null;
   // A partly quoted word's unquoted text still expands (braces, globs, a leading ~): it must be plain too.
-  if (!parsed[0]!.every((w) => { const bare = w.text.replace(/'[^']*'|"[^"]*"/g, ""); return bare === "" || PLAIN_WORD.test(bare); })) return null;
+  if (!parsed[0]!.every((w) => { const bare = w.text.replace(/'[^']*'|"[^"]*"/g, ""); return !w.text.startsWith("#") && (bare === "" || PLAIN_ARG.test(bare)); })) return null;
   const words = plain.afterAssignments(parsed[0]!);
   if (!words) return null;
   const [first, ...args] = words;
