@@ -223,7 +223,7 @@ rigspecImportRoutes.post("/managed-blocks", async (c) => {
   }
   if (stale.size) {
     return c.json({ ok: false, code: "previous_file_has_managed_blocks", errors: [...stale].map((path) =>
-      `${path} still holds OpenRig managed blocks; remove each BEGIN/END OpenRig MANAGED BLOCK section (keep the rest of the file), then apply again`) }, 409);
+      `${path} still holds OpenRig managed blocks; remove each BEGIN/END OpenRig MANAGED BLOCK section (keep the rest of the file, and delete the file if nothing else remains: an empty AGENTS.override.md still hides AGENTS.md from Codex), then apply again`) }, 409);
   }
   if (changed) {
     rigRepo.setRigClaudeManagedBlockFile(targetRigId, after["claude-code"]);

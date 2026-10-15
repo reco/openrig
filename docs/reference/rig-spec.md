@@ -399,7 +399,9 @@ change. Running seats and files are not touched: each seat writes the selected
 file at its next launch, restore or relaunch. The change is refused while a
 member's previously selected file still holds OpenRig blocks, because nothing
 would remove them later; the error names each file. Remove the blocks from those
-files first (keeping the rest), then apply again.
+files first (keeping the rest), then apply again. Delete a file that is left
+empty: Codex treats even an empty `AGENTS.override.md` as the directory's
+instructions and skips `AGENTS.md`.
 
 ---
 
