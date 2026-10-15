@@ -1829,6 +1829,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       // surface (rig ps, node inventory, parked-query) consumes — never
       // sessions.status, never the parallel AgentActivityStore ingest.
       seatActivity: seatActivityService,
+      deliveredPromptCard: (session) => queueRepoInstance.deliveredPromptCard(session),
     });
     const { SliceIndexer } = await import("./domain/slices/slice-indexer.js");
     const { SliceDetailProjector } = await import("./domain/slices/slice-detail-projector.js");

@@ -38,7 +38,7 @@ import type Database from "better-sqlite3";
 import { shellQuote } from "../adapters/shell-quote.js";
 import { parseFrontmatter } from "./slices/slice-indexer.js";
 import { lastMeaningfulTransition } from "./queue-waiting.js";
-import { derivePickup } from "./queue-pickup.js";
+import { derivePickup, ownerPickupFacts } from "./queue-pickup.js";
 import { resolveWorkNodeDirs } from "./current-work.js";
 import { resolveLegacyTopologyRigsRoot } from "./user-settings/settings-store.js";
 import { BUILD_INFO, type BuildInfo } from "../build-info.js";
@@ -65,8 +65,11 @@ export interface ExecutionViewDeps {
       needsInput: { count: number; reason: string | null };
       decidedBy: string | null;
       changedAt: string;
+      backgroundShell?: boolean;
     } | null;
   };
+  /** The seat's open prompt card delivered to its human (QueueRepository.deliveredPromptCard). */
+  deliveredPromptCard?: (session: string) => string | null;
   now?: () => Date;
   buildInfo?: BuildInfo;
   /** Injectable for tests; synchronous fakes are also accepted. */
@@ -807,7 +810,8 @@ export async function buildExecutionView(deps: ExecutionViewDeps, opts?: { missi
     const pickup = derivePickup({
       state: r.state,
       lastMeaningfulAt: lastMeaningfulTransition(deps.db, r.qitem_id)?.at,
-      activity: arbitrated?.activity, needsInput: arbitrated?.needsInput.count,
+      ...ownerPickupFacts(arbitrated),
+      promptCardDelivered: r.state === "in-progress" && !!deps.deliveredPromptCard?.(r.destination_session),
       claimedAt: r.claimed_at,
       lastHeartbeat: r.last_heartbeat,
       postClaimMotionCount: Number(r.post_claim_motion ?? 0),
@@ -1108,7 +1112,8 @@ export async function buildExecutionView(deps: ExecutionViewDeps, opts?: { missi
       const activity = deps.seatActivity?.getSeatStateBySession(r.destination_session);
       const pickup = derivePickup({
         lastMeaningfulAt: lastMeaningfulTransition(deps.db, r.qitem_id)?.at,
-        activity: activity?.activity, needsInput: activity?.needsInput.count,
+        ...ownerPickupFacts(activity),
+        promptCardDelivered: r.state === "in-progress" && !!deps.deliveredPromptCard?.(r.destination_session),
         state: r.state,
         claimedAt: r.claimed_at,
         lastHeartbeat: r.last_heartbeat,

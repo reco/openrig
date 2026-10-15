@@ -6,7 +6,8 @@ import type { ArbitratedSeatState } from "./activity-taxonomy.js";
 import { nextDueAt } from "./watchdog-due.js";
 import type { WatchdogJob } from "./watchdog-jobs-repository.js";
 
-export type WaitingActivityReader = (session: string) => Pick<ArbitratedSeatState, "activity" | "needsInput" | "decidedBy"> | null;
+export type WaitingActivityReader = (session: string) => (Pick<ArbitratedSeatState, "activity" | "needsInput" | "decidedBy">
+  & Partial<Pick<ArbitratedSeatState, "backgroundShell" | "lastSwap">>) | null;
 
 /** A read of the existing transition log, not another progress receipt. Machine
  * actors and typed wake receipts are bookkeeping, never task progress. Historical

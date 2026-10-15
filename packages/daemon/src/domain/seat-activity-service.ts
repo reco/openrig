@@ -332,6 +332,7 @@ export class SeatActivityService {
       needsInput: { count: 0, reason: null },
       needsInputEvidence: null,
       decidedBy: null,
+      backgroundShell: false,
       seq: seat.arbitrated.seq + 1, // the swap IS a visible event
       changedAt: at,
       rungs: this.rungsView(seat),
@@ -412,6 +413,7 @@ export class SeatActivityService {
           needsInput: { count: 0, reason: null },
           needsInputEvidence: null,
           decidedBy: null,
+          backgroundShell: false,
           seq: 0,
           changedAt: this.now().toISOString(),
           rungs: [],
@@ -619,19 +621,22 @@ export class SeatActivityService {
             : null;
     const needsInput: NeedsInputShape = decider?.needsInput ?? { count: 0, reason: null };
     const needsInputEvidence = decider ? { rung: decider.rung, observedAt: decider.observedAt } : null;
+    const backgroundShell = nextActivity === "idle-at-prompt" && decidedBy === "self-report" && selfEv?.backgroundShell === true;
 
     // Which rung answers is part of the answer: default zero → observed zero changes what
     // consumers may conclude, so it advances seq and pushes like a count change.
     const changed = nextActivity !== seat.arbitrated.activity
       || needsInput.count !== seat.arbitrated.needsInput.count
       || needsInput.reason !== seat.arbitrated.needsInput.reason
-      || (needsInputEvidence?.rung ?? null) !== (seat.arbitrated.needsInputEvidence?.rung ?? null);
+      || (needsInputEvidence?.rung ?? null) !== (seat.arbitrated.needsInputEvidence?.rung ?? null)
+      || backgroundShell !== seat.arbitrated.backgroundShell;
     seat.arbitrated = {
       ...seat.arbitrated,
       activity: nextActivity,
       needsInput,
       needsInputEvidence,
       decidedBy,
+      backgroundShell,
       seq: changed ? seat.arbitrated.seq + 1 : seat.arbitrated.seq,
       changedAt: changed ? this.now().toISOString() : seat.arbitrated.changedAt,
       rungs: this.rungsView(seat),
