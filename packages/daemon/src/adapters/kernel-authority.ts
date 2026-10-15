@@ -1,6 +1,7 @@
 import type { NodeBinding } from "../domain/runtime-adapter.js";
 import { nonInterruptiveArgs } from "./non-interruptive.js";
 import { shellQuote } from "./shell-quote.js";
+import { durableLaunchAsset } from "./durable-launch-asset.js";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { getOpenRigHome } from "../openrig-compat.js";
@@ -26,8 +27,9 @@ function seatRules(choice: LaunchChoice): { allow: string[]; deny: string[] } {
 
 function claudeCommandSettings(rules: { allow: string[]; deny: string[] }, ask: string[]): string[] {
   const permissions = { allow: rules.allow, ...(ask.length ? { ask } : {}), ...(rules.deny.length ? { deny: rules.deny } : {}) };
-  const hook = fileURLToPath(new URL("../../assets/claude-team-permissions.cjs", import.meta.url));
-  if (!existsSync(hook)) return ["--settings", JSON.stringify({ permissions })];
+  const packaged = fileURLToPath(new URL("../../assets/claude-team-permissions.cjs", import.meta.url));
+  if (!existsSync(packaged)) return ["--settings", JSON.stringify({ permissions })];
+  const hook = durableLaunchAsset(packaged, getOpenRigHome());
   const policy = Buffer.from(JSON.stringify({ allow: rules.allow, ask })).toString("base64");
   const command = [process.execPath, hook, policy].map(shellQuote).join(" ");
   return ["--settings", JSON.stringify({
