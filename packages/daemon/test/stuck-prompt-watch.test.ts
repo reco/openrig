@@ -113,12 +113,19 @@ describe("stuck-prompt watch", () => {
     expect(promptChoices(["Allow network access?", "› 1. Yes, just this once (y)", "  2. No (n)"].join("\n"))).toBeUndefined();
   });
 
+  it("a Claude Bash prompt is titled by the dialog's own line saying what the command does; other dialogs have no title", () => {
+    expect(readPrompt(claude)?.title).toBe("Create empty file digit-probe-1.txt");
+    expect(readPrompt(readFileSync(resolve(__dirname, "fixtures/claude-permission-prompt-gutter.txt"), "utf8"))?.title).toBe("Check Stripe webhook posts");
+    expect(readPrompt(claude.replace(" Create empty file digit-probe-1.txt\n", ""))?.title).toBeNull();
+    expect(readPrompt(codex)?.title).toBeNull();
+  });
+
   it("a stuck permission prompt's notice carries its fingerprint and choices", async () => {
     let t = 0;
     const sent: StuckPrompt[] = [];
     const watch = makeStuckPromptWatch({ runningSessions: () => ["cfo@finance"], capture: async () => claude, notify: async (p) => { sent.push(p); }, now: () => t });
     await watch.tick(); t = 6 * 60_000; await watch.tick();
-    expect(sent[0]).toMatchObject({ key: readPrompt(claude)!.key, choices: { allow: { key: "1" }, deny: { key: "4" } } });
+    expect(sent[0]).toMatchObject({ key: readPrompt(claude)!.key, choices: { allow: { key: "1" }, deny: { key: "4" } }, title: "Create empty file digit-probe-1.txt" });
   });
 
   it("a requested card is posted at once for an answerable prompt, carrying who asked and why", async () => {
@@ -127,7 +134,7 @@ describe("stuck-prompt watch", () => {
     const watch = makeStuckPromptWatch({ runningSessions: () => ["cfo@finance"], capture: async () => claude, notify: async (p) => { sent.push(p); return { qitemId: "q1" }; }, now: () => t });
     expect(await watch.requestCard("cfo@finance", { by: "advisor-lead@kernel", reason: "safe touch in its own worktree" })).toEqual({ outcome: "posted", qitemId: "q1" });
     expect(sent[0]).toMatchObject({ session: "cfo@finance", key: readPrompt(claude)!.key, choices: { allow: { key: "1" }, deny: { key: "4" } },
-      requestedBy: "advisor-lead@kernel", requestReason: "safe touch in its own worktree" });
+      requestedBy: "advisor-lead@kernel", requestReason: "safe touch in its own worktree", title: "Create empty file digit-probe-1.txt" });
     await watch.tick(); t = 6 * 60_000; await watch.tick();
     expect(sent).toHaveLength(1);
   });

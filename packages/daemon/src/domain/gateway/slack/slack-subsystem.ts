@@ -31,7 +31,7 @@ import { abortableSleep, evidenceAttachment, subsystemSlackDeliver } from "./sla
 import { InboundRouter, inboundQitemIdFor, NOT_ADDRESSED_TAG, SLACK_MESSAGE_TAG, type ReactionTarget, type SlackEvent, type SlackBlockActions, type InboundFilePort, type InboundFileResult, type StoredInboundFile, type FailedInboundFile } from "./inbound.js";
 import { makeInboundSenderResolver, type RegistrySurface } from "./inbound-admission.js";
 import { ThreadSeatMap, formatPostedStamp } from "./thread-seat-map.js";
-import { attributionFromSession, buildOutboundMessage, DEFAULT_CONFIRM_DECISION } from "./message.js";
+import { attributionFromSession, buildCompactClosedMessage, buildOutboundMessage, DEFAULT_CONFIRM_DECISION } from "./message.js";
 import { makeThreadRouteResolver } from "./thread-routing.js";
 import { closeRequest, isRequestToHuman, currentGateResolved, entityOf, gateOpenedAt, githubLinkState, isRequestHuman, sweepRequests, type LinkState, type RequestLifecycleDeps, type RequestLink } from "./request-lifecycle.js";
 import { resolveOutboundChannel, unsupportedChannelMapFields } from "./channel-map.js";
@@ -560,7 +560,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       if (!r.ok) log(`request lifecycle post failed thread=${threadTs}: ${r.error}`);
       return r.ok;
     },
-    closeCard: async (qitemId, channel, line) => {
+    closeCard: async (qitemId, channel, line, compact) => {
       const item = opts.queueRepo.getById(qitemId);
       // The request's own card: the message its latest posted receipt names (a resolved notice is a
       // separate message, never the card).
@@ -571,7 +571,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       if (!item || !messageTs) return { ok: true, messageTs: null };
       if (!bot) return { ok: false, messageTs, error: "bot token unavailable" };
       const won = transitions.some((t) => t.transitionNote === CONFIRM_WON_NOTE && t.actorSession === "daemon@kernel");
-      const message = buildOutboundMessage(item, { ...repostInputs(item), closedNote: line, ...(won ? { confirmOutcome: "confirmed" as const } : {}) });
+      const message = compact ? buildCompactClosedMessage(line)
+        : buildOutboundMessage(item, { ...repostInputs(item), closedNote: line, ...(won ? { confirmOutcome: "confirmed" as const } : {}) });
       const r = await updateChatMessage(bot, { channel, ts: messageTs, ...message }, opts.fetchImpl);
       return r.ok ? { ok: true, messageTs } : { ok: false, messageTs, error: r.error ?? "update failed" };
     },

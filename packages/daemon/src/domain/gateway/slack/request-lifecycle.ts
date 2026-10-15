@@ -6,10 +6,10 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { QueueRepository, RequestLink } from "../../queue-repository.js";
+import type { QueueItem, QueueRepository, RequestLink } from "../../queue-repository.js";
 import type { ThreadMapping, ThreadSeatMap } from "./thread-seat-map.js";
 import { escapeSlackText, redactSecrets } from "./message.js";
-import { PROMPT_CLEARED_PREFIX } from "../../stuck-prompt-watch.js";
+import { ANSWERED_IN_TERMINAL, PROMPT_CLEARED_PREFIX, PROMPT_TITLE_TAG } from "../../stuck-prompt-watch.js";
 
 export type { RequestLink } from "../../queue-repository.js";
 export type LinkState = "open" | "merged" | "closed" | "done" | "canceled" | "unknown";
@@ -30,9 +30,9 @@ export interface RequestLifecycleDeps {
   /** State of a PR or issue link (queue links are read from the queue itself). */
   linkState: (link: RequestLink) => Promise<LinkState>;
   postInThread: (channel: string, threadTs: string, text: string) => Promise<boolean>;
-  /** Rewrite the request's own card without buttons and with this closing line; the message ts it
-   *  rewrote, null when it has no card, or an error. */
-  closeCard?: (qitemId: string, channel: string, line: string) => Promise<{ ok: true; messageTs: string | null } | { ok: false; messageTs: string; error: string }>;
+  /** Rewrite the request's own card without buttons and with this closing line (`compact`: as that line
+   *  alone); the message ts it rewrote, null when it has no card, or an error. */
+  closeCard?: (qitemId: string, channel: string, line: string, compact?: boolean) => Promise<{ ok: true; messageTs: string | null } | { ok: false; messageTs: string; error: string }>;
   log?: (msg: string) => void;
 }
 
@@ -120,32 +120,58 @@ export async function closeRequest(deps: RequestLifecycleDeps, root: ThreadMappi
       nudge: true,
     });
   }
+  // A prompt answered in the terminal: its details go in one thread reply first, then the card becomes one
+  // bold line. Without that reply the card keeps its details and closes the usual way.
+  const answeredInTerminal = reason === `prompt-cleared: ${ANSWERED_IN_TERMINAL}` || reason === `approval-expired: ${ANSWERED_IN_TERMINAL}`;
+  const terminal = item && announce && answeredInTerminal ? item : null;
+  if (terminal) {
+    const title = terminal.tags?.find((t) => t.startsWith(PROMPT_TITLE_TAG))?.slice(PROMPT_TITLE_TAG.length) ?? null;
+    if (await deps.postInThread(root.channel, root.threadTs, escapeSlackText(redactSecrets(terminalReceipt(terminal, title))))) {
+      await closeCard(deps, root.conversationId, root.channel, `Resolved in Terminal · ${title ?? `${terminal.sourceSession}'s prompt`}`, true);
+      return;
+    }
+    deps.log?.(`request ${root.conversationId} answered in the terminal; its details reply was not posted, so its card keeps them`);
+  }
   // An expired approval also says where its prompt went, on its card (retried until it lands) and in its
   // thread (the note used to be a separate post, which found this thread closed and became a new top-level message).
-  const where = expiry ? ` Approve / Deny here no longer does anything; the prompt is waiting in the terminal: tmux attach -t ${root.seat}` : "";
+  const where = expiry && !answeredInTerminal ? ` Approve / Deny here no longer does anything; the prompt is waiting in the terminal: tmux attach -t ${root.seat}` : "";
   await closeCard(deps, root.conversationId, root.channel, `Closed: ${describeClose(reason)}${where}`);
   if (!announce) return;
   const posted = await deps.postInThread(root.channel, root.threadTs, escapeSlackText(redactSecrets(`Closed: ${describeClose(reason)}${where}`)));
   if (!posted) deps.log?.(`request ${root.conversationId} closed; the closing line was not posted`);
 }
 
+/** The thread reply for a prompt answered in the terminal: who asked, what it showed, and only what is known
+ *  of the outcome (the option typed there is not seen, and no Slack click saved a rule). */
+function terminalReceipt(item: QueueItem, title: string | null): string {
+  const shown = /```\n([\s\S]*?)\n```/.exec(item.body ?? "")?.[1];
+  return [
+    `*What:* The prompt for \`${item.sourceSession}\` was answered in the terminal. Which option was chosen there is not known here, so this does not mean it was approved or that it ran.`,
+    title ? `*Why:* ${title}` : null,
+    shown ? `\`\`\`\n${shown}\n\`\`\`` : null,
+    item.humanDetail ? "Its full input is earlier in this thread." : null,
+    "No rule was saved from Slack.",
+  ].filter(Boolean).join("\n");
+}
+
 /** Its buttons can no longer do anything, so they go; the outcome is recorded on the row, and a
  *  failed rewrite is retried by the sweep until it lands. */
-async function closeCard(deps: RequestLifecycleDeps, qitemId: string, channel: string, line: string): Promise<void> {
+async function closeCard(deps: RequestLifecycleDeps, qitemId: string, channel: string, line: string, compact = false): Promise<void> {
   if (!deps.closeCard) return;
-  const r = await deps.closeCard(qitemId, channel, line).catch((e: Error) => ({ ok: false as const, messageTs: "?", error: e.message }));
+  const r = await deps.closeCard(qitemId, channel, line, compact).catch((e: Error) => ({ ok: false as const, messageTs: "?", error: e.message }));
   if (r.ok && r.messageTs === null) return;
   // Only a passing failure (rate limit, timeout, network, Slack trouble) is worth another try.
   const retry = !r.ok && /ratelimit|timeout|timed out|transport|fetch|network|internal_error|service_unavailable|fatal_error|http 5\d\d/i.test(r.error);
+  const shape = compact ? "compact=true " : "";
   const note = r.ok
-    ? `${CARD_CLOSED_PREFIX} channel=${channel} message_ts=${r.messageTs} line=${JSON.stringify(line)}`
-    : `${CARD_CLOSE_FAILED_PREFIX} channel=${channel} message_ts=${r.messageTs} retry=${retry} line=${JSON.stringify(line)} error=${r.error}`;
+    ? `${CARD_CLOSED_PREFIX} channel=${channel} message_ts=${r.messageTs} ${shape}line=${JSON.stringify(line)}`
+    : `${CARD_CLOSE_FAILED_PREFIX} channel=${channel} message_ts=${r.messageTs} retry=${retry} ${shape}line=${JSON.stringify(line)} error=${r.error}`;
   deps.queueRepo.update({ qitemId, actorSession: "daemon@kernel", transitionNote: note });
   if (!r.ok) deps.log?.(`request ${qitemId}: its card still shows buttons (${r.error})${retry ? "; retried on the next sweep" : ""}`);
 }
 
 /** Cards whose last rewrite failed, with the line it was to show. */
-function cardsToRetry(deps: RequestLifecycleDeps): Array<{ qitemId: string; channel: string; line: string }> {
+function cardsToRetry(deps: RequestLifecycleDeps): Array<{ qitemId: string; channel: string; line: string; compact: boolean }> {
   const rows = deps.queueRepo.db.prepare(
     `SELECT t.qitem_id AS qitemId, t.transition_note AS note FROM queue_transitions t
       WHERE t.actor_session = 'daemon@kernel' AND (t.transition_note LIKE ? OR t.transition_note LIKE ?)
@@ -155,7 +181,7 @@ function cardsToRetry(deps: RequestLifecycleDeps): Array<{ qitemId: string; chan
   return rows.filter((r) => r.note.startsWith(`${CARD_CLOSE_FAILED_PREFIX} `) && r.note.includes(" retry=true ") && deps.queueRepo.getById(r.qitemId)).flatMap((r) => {
     const channel = /\bchannel=(\S+)/.exec(r.note)?.[1];
     const line = /\bline=("(?:[^"\\]|\\.)*")/.exec(r.note)?.[1];
-    return channel && line ? [{ qitemId: r.qitemId, channel, line: JSON.parse(line) as string }] : [];
+    return channel && line ? [{ qitemId: r.qitemId, channel, line: JSON.parse(line) as string, compact: r.note.includes(" compact=true line=") }] : [];
   });
 }
 
@@ -181,7 +207,7 @@ async function remind(deps: RequestLifecycleDeps, root: ThreadMapping, days: num
 export async function sweepRequests(deps: RequestLifecycleDeps, now = new Date()): Promise<{ closed: string[]; reminded: string[] }> {
   const closed: string[] = [];
   const reminded: string[] = [];
-  for (const card of cardsToRetry(deps)) await closeCard(deps, card.qitemId, card.channel, card.line);
+  for (const card of cardsToRetry(deps)) await closeCard(deps, card.qitemId, card.channel, card.line, card.compact);
   for (const root of deps.threadMap.listOpenConversations()) {
     if (Number(root.threadTs) * 1000 < (deps.floorMs ?? 0)) continue;
     try {

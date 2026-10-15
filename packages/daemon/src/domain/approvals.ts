@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import type { QueueRepository } from "./queue-repository.js";
 import { maskSecrets } from "./credential-mask.js";
 import { SLACK_SECTION_CAP, escapeSlackText, redactSecrets } from "./gateway/slack/message.js";
-import { PROMPT_CLEARED_PREFIX, dialogExcerpt } from "./stuck-prompt-watch.js";
+import { ANSWERED_IN_TERMINAL, PROMPT_CLEARED_PREFIX, dialogExcerpt, promptTitleTags } from "./stuck-prompt-watch.js";
 import { alwaysRuleFor, ruleDecision, type AlwaysRule, type ApprovalRule } from "./approval-rules.js";
 
 /** On a card that offers Always approve / Always deny: the exact rule it shows, saved on that click. */
@@ -99,10 +99,17 @@ export function approvalText(toolName: string, toolInput: unknown): string {
 
 /** Codex says why it asks: a network grant ("network-access <target>") or the agent's justification. */
 function approvalReason(toolInput: unknown): string | null {
+  const title = approvalTitle(toolInput);
+  if (!title) return null;
+  return (title.network ? `*${title.text}*` : `Reason: ${title.text}`).replace(/`/g, "'");
+}
+
+/** What the request is for, in the runtime's words: a network grant's target, else the tool's description. */
+function approvalTitle(toolInput: unknown): { text: string; network: boolean } | null {
   const description = (toolInput as { description?: unknown } | null)?.description;
   if (typeof description !== "string" || !description.trim()) return null;
   const target = /^network-access\s+(.+)$/.exec(description.trim())?.[1];
-  return maskSecrets(target ? `*Network access to ${target}*` : `Reason: ${description.trim()}`).replace(/`/g, "'");
+  return { text: maskSecrets(target ? `Network access to ${target}` : description.trim()), network: !!target };
 }
 
 /** A request this new may not have its dialog drawn yet: it is never retired as answered. */
@@ -145,7 +152,7 @@ export function retireApprovalsAnsweredInTerminal(repo: QueueRepository, dialogs
   for (const a of openApprovals(repo)) {
     if (!dialogs.has(a.session) || now - a.createdAt < APPROVAL_RETIRE_GRACE_MS) continue;
     if (dialogs.get(a.session) !== null) continue;
-    repo.update({ qitemId: a.qitemId, actorSession: "daemon@kernel", state: "canceled", transitionNote: "approval expired: answered in the terminal" });
+    repo.update({ qitemId: a.qitemId, actorSession: "daemon@kernel", state: "canceled", transitionNote: `approval expired: ${ANSWERED_IN_TERMINAL}` });
     retired.push(a.qitemId);
   }
   return retired;
@@ -261,7 +268,7 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
         summary: `Approve ${input.toolName} for ${input.sessionName}?`,
         body,
         ...(humanDetail ? { humanDetail } : {}),
-        tags: ["approval-request", ...always.tags],
+        tags: ["approval-request", ...always.tags, ...promptTitleTags(approvalTitle(input.toolInput)?.text)],
         humanQuestions: [{ id: QUESTION_ID, question: `Allow ${input.sessionName} to run this ${input.toolName}?`, options: always.options }],
         nudge: false,
       });

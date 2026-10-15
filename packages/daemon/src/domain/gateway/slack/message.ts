@@ -388,3 +388,9 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
   if (blocks.length > 50) throw new HumanMessageShapeError("Message exceeds 50 Slack blocks. Reduce attachments before sending.");
   return { text, blocks };
 }
+
+/** A closed card reduced to one bold line; what it was and how it ended live in its thread. */
+export function buildCompactClosedMessage(line: string): SlackMessagePayload {
+  const text = bounded(inert(line), SLACK_SECTION_CAP - 2, "closed line");
+  return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text: `*${text}*` } }] };
+}

@@ -2239,7 +2239,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     });
     queueRepoInstance.startWaitReminders();
     {
-      const { hasRecentPromptCard, makeStuckPromptWatch, promptCardBody, promptCardDetail, retireStalePromptNotices, supersedePromptNotices } = await import("./domain/stuck-prompt-watch.js");
+      const { hasRecentPromptCard, makeStuckPromptWatch, promptCardBody, promptCardDetail, promptTitleTags, retireStalePromptNotices, supersedePromptNotices } = await import("./domain/stuck-prompt-watch.js");
       // Enough for a long command's whole dialog, so two prompts differing only near the top differ.
       const STUCK_PROMPT_CAPTURE_LINES = 120;
       const { alwaysOffer, retireApprovalsAnsweredInTerminal, seatHasOpenApproval } = await import("./domain/approvals.js");
@@ -2273,7 +2273,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           const always = alwaysOffer(p.command ? alwaysRuleFor("Bash", { command: p.command }) : { refused: "no single shell command could be read from the dialog" }, p.session);
           const card = await queueRepoInstance.create({
             tags: ["stuck-prompt", `stuck-prompt:${p.episodeId}`, `stuck-prompt-session:${p.session}`, `stuck-prompt-key:${p.key}`,
-              `stuck-prompt-allow:${p.choices.allow.key}`, `stuck-prompt-deny:${p.choices.deny.key}`, `stuck-prompt-since:${p.since}`, ...always.tags],
+              `stuck-prompt-allow:${p.choices.allow.key}`, `stuck-prompt-deny:${p.choices.deny.key}`, `stuck-prompt-since:${p.since}`, ...always.tags, ...promptTitleTags(p.title)],
             sourceSession: p.session,
             destinationSession: human.address,
             humanIntent: "decision",

@@ -38,6 +38,8 @@ export interface StuckPrompt {
   dialogCut?: boolean;
   /** The single shell command the dialog asks to run, read from the runtime's own dialog shape. */
   command?: string | null;
+  /** What the dialog says that command does, in the runtime's own words. */
+  title?: string | null;
   /** A seat asked for this card before the prompt had waited five minutes, and why. */
   requestedBy?: string;
   requestReason?: string;
@@ -107,7 +109,7 @@ export function promptChoices(pane: string): PromptChoices | undefined {
 
 /** What the pane shows now: the prompt's reason, fingerprint, question and choices, or null when
  *  it is not at a prompt. The same reading names an episode and checks it before an answer. */
-export function readPrompt(pane: string): { reason: string; key: string; promptLine: string; choices?: PromptChoices; dialog: string; dialogCut: boolean; command: string | null } | null {
+export function readPrompt(pane: string): { reason: string; key: string; promptLine: string; choices?: PromptChoices; dialog: string; dialogCut: boolean; command: string | null; title: string | null } | null {
   const seen = classifyPaneActivity(pane);
   if (seen.state !== "attention" || !PROMPT_REASONS.has(seen.reason ?? "")) return null;
   const evidence = String(seen.evidence ?? "");
@@ -117,8 +119,31 @@ export function readPrompt(pane: string): { reason: string; key: string; promptL
   const dialogCut = !topKnown;
   // A dialog too long for the card shows in full in the card's thread, so its buttons stay; one whose
   // start is off screen cannot be shown in full, so it gets none.
+  const command = dialogCut ? null : promptCommand(pane);
   return { reason: seen.reason!, key, promptLine: questionLine(pane, evidence), choices: dialogCut ? undefined : promptChoices(pane), dialog, dialogCut,
-    command: dialogCut ? null : promptCommand(pane) };
+    command, title: command ? promptTitle(pane) : null };
+}
+
+/** What Claude's Bash dialog says its command does: its one line between the "Bash command" header (and
+ *  any "Tip:" line) and the rules around the command. Null for any other shape. */
+function promptTitle(pane: string): string | null {
+  const lines = pane.split("\n").map((l) => l.trim());
+  const asked = lines.lastIndexOf("Do you want to proceed?");
+  const open = lines.slice(0, Math.max(0, asked)).flatMap((l, i) => (DASHED_RULE.test(l) ? [i] : [])).at(-2);
+  if (open === undefined) return null;
+  const header = lines.slice(0, open).lastIndexOf("Bash command");
+  const said = lines.slice(header + 1, open).filter((l) => l && !l.startsWith("Tip:"));
+  return header >= 0 && said.length === 1 ? maskSecrets(said[0]!) : null;
+}
+
+export const PROMPT_TITLE_TAG = "prompt-title:";
+const PROMPT_TITLE_CAP = 80;
+
+/** The card's tag carrying what its prompt is for, when known; a closed card is titled by it. */
+export function promptTitleTags(title: string | null | undefined): string[] {
+  const flat = (title ?? "").replace(/\s+/g, " ").trim();
+  if (!flat) return [];
+  return [`${PROMPT_TITLE_TAG}${flat.length > PROMPT_TITLE_CAP ? `${flat.slice(0, PROMPT_TITLE_CAP - 1)}…` : flat}`];
 }
 
 const DASHED_RULE = /^[╌┄]{20,}$/;
@@ -259,7 +284,7 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
         if (episode.notifiedAt !== undefined || now() - episode.since < wait) continue;
         episode.notifiedAt = now();
         try {
-          await deps.notify({ session, reason: prompt.reason, promptLine, attach: `tmux attach -t ${session}`, episodeId: episodeIdOf(session, key), since: episode.since, key, dialog: prompt.dialog, dialogCut: prompt.dialogCut, command: prompt.command,
+          await deps.notify({ session, reason: prompt.reason, promptLine, attach: `tmux attach -t ${session}`, episodeId: episodeIdOf(session, key), since: episode.since, key, dialog: prompt.dialog, dialogCut: prompt.dialogCut, command: prompt.command, title: prompt.title,
             ...(prompt.choices ? { choices: prompt.choices } : {}), waitingMinutes: Math.floor((now() - episode.since) / 60_000) });
         } catch (e) {
           episode.notifiedAt = undefined;
@@ -280,7 +305,7 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
       const since = episode?.key === prompt.key ? episode.since : now();
       open.set(session, { key: prompt.key, since, notifiedAt: now() });
       const result = await deps.notify({ session, reason: prompt.reason, promptLine: prompt.promptLine, attach: `tmux attach -t ${session}`,
-        episodeId: episodeIdOf(session, prompt.key), since, key: prompt.key, dialog: prompt.dialog, choices: prompt.choices, command: prompt.command,
+        episodeId: episodeIdOf(session, prompt.key), since, key: prompt.key, dialog: prompt.dialog, choices: prompt.choices, command: prompt.command, title: prompt.title,
         waitingMinutes: Math.floor((now() - since) / 60_000), requestedBy: request.by, requestReason: maskSecrets(request.reason).slice(0, 300) })
         .catch((e: Error) => { if (episode) open.set(session, episode); else open.delete(session); throw e; });
       if (result && "qitemId" in result) return { outcome: "posted", qitemId: result.qitemId };
@@ -317,6 +342,7 @@ const tagValue = (tags: readonly string[] | null | undefined, name: string) => t
 
 /** The note a retired card's row carries; the request sweep closes its Slack card with the text after it. */
 export const PROMPT_CLEARED_PREFIX = "stuck-prompt cleared: ";
+export const ANSWERED_IN_TERMINAL = "answered in the terminal";
 
 function openPromptNotices(repo: QueueRepository): Array<{ qitemId: string; session: string; key: string | undefined }> {
   const rows = repo.db.prepare(`SELECT qitem_id, tags FROM queue_items WHERE state IN ('pending', 'in-progress', 'blocked') AND tags LIKE '%"stuck-prompt-session:%'`)
@@ -336,7 +362,7 @@ function cancelNotice(repo: QueueRepository, qitemId: string, why: string): void
  *  shows no prompt or a different one. A seat whose pane could not be read keeps its card. */
 export function retireStalePromptNotices(repo: QueueRepository, running: string[], shown: Map<string, string | null>): string[] {
   const stale = openPromptNotices(repo).filter((n) => !running.includes(n.session) || (shown.has(n.session) && shown.get(n.session) !== n.key));
-  for (const n of stale) cancelNotice(repo, n.qitemId, "answered in the terminal");
+  for (const n of stale) cancelNotice(repo, n.qitemId, running.includes(n.session) ? ANSWERED_IN_TERMINAL : "the seat stopped running");
   return stale.map((n) => n.qitemId);
 }
 

@@ -10,12 +10,12 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
-import { makeApprovalService } from "../src/domain/approvals.js";
+import { makeApprovalService, retireApprovalsAnsweredInTerminal } from "../src/domain/approvals.js";
 import { buildSlackGatewayWire } from "../src/domain/gateway/slack/slack-subsystem.js";
 import { DEFAULT_CONFIG, saveConfig } from "../src/domain/gateway/slack/config.js";
 import { resolveSlackHandle } from "../src/domain/gateway/human-registry.js";
 import { ThreadSeatMap } from "../src/domain/gateway/slack/thread-seat-map.js";
-import { buildOutboundMessage } from "../src/domain/gateway/slack/message.js";
+import { buildCompactClosedMessage, buildOutboundMessage } from "../src/domain/gateway/slack/message.js";
 
 const founder = { entityId: "reco", class: "human" as const, displayName: "reco", address: "reco@external", connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:SLACK_BOT_TOKEN", role: "primary" as const, handle: "UFOUNDER" }], prefs: { deliveryClass: "A" as const } };
 const registry = { ok: true as const, entities: [founder] };
@@ -101,6 +101,27 @@ describe("an expired or canceled approval card loses its buttons", () => {
     expect(updates.filter((u) => u.ts === ts && String(u.text).includes("expired"))).toEqual([]);
   });
 
+  it("an approval answered in the terminal becomes one bold line titled by what the command does; its details go in one thread reply", async () => {
+    const service = makeApprovalService({ queueRepo: repo, optedIn: () => ["dev@rig"], approver: () => "reco@external", verifySeat: () => true, pollMs: 5 });
+    const id = (await service.start({ sessionName: "dev@rig", toolName: "Bash", toolInput: { command: "gh run view 38645788786", description: "Check GitHub Actions status" } }))!;
+    expect(repo.getById(id)?.tags).toContain("prompt-title:Check GitHub Actions status");
+    await vi.waitFor(() => expect(posts.some((p) => String(p.text).includes("gh run view 38645788786"))).toBe(true));
+    const ts = `${posts.findIndex((p) => String(p.text).includes("gh run view 38645788786")) + 1}.1`;
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["dev@rig", null]]), Date.now() + 11_000)).toEqual([id]);
+    await vi.waitFor(() => expect(updates.find((u) => u.ts === ts)).toMatchObject({
+      text: "Resolved in Terminal · Check GitHub Actions status",
+      blocks: [{ type: "section", text: { type: "mrkdwn", text: "*Resolved in Terminal · Check GitHub Actions status*" } }],
+    }));
+    await new Promise((r) => setTimeout(r, 150));
+    const thread = posts.filter((p) => p.thread_ts === ts).map((p) => String(p.text));
+    expect(thread).toHaveLength(1);
+    expect(thread[0]).toContain("`dev@rig`");
+    expect(thread[0]).toContain("```\ngh run view 38645788786\n```");
+    expect(thread[0]).toContain("*Why:* Check GitHub Actions status");
+    expect(thread[0]).not.toMatch(/tmux attach|no longer does anything|expired/);
+    expect(await service.wait(id, "dev@rig", 1)).toBe("expired");
+  });
+
   it("a permanent Slack error is recorded once and not retried", async () => {
     const t = { now: Date.now() };
     const { service, id } = await postedApproval(t);
@@ -138,6 +159,12 @@ describe("a closed card's rendering", () => {
     const m = buildOutboundMessage(offer, { sourceLabel: "x", closedNote: "Closed: the linked work is finished.", confirmOutcome: "confirmed" });
     expect(String(m.text)).toContain("Decided: *Ship*");
     expect(JSON.stringify(m.blocks)).not.toContain('"type":"actions"');
+  });
+  it("a terminal resolution is one bold line: no prompt, buttons, attach line or sender footer, its title made inert", () => {
+    expect(buildCompactClosedMessage("Resolved in Terminal · Fix <!here> & go")).toEqual({
+      text: "Resolved in Terminal · Fix &lt;!here&gt; &amp; go",
+      blocks: [{ type: "section", text: { type: "mrkdwn", text: "*Resolved in Terminal · Fix &lt;!here&gt; &amp; go*" } }],
+    });
   });
   it("drops a Confirm nobody used", () => {
     const m = buildOutboundMessage(offer, { sourceLabel: "x", closedNote: "Closed: canceled." });
