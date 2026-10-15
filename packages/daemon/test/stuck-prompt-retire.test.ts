@@ -115,6 +115,15 @@ describe("stale stuck-prompt cards are retired", () => {
     expect(threadPosts(card.ts)).toHaveLength(1);
   });
 
+  it("a card answered from Slack before its retirement is never shown as resolved in the terminal", async () => {
+    const card = await postedCard("cfo@finance", "k1", ["prompt-title:Check GitHub Actions status"]);
+    repo.recordHumanAnswer({ qitemId: card.id, actorSession: "reco@external", questionId: "answer", optionId: "allow" });
+    retireStalePromptNotices(repo, ["cfo@finance"], new Map([["cfo@finance", null]]));
+    await vi.waitFor(() => expect(updates.some((u) => u.ts === card.ts && !actionable(u))).toBe(true));
+    expect(updates.some((u) => String(u.text).includes("Resolved in Terminal"))).toBe(false);
+    expect(threadPosts(card.ts).some((t) => t.includes("No rule was saved from Slack"))).toBe(false);
+  });
+
   it("when the details reply cannot be posted the card keeps its details and closes the plain way", async () => {
     const card = await postedCard("cfo@finance", "k1", ["prompt-title:Check GitHub Actions status"]);
     failThreadPosts = 1;

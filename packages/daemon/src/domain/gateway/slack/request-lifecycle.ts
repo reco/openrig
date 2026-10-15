@@ -123,7 +123,7 @@ export async function closeRequest(deps: RequestLifecycleDeps, root: ThreadMappi
   // A prompt answered in the terminal: its details go in one thread reply first, then the card becomes one
   // bold line. Without that reply the card keeps its details and closes the usual way.
   const answeredInTerminal = reason === `prompt-cleared: ${ANSWERED_IN_TERMINAL}` || reason === `approval-expired: ${ANSWERED_IN_TERMINAL}`;
-  const terminal = item && announce && answeredInTerminal ? item : null;
+  const terminal = item && announce && answeredInTerminal && Object.keys(item.humanAnswers ?? {}).length === 0 ? item : null;
   if (terminal) {
     if (await deps.postInThread(root.channel, root.threadTs, terminalReceipt(terminal))) {
       await closeCard(deps, root.conversationId, root.channel, terminalLine(terminal), true);

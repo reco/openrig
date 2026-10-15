@@ -94,7 +94,8 @@ export async function applyTerminalResolvedCard(card: TerminalCardPlan, slack: S
   if (!thread.ok) return { ...result, error: thread.error };
   const root = thread.messages.find((m) => m.ts === card.messageTs);
   if (!root || root.user !== slack.botUser) return { ...result, error: "the card is not the app's own message" };
-  const closing = thread.messages.find((m) => m.ts !== root.ts && m.user === slack.botUser && (m.text?.startsWith("Closed: ") || m.text?.startsWith(DETAILS)));
+  const own = thread.messages.filter((m) => m.ts !== root.ts && m.user === slack.botUser);
+  const closing = own.find((m) => m.text?.startsWith(DETAILS)) ?? own.filter((m) => m.text?.startsWith("Closed: ")).at(-1);
   let replyTs = closing?.ts;
   if (closing?.text?.startsWith(DETAILS)) result.reply = "kept";
   else if (closing) {

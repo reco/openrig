@@ -101,6 +101,17 @@ describe("terminal-resolved card backfill", () => {
     expect(slack.calls).toHaveLength(2);
   });
 
+  it("of several closing lines of the bot's, the last becomes the details reply; an existing details reply is kept", async () => {
+    await closed(1, "cfo@finance", STUCK);
+    const [plan] = planTerminalResolvedCards(db);
+    const twice = fakeSlack([{ ts: "1.1", user: "UBOT", text: "*card*" }, { ts: "1.2", user: "UBOT", text: "Closed: finished or answered earlier." }, { ts: "1.3", user: "UBOT", text: "Closed: answered in the terminal." }]);
+    expect(await applyTerminalResolvedCard(plan!, twice.ops)).toMatchObject({ ok: true, reply: "updated" });
+    expect(twice.calls.map((c) => `${c.op}:${c.ts}`)).toEqual(["update:1.3", "update:1.1"]);
+    const done = fakeSlack([{ ts: "1.1", user: "UBOT", text: "*card*" }, { ts: "1.2", user: "UBOT", text: "*What:* earlier" }, { ts: "1.3", user: "UBOT", text: "Closed: answered in the terminal." }]);
+    expect(await applyTerminalResolvedCard(plan!, done.ops)).toMatchObject({ ok: true, reply: "kept", card: "rewritten" });
+    expect(done.calls.map((c) => `${c.op}:${c.ts}`)).toEqual(["update:1.1"]);
+  });
+
   it("posts the details reply when the thread has no closing reply of the bot's", async () => {
     await closed(1, "cfo@finance", STUCK);
     const [plan] = planTerminalResolvedCards(db);

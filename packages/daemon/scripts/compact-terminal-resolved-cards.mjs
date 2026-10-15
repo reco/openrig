@@ -5,6 +5,10 @@
 //   node scripts/compact-terminal-resolved-cards.mjs [--home <OPENRIG_HOME>]                    # plan every candidate
 //   node scripts/compact-terminal-resolved-cards.mjs --apply --limit 20                           # the next 20, oldest first
 //   node scripts/compact-terminal-resolved-cards.mjs --apply --qitem <id> [--qitem <id>]          # exactly these
+//   ... --include-stuck-prompt                                                                    # also stuck-prompt cards
+// Stuck-prompt cards closed before 7f6faf3c were also closed as "answered in the terminal" when their seat had
+// only stopped running, and the ledger cannot tell the two apart: --limit applies approval cards only unless
+// --include-stuck-prompt is given (a named --qitem is always applied).
 // Resume by running it again: a card or reply already compact is kept, and a row whose printed note was
 // recorded is not planned again. It stops at the first failure (a rate limit included) and exits 1.
 // After --apply, record each printed note on its row: rig queue update <id> --note "<note>".
@@ -30,12 +34,14 @@ const cfg = loadConfig(home);
 const db = new Database(path.join(home, "openrig.sqlite"), { readonly: true, fileMustExist: true });
 const planned = planTerminalResolvedCards(db, only.length ? only : undefined);
 db.close();
-const cards = limit === undefined ? planned : planned.slice(0, limit);
+const includeStuck = only.length > 0 || args.includes("--include-stuck-prompt");
+const eligible = planned.filter((c) => includeStuck || c.provenance !== "stuck-prompt");
+const cards = limit === undefined ? eligible : eligible.slice(0, limit);
 const missing = only.filter((id) => !planned.some((c) => c.qitemId === id));
 for (const c of cards) console.log(JSON.stringify({ qitemId: c.qitemId, provenance: c.provenance, channel: c.channel, messageTs: c.messageTs, line: c.line }));
 if (missing.length) console.error(`not eligible (not closed as answered in the terminal, answered, no card, or already compact): ${missing.join(", ")}`);
 const count = (p) => planned.filter((c) => c.provenance === p).length;
-console.error(`candidates: ${planned.length} (stuck-prompt ${count("stuck-prompt")}, approval ${count("approval")}); this run: ${cards.length}`);
+console.error(`candidates: ${planned.length} (stuck-prompt ${count("stuck-prompt")}${includeStuck ? "" : ", left out without --include-stuck-prompt"}, approval ${count("approval")}); this run: ${cards.length}`);
 if (!apply) { console.error("dry run: nothing written"); process.exit(missing.length ? 1 : 0); }
 
 const bot = resolveSecret("SLACK_BOT_TOKEN", { envFile: cfg.secretsEnvFile ?? undefined });
@@ -46,8 +52,15 @@ if (!botUser) { console.error(`auth.test failed (${auth.error}); nothing written
 const slack = {
   botUser,
   replies: async (channel, ts) => {
-    const r = await callWebApi("conversations.replies", bot, { channel, ts, limit: 200 }, undefined, undefined, "get-query");
-    return r.ok ? { ok: true, messages: Array.isArray(r.json.messages) ? r.json.messages : [] } : { ok: false, error: r.error };
+    const messages = [];
+    let cursor;
+    do {
+      const r = await callWebApi("conversations.replies", bot, { channel, ts, limit: 200, ...(cursor ? { cursor } : {}) }, undefined, undefined, "get-query");
+      if (!r.ok) return { ok: false, error: r.error };
+      if (Array.isArray(r.json.messages)) messages.push(...r.json.messages);
+      cursor = r.json.response_metadata?.next_cursor || undefined;
+    } while (cursor);
+    return { ok: true, messages };
   },
   update: (channel, ts, message) => updateChatMessage(bot, { channel, ts, ...message }),
   post: (channel, threadTs, text) => postChatMessage(bot, { channel, thread_ts: threadTs, text }),
