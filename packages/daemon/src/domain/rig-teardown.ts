@@ -8,7 +8,7 @@ import { RigNotFoundError } from "./errors.js";
 import type { ResumeMetadataRefresher } from "./resume-metadata-refresher.js";
 import fs from "node:fs";
 import nodePath from "node:path";
-import { removeManagedBlocksFromFile, DEFAULT_CLAUDE_MANAGED_BLOCK_FILE } from "./managed-blocks.js";
+import { removeManagedBlocksFromFile, DEFAULT_CLAUDE_MANAGED_BLOCK_FILE, DEFAULT_CODEX_MANAGED_BLOCK_FILE } from "./managed-blocks.js";
 import { stopTranscriptRotation } from "./transcript-rotation.js";
 import { findOtherSessionOwner } from "./session-owner.js";
 
@@ -289,7 +289,7 @@ export class RigTeardownOrchestrator {
     return runtime === "claude-code"
       ? nodePath.join(cwd, this.deps.rigRepo.getRigClaudeManagedBlockFile(rigId) ?? DEFAULT_CLAUDE_MANAGED_BLOCK_FILE)
       : runtime === "codex"
-        ? nodePath.join(cwd, "AGENTS.md")
+        ? nodePath.join(cwd, this.deps.rigRepo.getRigCodexManagedBlockFile(rigId) ?? DEFAULT_CODEX_MANAGED_BLOCK_FILE)
         : null;
   }
 

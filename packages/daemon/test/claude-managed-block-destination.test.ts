@@ -212,10 +212,10 @@ describe("#25 schema — accepted keys and values, rejected before launch", () =
     }
   });
 
-  it("rejects any other runtime key, naming the supported key (Codex stays on AGENTS.md)", () => {
-    for (const key of ["codex", "pi", "terminal", "claude"]) {
+  it("rejects any other runtime key, naming the supported keys (codex: codex-managed-block-destination.test.ts)", () => {
+    for (const key of ["pi", "terminal", "claude"]) {
       const errors = RigSpecSchema.validate(base({ [key]: "CLAUDE.local.md" })).errors;
-      expect(errors).toEqual([`managed_blocks.${key}: unsupported runtime "${key}"; only "claude-code" is configurable`]);
+      expect(errors).toEqual([`managed_blocks.${key}: unsupported runtime "${key}"; only "claude-code" and "codex" are configurable`]);
     }
   });
 

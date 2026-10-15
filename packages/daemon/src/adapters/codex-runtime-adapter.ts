@@ -29,7 +29,7 @@ import { codexPriorPolicyArgs, observeCodexPriorPolicy, priorPolicyRefusal, type
 import { legacyCodexWithSharedDaemonMessage, unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
 import { codexNetworkDefaultArg, type CodexNetworkDefaultReader } from "../domain/codex-network-default.js";
 import { resolveCodexGitAddDirs, type CodexGitAddDirResolver } from "../domain/codex-git-add-dirs.js";
-import { mergeManagedBlock } from "../domain/managed-blocks.js";
+import { CODEX_REPOSITORY_COPY_BLOCK, DEFAULT_CODEX_MANAGED_BLOCK_FILE, codexRepositoryCopy, mergeManagedBlock, type CodexManagedBlockFile } from "../domain/managed-blocks.js";
 import { excludeNewGeneratedFiles } from "../domain/generated-file-hygiene.js";
 import { codexQueueStateRoot, codexTeamWorkspaceArg, type PrepareCodexTeamWorkspace } from "../domain/codex-team-workspace.js";
 import { shellQuote } from "./shell-quote.js";
@@ -336,7 +336,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       }
 
       try {
-        const didProject = this.projectEntry(entry, binding.cwd, warnings, this.homeServices(binding.nodeId).codexHome);
+        const didProject = this.projectEntry(entry, binding, warnings, this.homeServices(binding.nodeId).codexHome);
         if (didProject) {
           projected.push(entry.effectiveId);
         } else {
@@ -366,8 +366,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
 
         switch (hint) {
           case "guidance_merge": {
-            const targetPath = nodePath.join(binding.cwd, "AGENTS.md");
-            const merged = this.mergeGuidance(targetPath, file.path, content, warnings);
+            const merged = this.mergeGuidance(binding.cwd, binding.codexManagedBlockFile, file.path, content, warnings);
             if (!merged) continue; // rig-role skip: do not count as delivered
             break;
           }
@@ -663,15 +662,15 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.provisionWorkspaceTrust(binding.cwd ?? null, this.homeServices(binding.nodeId).codexHome);
   }
 
-  private projectEntry(entry: ProjectionEntry, cwd: string, warnings: string[], codexHome?: string): boolean {
+  private projectEntry(entry: ProjectionEntry, binding: NodeBinding, warnings: string[], codexHome?: string): boolean {
+    const cwd = binding.cwd;
     if (entry.category === "runtime_resource" && this.applyRuntimeResource(entry, codexHome)) {
       return true;
     }
 
     if (entry.category === "guidance" && entry.mergeStrategy === "managed_block") {
-      const targetPath = nodePath.join(cwd, "AGENTS.md");
       const content = this.fs.readFile(entry.absolutePath);
-      return this.mergeGuidance(targetPath, entry.effectiveId, content, warnings);
+      return this.mergeGuidance(cwd, binding.codexManagedBlockFile, entry.effectiveId, content, warnings);
     }
 
     // HG-1.3 plugin runtime applicability filter (per DESIGN.md §5.1):
@@ -794,7 +793,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
    * propagate the skip signal so ProjectionResult and StartupDeliveryResult
    * report honest counts.
    */
-  private mergeGuidance(targetPath: string, blockId: string, content: string, warnings: string[]): boolean {
+  private mergeGuidance(cwd: string, file: CodexManagedBlockFile | undefined, blockId: string, content: string, warnings: string[]): boolean {
+    const targetPath = nodePath.join(cwd, file ?? DEFAULT_CODEX_MANAGED_BLOCK_FILE);
     // Mirrors Claude Code adapter: the `rig-role` managed block collides across
     // pod-mates because the regenerator pairs (target-file × spec) without
     // seat correlation. Per-seat role content is delivered through `send_text`
@@ -806,6 +806,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       );
       return false;
     }
+    const repositoryCopy = codexRepositoryCopy(this.fs, cwd, file);
+    if (repositoryCopy !== null) mergeManagedBlock(this.fs, targetPath, CODEX_REPOSITORY_COPY_BLOCK, repositoryCopy, { warnings });
     mergeManagedBlock(this.fs, targetPath, blockId, content, {
       warnings,
       replaceBlockIds: blockId === "openrig-start.md" ? ["using-openrig.md"] : [],

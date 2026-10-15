@@ -15,7 +15,7 @@ import type {
 } from "./types.js";
 import { WORKSPACE_KINDS } from "./types.js";
 import { validateSafePath } from "./path-safety.js";
-import { CLAUDE_MANAGED_BLOCK_FILES } from "./managed-blocks.js";
+import { CLAUDE_MANAGED_BLOCK_FILES, CODEX_MANAGED_BLOCK_FILES } from "./managed-blocks.js";
 import { canonicalCompactionStrategy, canonicalContinuityMechanic } from "./agent-manifest.js";
 import { aliasModelPinAdvisory } from "./spec-validation-advisory.js";
 import { validatePermissionPolicyRef } from "./permission-policy/policy-ref.js";
@@ -67,11 +67,13 @@ function validateManagedBlocks(raw: unknown): string[] {
     return ['managed_blocks: must be a mapping such as { claude-code: CLAUDE.local.md }'];
   }
   const errors: string[] = [];
+  const supported: Record<string, readonly string[]> = { "claude-code": CLAUDE_MANAGED_BLOCK_FILES, codex: CODEX_MANAGED_BLOCK_FILES };
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (key !== "claude-code") {
-      errors.push(`managed_blocks.${key}: unsupported runtime "${key}"; only "claude-code" is configurable`);
-    } else if (!(CLAUDE_MANAGED_BLOCK_FILES as readonly unknown[]).includes(value)) {
-      errors.push(`managed_blocks.claude-code: must be one of ${CLAUDE_MANAGED_BLOCK_FILES.join(", ")} (got ${JSON.stringify(value)})`);
+    const files = supported[key];
+    if (!files) {
+      errors.push(`managed_blocks.${key}: unsupported runtime "${key}"; only "claude-code" and "codex" are configurable`);
+    } else if (!(files as readonly unknown[]).includes(value)) {
+      errors.push(`managed_blocks.${key}: must be one of ${files.join(", ")} (got ${JSON.stringify(value)})`);
     }
   }
   return errors;
@@ -184,8 +186,7 @@ export class RigSpecSchema {
       errors.push("non_interruptive: must be a boolean");
     }
 
-    // #25: optional per-runtime managed-block destination. Only claude-code is
-    // configurable in this release; Codex stays on AGENTS.md.
+    // #25: optional per-runtime managed-block destination (claude-code, codex).
     if (obj["managed_blocks"] !== undefined) {
       errors.push(...validateManagedBlocks(obj["managed_blocks"]));
     }
@@ -269,6 +270,10 @@ export class RigSpecSchema {
       pods,
       edges,
     };
+  }
+
+  static validateManagedBlocks(raw: unknown): string[] {
+    return validateManagedBlocks(raw);
   }
 
   /** Validate only a RigSpec workspace block through the canonical schema. */

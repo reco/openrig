@@ -27,6 +27,8 @@ export interface NodeBinding extends Binding {
   launchGeneration?: string;
   /** #25: the rig's `managed_blocks.claude-code` file. Absent = CLAUDE.md. Only the Claude adapter reads it. */
   claudeManagedBlockFile?: import("./managed-blocks.js").ClaudeManagedBlockFile;
+  /** The rig's `managed_blocks.codex` file. Absent = AGENTS.md. Only the Codex adapter reads it. */
+  codexManagedBlockFile?: import("./managed-blocks.js").CodexManagedBlockFile;
 }
 
 // -- Resolved startup file with source-root provenance --

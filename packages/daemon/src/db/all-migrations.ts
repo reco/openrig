@@ -107,6 +107,7 @@ import { queueItemsRecoveryTagsSchema } from "./migrations/099_queue_items_recov
 import { resumeRotationSchema } from "./migrations/101_claude_resume_rotation.js";
 import { nodeRuntimeHomesSchema } from "./migrations/102_node_runtime_homes.js";
 import { nodeCodexHomeSchema } from "./migrations/103_node_codex_home.js";
+import { rigCodexManagedBlockFileSchema } from "./migrations/104_rig_codex_managed_block_file.js";
 
 /** Ordered migrations; numbers may be reserved by independent changes. */
 
@@ -213,4 +214,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   resumeRotationSchema,
   nodeRuntimeHomesSchema,
   nodeCodexHomeSchema,
+  rigCodexManagedBlockFileSchema,
 ];

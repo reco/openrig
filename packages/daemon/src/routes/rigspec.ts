@@ -5,6 +5,7 @@ import type { RigSpecExporter } from "../domain/rigspec-exporter.js";
 import type { RigInstantiator, PodRigInstantiator } from "../domain/rigspec-instantiator.js";
 import type { RigSpecPreflight } from "../domain/rigspec-preflight.js";
 import type { RigRepository } from "../domain/rig-repository.js";
+import type { RigSpec } from "../domain/types.js";
 import { LegacyRigSpecCodec } from "../domain/rigspec-codec.js";
 import { RigSpecCodec } from "../domain/rigspec-codec.js";
 import { LegacyRigSpecSchema } from "../domain/rigspec-schema.js";
@@ -170,6 +171,43 @@ rigspecImportRoutes.post("/workspace", async (c) => {
   if (changed) rigRepo.setRigWorkspace(targetRigId, normalizedWorkspace);
 
   return c.json({ rigId: targetRigId, changed, workspace: normalizedWorkspace });
+});
+
+// POST /api/rigs/import/managed-blocks -> set an existing rig's managed-block files from the spec's
+// managed_blocks (a runtime left out goes back to its default). Files and running seats are not
+// touched: the next launch, restore or relaunch writes the selected file.
+rigspecImportRoutes.post("/managed-blocks", async (c) => {
+  const { rigRepo } = getDeps(c);
+  const targetRigId = c.req.header("X-Target-Rig-Id");
+  if (!targetRigId) {
+    return c.json({ ok: false, code: "target_rig_required", error: "X-Target-Rig-Id header required for managed-blocks-only apply" }, 400);
+  }
+  let raw: unknown;
+  try {
+    raw = RigSpecCodec.parse(await c.req.text());
+  } catch (err) {
+    return c.json({ ok: false, code: "validation_failed", errors: [err instanceof Error ? err.message : String(err)] }, 400);
+  }
+  const managedBlocks = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)["managed_blocks"]
+    : undefined;
+  if (managedBlocks === undefined) {
+    return c.json({ ok: false, code: "managed_blocks_required", errors: ["managed_blocks: required for managed-blocks-only apply ({} restores the defaults)"] }, 400);
+  }
+  const errors = RigSpecSchema.validateManagedBlocks(managedBlocks);
+  if (errors.length) return c.json({ ok: false, code: "validation_failed", errors }, 400);
+  if (!rigRepo.getRig(targetRigId)) {
+    return c.json({ ok: false, code: "target_rig_not_found", error: `Rig not found: ${targetRigId}` }, 404);
+  }
+  const selected = managedBlocks as NonNullable<RigSpec["managedBlocks"]>;
+  const before = { "claude-code": rigRepo.getRigClaudeManagedBlockFile(targetRigId), codex: rigRepo.getRigCodexManagedBlockFile(targetRigId) };
+  const after = { "claude-code": selected["claude-code"] ?? null, codex: selected.codex ?? null };
+  const changed = JSON.stringify(before) !== JSON.stringify(after);
+  if (changed) {
+    rigRepo.setRigClaudeManagedBlockFile(targetRigId, after["claude-code"]);
+    rigRepo.setRigCodexManagedBlockFile(targetRigId, after.codex);
+  }
+  return c.json({ rigId: targetRigId, changed, before, managedBlocks: after });
 });
 
 // POST /api/rigs/import/materialize -> create rig topology without launching

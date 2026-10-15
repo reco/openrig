@@ -176,6 +176,19 @@ function createMockDaemon() {
       return;
     }
 
+    if (req.method === "POST" && url.pathname === "/api/rigs/import/managed-blocks") {
+      capturedImportPath = url.pathname;
+      capturedImportHeaders = { "x-target-rig-id": req.headers["x-target-rig-id"] };
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        rigId: req.headers["x-target-rig-id"],
+        changed: true,
+        before: { "claude-code": null, codex: null },
+        managedBlocks: { "claude-code": "CLAUDE.local.md", codex: "AGENTS.override.md" },
+      }));
+      return;
+    }
+
     // healthz
     if (url.pathname === "/healthz") {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -352,6 +365,30 @@ describe("rig export + import", () => {
     const logs = await captureLogs(() => program.parseAsync([
       "node", "rig", "import", "rig.yaml", "--workspace-only",
     ]));
+    expect(logs.join("\n")).toMatch(/--target-rig/);
+    expect(capturedImportPath).toBe("");
+  });
+
+  it("import --managed-blocks-only targets its route and reports before and after", async () => {
+    capturedImportHeaders = {};
+    capturedImportPath = "";
+    const deps = importDeps(`managed_blocks:\n  claude-code: CLAUDE.local.md\n  codex: AGENTS.override.md\n`);
+    const program = new Command();
+    program.addCommand(importCommand(deps));
+    const logs = await captureLogs(() => program.parseAsync([
+      "node", "rig", "import", "rig.yaml", "--managed-blocks-only", "--target-rig", "rig-123",
+    ]));
+    expect(capturedImportPath).toBe("/api/rigs/import/managed-blocks");
+    expect(capturedImportHeaders["x-target-rig-id"]).toBe("rig-123");
+    expect(logs.join("\n")).toContain("Managed blocks applied to rig rig-123: claude-code: CLAUDE.local.md, codex: AGENTS.override.md (was claude-code: CLAUDE.md (default), codex: AGENTS.md (default))");
+  });
+
+  it("import --managed-blocks-only requires --target-rig before HTTP", async () => {
+    capturedImportPath = "";
+    const deps = importDeps(`managed_blocks: {}\n`);
+    const program = new Command();
+    program.addCommand(importCommand(deps));
+    const logs = await captureLogs(() => program.parseAsync(["node", "rig", "import", "rig.yaml", "--managed-blocks-only"]));
     expect(logs.join("\n")).toMatch(/--target-rig/);
     expect(capturedImportPath).toBe("");
   });

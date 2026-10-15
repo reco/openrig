@@ -214,6 +214,8 @@ export class StartupOrchestrator {
     input = { ...input, binding: { ...input.binding, nonInterruptive: rigRepo.getRigNonInterruptive(input.rigId) } };
     const claudeManagedBlockFile = rigRepo.getRigClaudeManagedBlockFile(input.rigId);
     if (claudeManagedBlockFile) input = { ...input, binding: { ...input.binding, claudeManagedBlockFile } };
+    const codexManagedBlockFile = rigRepo.getRigCodexManagedBlockFile(input.rigId);
+    if (codexManagedBlockFile) input = { ...input, binding: { ...input.binding, codexManagedBlockFile } };
     const deliveryInput: StartupDeliveryInput = { ...input, warnings, submissionWarnings: [], startupAttemptId: randomUUID(), sendOrder: 0, submissionDiagnostics: [] };
     const errors: string[] = [];
     let continuityOutcome: "resumed" | "fresh" | "forked" | "rebuilt" = input.resumeToken

@@ -436,7 +436,7 @@ guidance:
 |-------|------|----------|---------|-------------|
 | `id` | string | yes | — | Resource identifier. A `rig-role` guidance resource is never merged; deliver a role with a `send_text` startup file. |
 | `path` | string | yes | — | Relative path to the guidance file. |
-| `target` | string | no | — | Parsed but not used: the runtime decides the file. Claude merges into the rig's `managed_blocks` file (`CLAUDE.md` by default, or `CLAUDE.local.md`); Codex, Pi and OMP merge into `<cwd>/AGENTS.md`. |
+| `target` | string | no | — | Parsed but not used: the runtime decides the file. Claude merges into the rig's `managed_blocks` file (`CLAUDE.md` by default, or `CLAUDE.local.md`); Codex merges into its `managed_blocks` file (`AGENTS.md` by default, or `AGENTS.override.md`); Pi and OMP merge into `<cwd>/AGENTS.md`. |
 | `merge` | string | no | `managed_block` | Only `managed_block` is applied. Any other value, such as `append`, merges nothing. |
 
 ---

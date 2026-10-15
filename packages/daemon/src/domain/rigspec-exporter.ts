@@ -219,6 +219,11 @@ export class RigSpecExporter {
     const workspace = this.rigRepo.getRigWorkspace(rigId);
     // #25: the selected Claude managed-block file is also a rig-row field.
     const claudeManagedBlockFile = this.rigRepo.getRigClaudeManagedBlockFile(rigId);
+    const codexManagedBlockFile = this.rigRepo.getRigCodexManagedBlockFile(rigId);
+    const managedBlocks = {
+      ...(claudeManagedBlockFile ? { "claude-code": claudeManagedBlockFile } : {}),
+      ...(codexManagedBlockFile ? { codex: codexManagedBlockFile } : {}),
+    };
     const rigRuntimeHomes = this.rigRepo.getRigRuntimeHomes(rigId);
 
     return {
@@ -227,7 +232,7 @@ export class RigSpecExporter {
       ...(rigPermissionPolicy ? { permissionPolicy: rigPermissionPolicy } : {}),
       ...(Object.keys(rigRuntimeHomes).length ? { runtimeHomes: rigRuntimeHomes } : {}),
       ...(this.rigRepo.getRigNonInterruptive(rigId) ? { nonInterruptive: true } : {}),
-      ...(claudeManagedBlockFile ? { managedBlocks: { "claude-code": claudeManagedBlockFile } } : {}),
+      ...(Object.keys(managedBlocks).length ? { managedBlocks } : {}),
       ...(workspace ? { workspace } : {}),
       pods: podSpecs,
       edges: crossPodEdges,

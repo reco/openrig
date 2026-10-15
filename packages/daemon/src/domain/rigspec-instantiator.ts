@@ -660,6 +660,7 @@ export class PodRigInstantiator {
         if (rigSpec.managedBlocks?.["claude-code"]) {
           this.deps.rigRepo.setRigClaudeManagedBlockFile(materializedRigId, rigSpec.managedBlocks["claude-code"]);
         }
+        if (rigSpec.managedBlocks?.codex) this.deps.rigRepo.setRigCodexManagedBlockFile(materializedRigId, rigSpec.managedBlocks.codex);
         if (rigSpec.runtimeHomes) this.deps.rigRepo.setRigRuntimeHomes(materializedRigId, resolveRuntimeHomes(rigSpec.runtimeHomes, undefined));
 
         // OPR.0.4.8.3 Seam B: persist the rig-level permission_policy REF (raw, like role) —
@@ -1355,6 +1356,7 @@ export class PodRigInstantiator {
       if (rigSpec.managedBlocks?.["claude-code"]) {
         this.deps.rigRepo.setRigClaudeManagedBlockFile(rigId, rigSpec.managedBlocks["claude-code"]);
       }
+      if (rigSpec.managedBlocks?.codex) this.deps.rigRepo.setRigCodexManagedBlockFile(rigId, rigSpec.managedBlocks.codex);
       if (rigSpec.runtimeHomes) this.deps.rigRepo.setRigRuntimeHomes(rigId, resolveRuntimeHomes(rigSpec.runtimeHomes, undefined));
       // OPR.0.4.8.3 Seam B: the SECOND rig-persist site (bootstrap instantiate path) —
       // both sites must write or the rig ref silently drops on one instantiate path.

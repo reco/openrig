@@ -218,7 +218,7 @@ export function describeBundleBehaviour(input: DescribeBundleInput): BundleBehav
         view.posture.push({ seat, shellAccess: "Can run shell commands as the launching user, subject to runtime and host policy.", selection, basis, ...(permissionPrompts ? { permissionPrompts } : {}), ...(posture === "full_bypass" && nativePermissionSurface ? { nonInterruptive: "available" as const, ...(typeof rig.non_interruptive === "boolean" ? { nonInterruptiveDefault: rig.non_interruptive } : {}) } : {}),
           ...(posture === "full_bypass" && runtime === "claude-code" && rig.non_interruptive !== true ? { firstRunWarnings: { claudeBypass: "harness_asks_once" as const } } : {}),
           nativeEffect: "unknown", sourceRefs });
-        const managed = runtime === "claude-code" ? text(object(rig.managed_blocks)["claude-code"]) ?? "CLAUDE.md" : runtime === "codex" ? "AGENTS.md" : undefined;
+        const managed = runtime === "claude-code" ? text(object(rig.managed_blocks)["claude-code"]) ?? "CLAUDE.md" : runtime === "codex" ? text(object(rig.managed_blocks)["codex"]) ?? "AGENTS.md" : undefined;
         if (managed) write(seat, "managed_guidance", "seat_cwd", managed, sourceRefs, "merge managed blocks");
         const startup = (block: StartupBlock | undefined, base: string, refs: SourceRef[]) => {
           for (const f of block?.files ?? []) {
