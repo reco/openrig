@@ -33,6 +33,8 @@ import { mergeManagedBlock } from "../domain/managed-blocks.js";
 import { excludeNewGeneratedFiles } from "../domain/generated-file-hygiene.js";
 import { codexQueueStateRoot, codexTeamWorkspaceArg, type PrepareCodexTeamWorkspace } from "../domain/codex-team-workspace.js";
 import { shellQuote } from "./shell-quote.js";
+import { durableLaunchAssets } from "./durable-launch-asset.js";
+import { getOpenRigHome } from "../openrig-compat.js";
 import { runSyncSite } from "../domain/sync-site-wrap.js";
 
 import { listNativeProcesses, observeCodexPaneProcess, type NativeProcessRow } from "../domain/native-process-lineage.js";
@@ -223,20 +225,22 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
    * launches seats.)
    */
   ensureCodexActivityHooks(codexHome?: string): void {
-    const relay = this.activityRelayPath;
-    if (!relay || !this.fs.exists(relay)) {
-      if (relay) {
-        console.error(`[openrig] codex activity hooks skipped: relay asset not found at ${relay}`);
+    const packagedRelay = this.activityRelayPath;
+    if (!packagedRelay || !this.fs.exists(packagedRelay)) {
+      if (packagedRelay) {
+        console.error(`[openrig] codex activity hooks skipped: relay asset not found at ${packagedRelay}`);
       }
       return;
     }
     const configPath = this.resolveCodexConfigPath(codexHome);
     const existing = this.fs.exists(configPath) ? this.fs.readFile(configPath) : "";
     // The Slack approval hook ships beside the relay; Codex reads no plugin hooks/codex.json.
-    const approvalPath = nodePath.join(nodePath.dirname(relay), "approval-request.cjs");
-    const approval = this.fs.exists(approvalPath) ? approvalPath : null;
-    const denyCheckPath = nodePath.join(nodePath.dirname(relay), "deny-check.cjs");
-    const denyCheck = this.fs.exists(denyCheckPath) ? denyCheckPath : null;
+    const sibling = (name: string) => { const p = nodePath.join(nodePath.dirname(packagedRelay), name); return this.fs.exists(p) ? p : null; };
+    const packaged = [packagedRelay, sibling("approval-request.cjs"), sibling("deny-check.cjs")];
+    // A running seat reads these paths for life; a global install prunes the package they ship in.
+    const sources = packaged.filter((p): p is string => p !== null);
+    const copies = durableLaunchAssets(sources, getOpenRigHome());
+    const [relay, approval, denyCheck] = packaged.map((p) => (p === null ? null : copies[sources.indexOf(p)]!)) as [string, string | null, string | null];
     const withHooks = upsertCodexActivityHooks(existing, relay, approval, denyCheck);
     if (withHooks !== existing) {
       this.fs.mkdirp(nodePath.dirname(configPath));

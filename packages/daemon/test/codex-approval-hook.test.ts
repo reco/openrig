@@ -8,6 +8,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { CodexRuntimeAdapter, type CodexAdapterFsOps } from "../src/adapters/codex-runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { durableLaunchAssets } from "../src/adapters/durable-launch-asset.js";
+import { getOpenRigHome } from "../src/openrig-compat.js";
 
 const SCRIPTS = path.resolve(__dirname, "../assets/plugins/openrig-core/hooks/scripts");
 const RELAY = path.join(SCRIPTS, "activity-relay.cjs");
@@ -34,7 +36,8 @@ describe("Codex Slack approval hook projection", () => {
     new CodexRuntimeAdapter({ tmux, fsOps: fs, activityRelayPath: RELAY }).ensureCodexActivityHooks();
     const cfg = fs._store["/home/test/.codex/config.toml"]!;
     const group = cfg.slice(cfg.indexOf("[[hooks.PermissionRequest]]"));
-    expect(group).toContain(`command = 'node "${RELAY}"'\ntimeout = 5\n\n[[hooks.PermissionRequest.hooks]]\ntype = "command"\ncommand = 'node "${APPROVAL}"'\ntimeout = 3660`);
+    const [relay, approval] = durableLaunchAssets([RELAY, APPROVAL], getOpenRigHome());
+    expect(group).toContain(`command = 'node "${relay}"'\ntimeout = 5\n\n[[hooks.PermissionRequest.hooks]]\ntype = "command"\ncommand = 'node "${approval}"'\ntimeout = 3660`);
     expect(cfg).toContain('[hooks.state."/home/test/.codex/config.toml:permission_request:0:1"]');
   });
 
@@ -42,7 +45,8 @@ describe("Codex Slack approval hook projection", () => {
     const fs = mockFs({ [RELAY]: "", [DENY_CHECK]: "" });
     new CodexRuntimeAdapter({ tmux, fsOps: fs, activityRelayPath: RELAY }).ensureCodexActivityHooks();
     const cfg = fs._store["/home/test/.codex/config.toml"]!;
-    expect(cfg).toContain(`[[hooks.PreToolUse]]\n[[hooks.PreToolUse.hooks]]\ntype = "command"\ncommand = 'node "${DENY_CHECK}"'\ntimeout = 5`);
+    const [, denyCheck] = durableLaunchAssets([RELAY, DENY_CHECK], getOpenRigHome());
+    expect(cfg).toContain(`[[hooks.PreToolUse]]\n[[hooks.PreToolUse.hooks]]\ntype = "command"\ncommand = 'node "${denyCheck}"'\ntimeout = 5`);
     expect(cfg).toContain('[hooks.state."/home/test/.codex/config.toml:pre_tool_use:0:0"]');
   });
 
@@ -92,12 +96,14 @@ describe.skipIf(!bin)("native Codex (>= 0.161) loads the projected hooks as trus
       expect(readFileSync(path.join(codexHome, "config.toml"), "utf8")).toContain("approval-request.cjs");
       const hooks = await listHooks(bin!, codexHome);
       const permission = hooks.filter((h) => h.eventName === "permissionRequest").map((h) => ({ command: h.command, timeoutSec: h.timeoutSec, trustStatus: h.trustStatus }));
+      const [relay, approval, denyCheck] = durableLaunchAssets([RELAY, APPROVAL, DENY_CHECK], getOpenRigHome());
+      expect(relay).not.toBe(RELAY);
       expect(permission).toEqual([
-        { command: `node "${RELAY}"`, timeoutSec: 5, trustStatus: "trusted" },
-        { command: `node "${APPROVAL}"`, timeoutSec: 3660, trustStatus: "trusted" },
+        { command: `node "${relay}"`, timeoutSec: 5, trustStatus: "trusted" },
+        { command: `node "${approval}"`, timeoutSec: 3660, trustStatus: "trusted" },
       ]);
       expect(hooks.filter((h) => h.eventName === "preToolUse").map((h) => ({ command: h.command, trustStatus: h.trustStatus })))
-        .toEqual([{ command: `node "${DENY_CHECK}"`, trustStatus: "trusted" }]);
+        .toEqual([{ command: `node "${denyCheck}"`, trustStatus: "trusted" }]);
       expect(hooks.every((h) => h.trustStatus === "trusted")).toBe(true);
     } finally { rmSync(codexHome, { recursive: true, force: true }); }
   }, 20_000);
