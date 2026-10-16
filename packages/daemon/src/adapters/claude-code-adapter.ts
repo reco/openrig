@@ -1071,8 +1071,8 @@ const LEGACY_OWNED_APPROVAL_SUFFIX = "/.openrig/hooks/scripts/approval-request.c
 const OWNED_APPROVAL_RELATIVE_PATH = CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH.replace(/activity-relay\.cjs$/, "approval-request.cjs");
 const OWNED_GUARD_RELATIVE_PATH = CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH.replace(/activity-relay\.cjs$/, "simple-command-guard.cjs");
 const OWNED_DENY_CHECK_RELATIVE_PATH = CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH.replace(/activity-relay\.cjs$/, "deny-check.cjs");
-/** Just above the longest approval deadline (MAX_APPROVAL_TIMEOUT_SECONDS); the daemon ends the wait. */
-const APPROVAL_HOOK_TIMEOUT_SEC = 3660;
+/** Just above the hook's own day-long wait: a card stays answerable while the dialog is up. */
+const APPROVAL_HOOK_TIMEOUT_SEC = 86460;
 /** sha256 of every approval-request.cjs this package has shipped: a project copy matching one is ours to update. */
 export const PACKAGED_APPROVAL_HASHES = new Set([
   "c009fe7c6717b942aa18cb5de744134aad2e52548bfc76ab337407973339232e",
@@ -1083,6 +1083,7 @@ export const PACKAGED_APPROVAL_HASHES = new Set([
   "a64f7b31db73be70962314cc310d2882c534d522b3ca4f373114c1cdbb5a1415",
   "9a12547e7e1c0aff4d19659fd4ff6719975c8d27c429551891f72d5f0ad77960",
   "7f95648701d0e7246c3cbca259dcfd3c80b4094e0b5f20ab567406eed2cad4ca",
+  "1407fb2a4a81a336ef9b804a27cd19fa24ec09421e26ea88628e42736a41fef7",
 ]);
 
 function hookCommand(hook: unknown): string | undefined {

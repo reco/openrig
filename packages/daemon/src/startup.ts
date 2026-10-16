@@ -1434,7 +1434,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       const service = makeApprovalService({
         queueRepo: queueRepoInstance,
         optedIn: () => { try { return loadSlackConfig(OPENRIG_HOME).approvalSeats; } catch { return []; } },
-        timeoutMs: () => { try { return loadSlackConfig(OPENRIG_HOME).approvalTimeoutSeconds * 1000; } catch { return 1_800_000; } },
+        repingMs: () => { try { return loadSlackConfig(OPENRIG_HOME).approvalTimeoutSeconds * 1000; } catch { return 900_000; } },
         rules: () => readApprovalRules(OPENRIG_HOME),
         saveRule: (rule) => saveAlwaysRule(OPENRIG_HOME, rule),
         approver: () => { const r = loadHumanRegistry(OPENRIG_HOME); return r.ok ? r.entities.find((e) => e.role !== "requester")?.address ?? null : null; },

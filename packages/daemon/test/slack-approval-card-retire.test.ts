@@ -80,15 +80,23 @@ describe("an expired or canceled approval card loses its buttons", () => {
     expect(repo.transitionLog.listForQitem(id).some((x) => x.transitionNote?.startsWith(`slack-card-closed channel=C-MAIN message_ts=${ts}`))).toBe(true);
   });
 
-  it("the deadline expiry rewrites the card too, and a failed rewrite is retried until it lands", async () => {
+  it("a failed rewrite of an expired card is retried until it lands", async () => {
     const t = { now: Date.now() };
     const { service, id, ts } = await postedApproval(t);
     failUpdates = 1;
-    t.now += 1_800_001;
-    expect(await service.wait(id, "dev@rig", 1)).toBe("expired");
+    t.now += 130_000; await service.sweep();
     await vi.waitFor(() => expect(repo.transitionLog.listForQitem(id).some((x) => x.transitionNote?.startsWith("slack-card-close-failed"))).toBe(true));
-    await vi.waitFor(() => expect(updates.some((u) => u.ts === ts && !actionable(u) && String(u.text).includes("Closed: expired, no answer in time."))).toBe(true));
+    await vi.waitFor(() => expect(updates.some((u) => u.ts === ts && !actionable(u) && String(u.text).includes("Closed: expired, the seat stopped waiting for it."))).toBe(true));
     expect(repo.transitionLog.listForQitem(id).at(-1)?.transitionNote).toMatch(/^slack-card-closed /);
+  });
+
+  it("an unanswered card past the re-ping time keeps its buttons and gets one reply in its thread", async () => {
+    const t = { now: Date.now() };
+    const { service, id, ts } = await postedApproval(t);
+    t.now += 960_000; expect(await service.wait(id, "dev@rig", 1)).toBe("pending"); await service.sweep(); await service.sweep();
+    await vi.waitFor(() => expect(posts.filter((p) => p.thread_ts === ts && String(p.text).includes("has waited 15 minutes"))).toHaveLength(1));
+    expect(updates.filter((u) => u.ts === ts)).toEqual([]);
+    expect(repo.getById(id)?.state).toBe("pending");
   });
 
   it("an answered approval is never shown as expired", async () => {

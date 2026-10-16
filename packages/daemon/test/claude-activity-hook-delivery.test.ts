@@ -446,14 +446,14 @@ describe("Slack approval hook projection", () => {
     expect(PACKAGED_APPROVAL_HASHES.has(sha(shipped))).toBe(true);
   });
 
-  it("projects the approval hook with the hour-long outer timeout, replacing an older shipped copy", async () => {
+  it("projects the approval hook with the day-long outer timeout, replacing an older shipped copy", async () => {
     const older = "older shipped copy";
     const fs = enableFs({ [APPROVAL_SRC]: shipped, [APPROVAL_DEST]: older });
     PACKAGED_APPROVAL_HASHES.add(sha(older));
     try { await makeAdapter(fs).project(plan([activityEntry()]), binding()); } finally { PACKAGED_APPROVAL_HASHES.delete(sha(older)); }
     expect(fs._store[APPROVAL_DEST]).toBe(shipped);
     const hook = readSettings(fs).hooks.PermissionRequest.flatMap((g: any) => g.hooks).find((h: any) => h.command === `node ${shellQuote(APPROVAL_DEST)}`);
-    expect(hook.timeout).toBe(3660);
+    expect(hook.timeout).toBe(86460);
   });
 
   it("a project's own pre-move copy someone edited in place stays in use there; a shipped one gives way to the shared copy", async () => {

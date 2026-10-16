@@ -1,8 +1,8 @@
 // Approvals without a terminal: a seat that opted in sends its permission prompt here (its
 // PermissionRequest hook waits on the answer). The human gets Approve / Deny buttons with the
-// full command or tool input, literal credentials masked; the click is returned to the hook. No
-// answer before the deadline (approvalTimeoutSeconds), or a hook that stops asking, expires the
-// request with a note in its thread, and the prompt shows in the terminal as before.
+// full command or tool input, literal credentials masked; the click is returned to the hook. The card
+// stays answerable while the hook asks; with no answer after approvalTimeoutSeconds its thread is pinged
+// once. A hook that stops asking expires the request with a note in its thread.
 // This answers permission prompts only: it cannot override a runtime's own safety denials.
 
 import { createHash } from "node:crypto";
@@ -48,8 +48,8 @@ export interface ApprovalServiceDeps {
   verifySeat: (sessionName: string, seatToken: string | null) => boolean | Promise<boolean>;
   /** The seat's working directory, shown on the card. */
   cwdOf?: (sessionName: string) => string | null;
-  /** Read at each check, so a config change applies to open requests too. */
-  timeoutMs?: () => number;
+  /** How long an unanswered card waits before its one re-ping; read at each sweep. */
+  repingMs?: () => number;
   /** The human's allow/deny rules, read at each request. */
   rules?: () => readonly ApprovalRule[];
   /** Saves a rule from an Always approve / Always deny click. */
@@ -69,8 +69,8 @@ export interface ApprovalService {
   start: (input: ApprovalRequest) => Promise<string | null>;
   /** Only the seat that asked may wait on its request. */
   wait: (requestId: string, sessionName: string, sliceMs: number) => Promise<ApprovalWait>;
-  /** Expire every open request whose deadline passed or whose hook stopped asking (killed,
-   *  answered in the terminal, an older hook that gave up, a daemon restart). */
+  /** Expire every open request whose hook stopped asking (killed, an older hook that gave up, a daemon
+   *  restart), and ping once in the thread of each still unanswered after repingMs. */
   sweep: () => Promise<void>;
   /** Answer every open request a rule now covers, as a rule hit at start would; returns the answered ids. */
   recheck: () => string[];
@@ -83,7 +83,8 @@ const RULED = new RegExp(`^${PROMPT_CLEARED_PREFIX}(approved|denied) by rule (.+
 /** A hook asks again within a minute (one wait slice); twice that without a call means it is gone. */
 export const APPROVAL_ABANDONED_MS = 120_000;
 
-export const APPROVAL_TIMEOUT_MS = 1_800_000;
+export const APPROVAL_REPING_MS = 900_000;
+const REPINGED = "approval re-pinged";
 const QUESTION_ID = "approval";
 const MAX_PENDING_PER_SEAT = 3;
 /** What the card's thread can carry within Slack's 20 message parts, escaped, with half-full cuts. */
@@ -188,7 +189,7 @@ export function retireApprovalsAnsweredInTerminal(repo: QueueRepository, dialogs
 
 export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService {
   const log = deps.log ?? (() => {});
-  const timeoutMs = deps.timeoutMs ?? (() => APPROVAL_TIMEOUT_MS);
+  const repingMs = deps.repingMs ?? (() => APPROVAL_REPING_MS);
   const now = deps.now ?? Date.now;
   const startedAt = now();
   const lastAsked = new Map<string, number>();
@@ -200,6 +201,16 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
     // Canceling closes the request: its card loses its buttons and its own thread says why and where
     // the prompt went (request-lifecycle closeRequest).
     deps.queueRepo.update({ qitemId: requestId, actorSession: "daemon@kernel", state: "canceled", transitionNote: `approval expired: ${why}` });
+  };
+  /** One reply in the card's thread, so the human hears about a request still waiting; the card keeps its buttons. */
+  const reping = async (item: { qitemId: string; sourceSession: string; destinationSession: string; summary: string | null }) => {
+    if (deps.queueRepo.transitionLog.listForQitem(item.qitemId).some((t) => t.transitionNote === REPINGED)) return;
+    deps.queueRepo.update({ qitemId: item.qitemId, actorSession: "daemon@kernel", transitionNote: REPINGED });
+    const minutes = Math.round(repingMs() / 60_000);
+    await deps.queueRepo.create({ sourceSession: item.sourceSession, destinationSession: item.destinationSession, humanIntent: "update", replyTo: item.qitemId, nudge: false,
+      summary: `Still waiting: ${item.summary ?? `approval for ${item.sourceSession}`}`,
+      body: `${item.sourceSession} has waited ${minutes} minute${minutes === 1 ? "" : "s"} for this approval. Approve / Deny on the card above still answer it.` })
+      .catch((e: Error) => log(`re-ping for ${item.qitemId} not posted: ${e.message}`));
   };
   /** The rule the card showed, saved for the asking seat; null when the card offered none or saving failed. */
   const saveAlways = (qitemId: string, tags: string[] | null | undefined, effect: ApprovalDecision, seat: string): string | null => {
@@ -306,8 +317,8 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
     async sweep() {
       const open = deps.queueRepo.list({ tag: "approval-request", state: "pending", limit: 200 }).filter((q) => q.state === "pending" && q.tags?.includes("approval-request"));
       for (const item of open) {
-        if (now() - Date.parse(item.tsCreated) >= timeoutMs()) await expire(item.qitemId, "no answer in time");
-        else if (now() - (lastAsked.get(item.qitemId) ?? Math.max(startedAt, Date.parse(item.tsCreated))) >= APPROVAL_ABANDONED_MS) await expire(item.qitemId, "the seat stopped waiting for it");
+        if (now() - (lastAsked.get(item.qitemId) ?? Math.max(startedAt, Date.parse(item.tsCreated))) >= APPROVAL_ABANDONED_MS) await expire(item.qitemId, "the seat stopped waiting for it");
+        else if (now() - Date.parse(item.tsCreated) >= repingMs() && !item.humanAnswers?.[QUESTION_ID]) await reping(item);
       }
     },
     async wait(requestId, sessionName, sliceMs) {
@@ -332,10 +343,6 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
         // Answered from the card's excerpt while its thread still posts: the answer stands once the thread lands.
         const threadPending = (answer === "allow" || answer === "deny") && !!item.humanDetail && item.deliveryOutcome !== "transport-failed" && item.deliveryOutcome !== "never-posted";
         if (!threadPending && (item.state !== "pending" || item.deliveryOutcome === "transport-failed")) return "expired";
-        if (now() - Date.parse(item.tsCreated) >= timeoutMs()) {
-          await expire(requestId, "no answer in time");
-          return "expired";
-        }
         if (Date.now() >= sliceEnd) { lastAsked.set(requestId, now()); return "pending"; }
         await new Promise((r) => setTimeout(r, deps.pollMs ?? 500));
       }

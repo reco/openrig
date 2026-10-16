@@ -3,11 +3,11 @@
 // Prints the runtime's allow/deny decision; prints nothing (normal terminal prompt) when there
 // is no answer, the seat did not opt in, or OpenRig is unreachable. Each call to the daemon waits
 // at most a minute (under fetch's header timeout); the hook repeats it until an answer or until the
-// daemon expires the request (its approvalTimeoutSeconds, at most an hour). WAIT_MS only bounds a
-// daemon that keeps answering "pending"; the runtimes' hook timeout (3660 s) sits just above it.
+// daemon closes the request (answered in the terminal, or by a rule). WAIT_MS bounds the wait at a day;
+// Claude's hook timeout (86460 s) sits just above it, Codex's ends it after an hour.
 const { parseJson, resolveEndpoint } = require("./activity-relay.cjs");
 
-const WAIT_MS = 3_630_000;
+const WAIT_MS = 86_400_000;
 
 async function readStdin() {
   let data = "";

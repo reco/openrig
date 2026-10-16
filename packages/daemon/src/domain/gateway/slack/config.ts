@@ -47,7 +47,8 @@ export interface SlackConnectorConfig {
   extraChannels: Array<{ id: string; inboundDestination: string }>;
   /** Seats (session names) whose permission prompts go to Slack as Approve / Deny buttons. */
   approvalSeats: string[];
-  /** How long a Slack approval waits for the human before the prompt falls back to the terminal. */
+  /** How long an unanswered Slack approval waits before its card's thread is pinged once; the card stays
+   *  answerable while the seat waits. */
   approvalTimeoutSeconds: number;
   /** Reaction names (the workspace's custom ones included) that count as 👍 or 👎 feedback. */
   feedbackReactions: { up: string[]; down: string[] };
@@ -81,10 +82,9 @@ export const DEFAULT_CONFIG: SlackConnectorConfig = {
   extraChannels: [],
   feedbackReactions: { up: ["+1", "thumbsup"], down: ["-1", "thumbsdown"] },
   approvalSeats: [],
-  approvalTimeoutSeconds: 1800,
+  approvalTimeoutSeconds: 900,
 };
 
-/** The hooks wait at most an hour (their runtime timeouts sit just above), so the daemon's deadline stays under it. */
 export const MAX_APPROVAL_TIMEOUT_SECONDS = 3600;
 
 /** Every configured channel with the seat its new messages land on; `channel` first. */
