@@ -72,6 +72,24 @@ export function readApprovalRules(home: string): ApprovalRule[] {
   }
 }
 
+/** A check run at start and on every rules-file change: while the file cannot be read it tells the human once per
+ *  distinct problem (again if a post fails), and returns whether the file reads. */
+export function makeRulesFileAlert(deps: { home: string; post: (summary: string, body: string) => Promise<void>; log: (msg: string) => void }): () => Promise<boolean> {
+  let alerted: string | null = null;
+  return async () => {
+    const problem = rulesFileProblem(deps.home);
+    if (!problem) { alerted = null; readApprovalRules(deps.home); return true; }
+    if (problem.error === alerted) return false;
+    const inForce = problem.inForce === null
+      ? "No rules are in force: every prompt asks you, and git commands are refused because their denies cannot be checked."
+      : `The last good ${problem.inForce} rule(s) still answer prompts, but git commands are refused because the denies in the file cannot be checked.`;
+    deps.log(`rules file unreadable: ${problem.error}. ${inForce}`);
+    await deps.post("Approval rules file cannot be read", `${problem.error}\n\n${inForce} rig approvals and Always clicks refuse to write until it is fixed.`);
+    alerted = problem.error;
+    return false;
+  };
+}
+
 /** Why the rules file cannot be read and how many last good rules stay in force, or null when it reads. */
 export function rulesFileProblem(home: string): { error: string; inForce: number | null } | null {
   try { readRulesFile(home); return null; } catch (e) {

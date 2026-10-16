@@ -50,8 +50,10 @@ export interface ApprovalServiceDeps {
   cwdOf?: (sessionName: string) => string | null;
   /** How long an unanswered card waits before its one re-ping; read at each sweep. */
   repingMs?: () => number;
-  /** The human's allow/deny rules, read at each request. */
+  /** The human's allow/deny rules, read at each request; may be the last good rules while the file is broken. */
   rules?: () => readonly ApprovalRule[];
+  /** The rules as the file holds them now, throwing while it cannot be read; the deny check uses these. */
+  strictRules?: () => readonly ApprovalRule[];
   /** Saves a rule from an Always approve / Always deny click. */
   saveRule?: (rule: ApprovalRule) => void;
   pollMs?: number;
@@ -248,8 +250,9 @@ export function makeApprovalService(deps: ApprovalServiceDeps): ApprovalService 
       return { decision: hit.effect, message: hitMessage(hit) };
     },
     denyByRule(input) {
-      // Unreadable rules throw: the hook then refuses what it cannot check, rather than every deny going quiet.
-      const hit = ruleDecision(deps.rules?.() ?? [], input);
+      // Unreadable rules throw, also after a good read: a deny the human just added may be what broke the file, so
+      // the hook refuses what it cannot check rather than enforcing stale denies.
+      const hit = ruleDecision((deps.strictRules ?? deps.rules)?.() ?? [], input);
       if (hit?.effect !== "deny") return null;
       log(`deny by rule ${hit.rule.match} before the runtime's own rules: ${input.sessionName} ${approvalText(input.toolName, input.toolInput).split("\n")[0]!.slice(0, 200)}`);
       return hitMessage(hit);

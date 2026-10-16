@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeDenyRules, readApprovalRules, readRulesFile, ruleDecision, rulesFileProblem, saveAlwaysRule, type ApprovalRule } from "../src/domain/approval-rules.js";
+import { claudeDenyRules, makeRulesFileAlert, readApprovalRules, readRulesFile, ruleDecision, rulesFileProblem, saveAlwaysRule, type ApprovalRule } from "../src/domain/approval-rules.js";
 import { makeApprovalService } from "../src/domain/approvals.js";
 import { activityRoutes } from "../src/routes/activity.js";
 import { operationalLaunchArgs } from "../src/adapters/kernel-authority.js";
@@ -33,6 +33,37 @@ describe("approval rules", () => {
     writeFileSync(join(h, "approval-rules.json"), JSON.stringify({ rules: [{ effect: "allow", match: "Bash(lsof *)" }] }));
     expect(rulesFileProblem(h)).toBeNull();
     expect(readApprovalRules(h).map((r) => r.match)).toEqual(["Bash(lsof *)"]);
+  });
+
+  it("while the file is broken the last good allows still answer, but the deny check refuses to decide", () => {
+    const h = home({ rules: [{ effect: "allow", match: "Bash(ps *)" }, { effect: "deny", match: "Bash(git push *)" }] });
+    const s = makeApprovalService({ queueRepo: {} as never, optedIn: () => [], approver: () => null, verifySeat: () => true,
+      rules: () => readApprovalRules(h), strictRules: () => readRulesFile(h).rules });
+    expect(s.denyByRule(bash("git push origin main"))).toMatch(/Bash\(git push \*\)/);
+    expect(s.byRule(bash("ps aux"))?.decision).toBe("allow");
+    writeFileSync(join(h, "approval-rules.json"), '{ "rules": [ { "effect": "deny", "match": "Bash(git push * release)" ');
+    expect(s.byRule(bash("ps aux"))?.decision).toBe("allow");
+    expect(() => s.denyByRule(bash("git push origin release"))).toThrow(/not valid JSON/);
+  });
+
+  it("the rules-file alert posts once per problem, retries a failed post, and alerts again after a fix and a new break", async () => {
+    const h = home({ rules: [{ effect: "allow", match: "Bash(ps *)" }] });
+    const posts: string[] = [];
+    let failNext = false;
+    const check = makeRulesFileAlert({ home: h, log: () => {}, post: async (summary, body) => { if (failNext) { failNext = false; throw new Error("slack down"); } posts.push(`${summary}\n${body}`); } });
+    expect(await check()).toBe(true);
+    writeFileSync(join(h, "approval-rules.json"), "{ broken");
+    failNext = true;
+    await expect(check()).rejects.toThrow("slack down");
+    expect(await check()).toBe(false);
+    expect(await check()).toBe(false);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toMatch(/cannot be read\n.+not valid JSON[\s\S]+last good 1 rule\(s\) still answer prompts, but git commands are refused/);
+    writeFileSync(join(h, "approval-rules.json"), JSON.stringify({ rules: [] }));
+    expect(await check()).toBe(true);
+    writeFileSync(join(h, "approval-rules.json"), "{ broken");
+    expect(await check()).toBe(false);
+    expect(posts).toHaveLength(2);
   });
 
   it("a rules file broken before this process ever read it gives no rules: reading it throws", () => {
