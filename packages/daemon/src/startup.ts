@@ -2297,7 +2297,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       // A human's Approve / Deny on a stuck-prompt notice is typed into the seat's terminal once, and
       // only while the same prompt is up; the thread says what happened either way.
       const { actOnPromptAnswers, answerPromptsByRule } = await import("./domain/stuck-prompt-watch.js");
-      const { approvalRulesPath, readApprovalRules, readRulesFile } = await import("./domain/approval-rules.js");
+      const { approvalRulesPath, readApprovalRules, readRulesFile, rulesFileProblem } = await import("./domain/approval-rules.js");
       const answerDeps = {
         capture: (session: string) => tmuxAdapter.capturePaneContent(session, STUCK_PROMPT_CAPTURE_LINES),
         inMode: (session: string) => tmuxAdapter.isPaneInMode(session),
@@ -2308,15 +2308,35 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       // Any write to the rules file (rig approvals, an Always click, an editor) re-checks the open prompts once.
       const rulesStamp = () => { try { const s = fs.statSync(approvalRulesPath(OPENRIG_HOME)); return `${s.mtimeMs}|${s.size}`; } catch { return "none"; } };
       let rulesSeen = rulesStamp();
-      // An invalid allow is skipped on every read; the human hears about each new set of them once.
+      // A rules file that cannot be read keeps the last good rules in force; the human hears about each new
+      // problem once. An invalid allow is skipped on every read; the human hears about each new set once.
+      let brokenSeen: string | null = null;
       let skippedSeen = "[]";
+      const rulesHuman = () => {
+        const registry = loadHumanRegistryForDelivery(OPENRIG_HOME);
+        return registry.ok ? registry.entities.find((e) => e.role !== "requester") : undefined;
+      };
       const surfaceSkippedAllows = async () => {
+        const problem = rulesFileProblem(OPENRIG_HOME);
+        if (problem) {
+          if (problem.error === brokenSeen) return;
+          brokenSeen = problem.error;
+          const inForce = problem.inForce === null ? "No rules are in force, so every prompt asks you and the deny check refuses what it cannot read."
+            : `The last good ${problem.inForce} rule(s) stay in force until the file reads again.`;
+          console.log(`[approvals] rules file unreadable: ${problem.error}. ${inForce}`);
+          const human = rulesHuman();
+          if (!human) return;
+          await queueRepoInstance.create({ tags: ["approval-rules-broken"], sourceSession: "daemon@kernel", destinationSession: human.address, humanIntent: "update",
+            summary: "Approval rules file cannot be read", nudge: false, body: `${problem.error}\n\n${inForce} rig approvals and Always clicks refuse to write until it is fixed.` });
+          return;
+        }
+        brokenSeen = null;
+        readApprovalRules(OPENRIG_HOME);
         const skipped = readRulesFile(OPENRIG_HOME).skipped.map((r) => JSON.stringify(r));
         if (JSON.stringify(skipped) === skippedSeen) return;
         if (!skipped.length) { skippedSeen = "[]"; return; }
         console.log(`[approvals] skipped ${skipped.length} invalid allow rule(s) in ${approvalRulesPath(OPENRIG_HOME)}: ${skipped.join(" ")}`);
-        const registry = loadHumanRegistryForDelivery(OPENRIG_HOME);
-        const human = registry.ok ? registry.entities.find((e) => e.role !== "requester") : undefined;
+        const human = rulesHuman();
         if (!human) return;
         await queueRepoInstance.create({ tags: ["approval-rules-skipped"], sourceSession: "daemon@kernel", destinationSession: human.address, humanIntent: "update",
           summary: `${skipped.length} approval rule(s) skipped: not a valid allow`, nudge: false,

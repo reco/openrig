@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 import { createRequire } from "node:module";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeDenyRules, readApprovalRules, readRulesFile, ruleDecision, saveAlwaysRule, type ApprovalRule } from "../src/domain/approval-rules.js";
+import { claudeDenyRules, readApprovalRules, readRulesFile, ruleDecision, rulesFileProblem, saveAlwaysRule, type ApprovalRule } from "../src/domain/approval-rules.js";
 import { makeApprovalService } from "../src/domain/approvals.js";
 import { activityRoutes } from "../src/routes/activity.js";
 import { operationalLaunchArgs } from "../src/adapters/kernel-authority.js";
@@ -19,6 +19,28 @@ describe("approval rules", () => {
   const homes: string[] = [];
   afterEach(() => { for (const h of homes.splice(0)) rmSync(h, { recursive: true, force: true }); vi.unstubAllEnvs(); });
   const home = (rules: unknown) => { const h = mkdtempSync(join(tmpdir(), "rules-")); homes.push(h); writeFileSync(join(h, "approval-rules.json"), JSON.stringify(rules)); return h; };
+
+  it("a rules file that stops parsing keeps the last good rules in force, says why, and is never overwritten by an Always click", () => {
+    const h = home({ rules: [{ effect: "deny", match: "Bash(git push *)" }, { effect: "allow", match: "Bash(ps *)" }] });
+    expect(readApprovalRules(h)).toHaveLength(2);
+    expect(rulesFileProblem(h)).toBeNull();
+    const broken = '{ "rules": [ { effect: "deny", "match": "Bash(rm *)" } ] }';
+    writeFileSync(join(h, "approval-rules.json"), broken);
+    expect(readApprovalRules(h).map((r) => r.match)).toEqual(["Bash(git push *)", "Bash(ps *)"]);
+    expect(rulesFileProblem(h)).toMatchObject({ inForce: 2, error: expect.stringMatching(/approval-rules\.json is not valid JSON \(.+\); fix it by hand/) });
+    expect(() => saveAlwaysRule(h, { effect: "allow", match: "Bash(lsof *)", seats: "dev@rig" })).toThrow(/not valid JSON/);
+    expect(readFileSync(join(h, "approval-rules.json"), "utf8")).toBe(broken);
+    writeFileSync(join(h, "approval-rules.json"), JSON.stringify({ rules: [{ effect: "allow", match: "Bash(lsof *)" }] }));
+    expect(rulesFileProblem(h)).toBeNull();
+    expect(readApprovalRules(h).map((r) => r.match)).toEqual(["Bash(lsof *)"]);
+  });
+
+  it("a rules file broken before this process ever read it gives no rules: reading it throws", () => {
+    const h = home({});
+    writeFileSync(join(h, "approval-rules.json"), "{ not json");
+    expect(() => readApprovalRules(h)).toThrow(/not valid JSON/);
+    expect(rulesFileProblem(h)).toMatchObject({ inForce: null });
+  });
 
   it("allows a simple command matching an allow rule, with or without arguments, and Claude's :* form", () => {
     const rules: ApprovalRule[] = [{ effect: "allow", match: "Bash(ps *)" }, { effect: "allow", match: "Bash(lsof:*)" }];

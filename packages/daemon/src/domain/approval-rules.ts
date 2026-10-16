@@ -44,7 +44,11 @@ export function isValidRule(rule: unknown): rule is ApprovalRule {
 export function readRulesFile(home: string): { rules: ApprovalRule[]; skipped: unknown[] } {
   let raw: string;
   try { raw = readFileSync(approvalRulesPath(home), "utf8"); } catch { return { rules: [], skipped: [] }; }
-  const rules = (JSON.parse(raw) as { rules?: unknown }).rules;
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch (e) {
+    throw new Error(`${approvalRulesPath(home)} is not valid JSON (${(e as Error).message}); fix it by hand, nothing will overwrite it`);
+  }
+  const rules = (parsed as { rules?: unknown } | null)?.rules;
   if (!Array.isArray(rules)) throw new Error(`${APPROVAL_RULES_FILE} has no "rules" list`);
   const isAllow = (r: unknown) => (r as { effect?: unknown } | null)?.effect === "allow";
   const invalid = rules.findIndex((r) => !isValidRule(r) && !isAllow(r));
@@ -52,8 +56,27 @@ export function readRulesFile(home: string): { rules: ApprovalRule[]; skipped: u
   return { rules: rules.filter(isValidRule), skipped: rules.filter((r) => !isValidRule(r)) };
 }
 
+const lastGoodRules = new Map<string, ApprovalRule[]>();
+
+/** The rules in force: the file's, or while the file cannot be read, the last rules this process read from it.
+ *  Throws only when the file is broken and nothing was read before. */
 export function readApprovalRules(home: string): ApprovalRule[] {
-  return readRulesFile(home).rules;
+  try {
+    const { rules } = readRulesFile(home);
+    lastGoodRules.set(home, rules);
+    return rules;
+  } catch (e) {
+    const good = lastGoodRules.get(home);
+    if (good) return good;
+    throw e;
+  }
+}
+
+/** Why the rules file cannot be read and how many last good rules stay in force, or null when it reads. */
+export function rulesFileProblem(home: string): { error: string; inForce: number | null } | null {
+  try { readRulesFile(home); return null; } catch (e) {
+    return { error: (e as Error).message, inForce: lastGoodRules.get(home)?.length ?? null };
+  }
 }
 
 /** The rules a new home starts with: read-only inspection, git read verbs, test runners and the rig CLI,
@@ -133,7 +156,7 @@ export function alwaysRuleFor(toolName: string, toolInput: unknown): AlwaysRule 
 /** Saves a rule from an Always click: added once, scoped to `seats`, never rewriting other rules. */
 export function saveAlwaysRule(home: string, rule: ApprovalRule): void {
   if (!isValidRule(rule)) throw new Error(`not a rule: ${JSON.stringify(rule)}`);
-  const rules = readApprovalRules(home);
+  const { rules } = readRulesFile(home);
   if (rules.some((r) => r.effect === rule.effect && r.match === rule.match && r.seats === rule.seats && !!r.exact === !!rule.exact)) return;
   writeApprovalRules(home, [...rules, rule]);
 }

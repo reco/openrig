@@ -34,4 +34,14 @@ describe("rig approvals", () => {
     expect(await run(home, ["allow", "Bash(tmux *)"])).toContain('Dropped 1 invalid allow rule(s): {"effect":"allow","match":"Bash(tmux *"}');
     expect(JSON.parse(readFileSync(join(home, "approval-rules.json"), "utf8"))).toEqual({ rules: [{ effect: "allow", match: "Bash(ps *)" }, { effect: "allow", match: "Bash(tmux *)" }] });
   });
+
+  it("refuses every write over a rules file that is not valid JSON, naming the file and the parse error, and leaves it untouched", async () => {
+    const home = mkdtempSync(join(tmpdir(), "approvals-")); homes.push(home);
+    const broken = '{ "rules": [ { effect: "deny", "match": "Bash(rm *)" } ] }';
+    writeFileSync(join(home, "approval-rules.json"), broken);
+    for (const args of [["allow", "Bash(ps *)"], ["deny", "Bash(git push *)"], ["remove", "1"], ["list"]]) {
+      await expect(run(home, args)).rejects.toThrow(/approval-rules\.json is not valid JSON \(.+\); fix it by hand/);
+    }
+    expect(readFileSync(join(home, "approval-rules.json"), "utf8")).toBe(broken);
+  });
 });
