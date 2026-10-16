@@ -16,6 +16,7 @@ import { NO_SESSION_BUS } from "./seat-runtime-dir.js";
 import { ACCOUNT_HOME_PROVIDER_ENV, seatAccountHome, effectiveRuntimeHome } from "./seat-runtime-home.js";
 import { claudeSeatTokenFallbackNotice, claudeSeatTokenFileProblem, claudeSeatTokenOutrankedNotice, claudeSeatTokenStep, readClaudeSeatTokenRef, type ClaudeSeatTokenRef } from "./claude-seat-token.js";
 import { isolatedClaudeAccountProblem, OUTRANKING_TOKEN_ENV, projectRootForLocalSettings, settingsFileConflicts, type CredentialConflict, type CredentialPrecedence } from "./claude-credential-precedence.js";
+import { seatTokenEnv } from "./seat-token.js";
 
 export interface ClaudeLaunchTarget {
   /** A running seat's verified executable, carried through its in-place continuation. */
@@ -361,7 +362,8 @@ export class ClaudeManagedLaunch {
     const generation = target.generation ?? before.generation;
     const identity: Record<string, string> = { OPENRIG_NODE_ID: target.nodeId, OPENRIG_RUNTIME: "claude-code",
       ...(before.session ? { OPENRIG_SESSION_NAME: before.session } : {}),
-      ...(generation ? { OPENRIG_OCCUPANT_GENERATION: generation } : {}) };
+      ...(generation ? { OPENRIG_OCCUPANT_GENERATION: generation } : {}),
+      ...seatTokenEnv(this.sessionEnv.OPENRIG_HOME, target.nodeId, before.session ?? undefined, generation) };
     const seatKeys = (await this.seatEnvKeys(target.nodeId, before.session ?? undefined)).filter(key => !credentialKeys.includes(key));
     const publicEnv = publicSeatEnvironment(this.sessionEnv);
     const assignments = Object.entries({ ...context.env, ...publicEnv, ...identity }).map(([key, value]) => `export ${shellQuote(`${key}=${value}`)}`);

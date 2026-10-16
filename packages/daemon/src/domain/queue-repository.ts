@@ -4850,7 +4850,7 @@ export class QueueRepository {
       // on the re-park records over it.
       if (unansweredQuestions(item.humanQuestions, recorded).length === 0
         && (item.state === "pending" || this.currentEpisodeAnswer(item.qitemId, input.actorSession))) {
-        return { status: "recorded" as const, answers: recorded, complete: true, questions: item.humanQuestions };
+        return { status: "recorded" as const, answers: recorded, complete: true, questions: item.humanQuestions, tags: item.tags ?? [] };
       }
       const answers: HumanAnswers = { ...(item.humanAnswers ?? {}), [input.questionId]: input.optionId };
       const complete = unansweredQuestions(item.humanQuestions, answers).length === 0;
@@ -4862,7 +4862,7 @@ export class QueueRepository {
           .run(JSON.stringify(answers), transition.ts, input.qitemId);
         changed = { summary: item.summary ?? null, answered: item.humanQuestions.length - unansweredQuestions(item.humanQuestions, answers).length };
       }
-      return { status: "recorded" as const, answers, complete, questions: item.humanQuestions };
+      return { status: "recorded" as const, answers, complete, questions: item.humanQuestions, tags: item.tags ?? [] };
     })();
     // The click is on the ask before anyone hears of it; a failed event never takes it back or holds up its return.
     if (changed && result.status === "recorded") {

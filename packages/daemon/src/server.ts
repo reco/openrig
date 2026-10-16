@@ -79,6 +79,7 @@ import type { ClaudeCompactionEnforcer } from "./domain/claude-compaction-enforc
 import { activityRoutes, guestActivityRoutes } from "./routes/activity.js";
 import { askRoutes } from "./routes/ask.js";
 import { wakeResolveRoutes } from "./routes/wake-resolve.js";
+import { promptCardRoutes } from "./routes/prompt-card.js";
 import type { AskService } from "./domain/ask-service.js";
 import type { WakeResolveService } from "./domain/wake-resolve-service.js";
 import { specReviewRoutes } from "./routes/spec-review.js";
@@ -256,6 +257,8 @@ export interface AppDeps {
   watchdogScheduler?: WatchdogScheduler;
   /** The outbound network connector (`rig network`); started after the listener binds. */
   networkConnector?: import("./domain/network/network-connector.js").NetworkConnectorService;
+  /** A seat waiting at a prompt for over a minute: one notice to its human per episode. */
+  stuckPromptWatch?: import("./domain/stuck-prompt-watch.js").StuckPromptWatch;
   /** B8 / slice-07 A3 — the model-divergence monitor (effective-vs-pinned, four-channel proclaim). */
   modelDivergenceMonitor?: import("./domain/model-divergence/model-divergence-monitor.js").ModelDivergenceMonitor;
   /** S10 — the in-daemon gateway subsystem (amended M1 §3: in-process, no second deployable).
@@ -389,6 +392,7 @@ export interface AppDeps {
   activityHookToken?: string;
   /** Slice 13: opted-in Claude seats' hook bridge (the waiters' routes and the seat preference). */
   hookBridge?: import("./domain/hook-bridge.js").HookBridge;
+  approvalService?: import("./domain/approvals.js").ApprovalService;
   serviceOrchestrator?: import("./domain/service-orchestrator.js").ServiceOrchestrator;
   composeAdapter?: import("./adapters/compose-services-adapter.js").ComposeServicesAdapter;
   uiDistDir?: string | null;
@@ -638,6 +642,7 @@ export function createApp(deps: AppDeps): Hono {
     c.set("sessionTransport" as never, deps.sessionTransport);
     c.set("askService" as never, deps.askService);
     c.set("wakeResolveService" as never, deps.wakeResolveService);
+    c.set("stuckPromptWatch" as never, deps.stuckPromptWatch);
     c.set("chatRepo" as never, deps.chatRepo);
     c.set("streamStore" as never, deps.streamStore);
     c.set("queueRepo" as never, deps.queueRepo);
@@ -705,6 +710,7 @@ export function createApp(deps: AppDeps): Hono {
     c.set("seatStructuralActivityService" as never, deps.seatStructuralActivityService);
     c.set("activityHookToken" as never, deps.activityHookToken);
     c.set("hookBridge" as never, deps.hookBridge);
+    c.set("approvalService" as never, deps.approvalService);
     c.set("serviceOrchestrator" as never, deps.serviceOrchestrator);
     c.set("composeAdapter" as never, deps.composeAdapter);
     c.set("kernelBootTracker" as never, deps.kernelBootTracker);
@@ -866,6 +872,7 @@ export function createApp(deps: AppDeps): Hono {
   app.route("/api/activity", activityRoutes);
   app.route("/api/ask", askRoutes);
   app.route("/api/wake-resolve", wakeResolveRoutes);
+  app.route("/api/prompt-card", promptCardRoutes);
   app.route("/api/specs/review", specReviewRoutes());
   app.route("/api/specs/library", specLibraryRoutes());
   app.route("/api/plugins", pluginsRoutes());

@@ -41,7 +41,7 @@ import { CODEX_NETWORK_DEFAULT_OVERRIDE, codexNetworkDefaultArg, type CodexNetwo
 import { resolveCodexGitAddDirs, type CodexGitAddDirResolver } from "../domain/codex-git-add-dirs.js";
 import { CODEX_REPOSITORY_COPY_BLOCK, DEFAULT_CODEX_MANAGED_BLOCK_FILE, codexRepositoryCopy, isPerSeatRoleGuidance, managedBlockText, mergeManagedBlock, perSeatRoleSkipWarning, type CodexManagedBlockFile } from "../domain/managed-blocks.js";
 import { writeManagedGuidanceBlock, type ManagedBlockRecords } from "../domain/managed-block-records.js";
-import { durableLaunchAsset } from "./durable-launch-asset.js";
+import { durableLaunchAsset, durableLaunchAssets } from "./durable-launch-asset.js";
 import { getOpenRigHome } from "../openrig-compat.js";
 import { excludeNewGeneratedFiles } from "../domain/generated-file-hygiene.js";
 import { codexQueueStateRoot, codexTeamWorkspaceArg, type PrepareCodexSeatFolder, type PrepareCodexTeamWorkspace } from "../domain/codex-team-workspace.js";
@@ -651,7 +651,9 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       }
       return;
     }
-    const relay = durableLaunchAsset(packagedRelay, getOpenRigHome());
+    const packagedApproval = nodePath.join(nodePath.dirname(packagedRelay), "approval-request.cjs");
+    const sources = this.fs.exists(packagedApproval) ? [packagedRelay, packagedApproval] : [packagedRelay];
+    const [relay, approval = null] = durableLaunchAssets(sources, getOpenRigHome()) as [string, string?];
     const configPath = this.resolveCodexConfigPath(home);
     const existing = this.fs.exists(configPath) ? this.fs.readFile(configPath) : "";
     // A Codex home that keeps its hooks in hooks.json gets OpenRig's there too: Codex warns when one layer mixes both
@@ -661,7 +663,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       this.ensureCodexJsonActivityHooks(existing, configPath, hooksPath, relay);
       return;
     }
-    const withHooks = upsertCodexActivityHooks(existing, relay);
+    const withHooks = upsertCodexActivityHooks(existing, relay, approval);
     if (!changesOnlyOpenRigActivityHooks(existing, withHooks, `node "${relay}"`)) {
       console.error(`[openrig] codex activity hooks skipped: ${configPath} can't be read as TOML, or writing OpenRig's hooks would change anything else; left untouched`);
       return;
@@ -677,7 +679,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     // — without a blanket native trust keystroke. If native identity/hash semantics
     // change, the remaining review is surfaced for a decision. Idempotent
     // + non-clobbering; only touches our 4 keys. See applyCodexActivityHookTrust for the RTFM.
-    const trusted = this.applyCodexActivityHookTrust(withHooks, configPath, relay);
+    const trusted = this.applyCodexActivityHookTrust(withHooks, configPath, relay, approval);
     if (trusted !== withHooks) {
       this.fs.mkdirp(nodePath.dirname(configPath));
       this.fs.writeFile(configPath, trusted);
@@ -756,7 +758,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
    * string is the value Codex deserializes from our TOML literal `'node "<relay>"'` — i.e.
    * `node "<relay>"` WITHOUT the outer TOML quote delimiters. Timeout=5, matcher/status None.
    */
-  private applyCodexActivityHookTrust(content: string, configPath: string, relay: string): string {
+  private applyCodexActivityHookTrust(content: string, configPath: string, relay: string, approval: string | null = null): string {
     let keySource = configPath;
     try {
       keySource = fs.realpathSync.native(configPath);
@@ -780,6 +782,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       if (groupIndex < 0) continue;
       const { key, hash } = computeCodexHookTrust(event, { keySource, command, timeoutSec: 5, groupIndex });
       next = upsertCodexHookTrust(next, key, hash);
+      if (event === "PermissionRequest" && approval) {
+        const handler = computeCodexHookTrust(event, { keySource, command: `node "${approval}"`, timeoutSec: CODEX_APPROVAL_HOOK_TIMEOUT_SEC, groupIndex, handlerIndex: 1 });
+        next = upsertCodexHookTrust(next, handler.key, handler.hash);
+      }
     }
     return next;
   }
@@ -2289,11 +2295,12 @@ function upsertCodexProjectTrust(content: string, projectPath: string): string {
 //   The KEY's exact key_source canonical form + the positional indices are what the VM
 //   read-back must confirm — PROVISIONAL until then.
 
-const CODEX_HOOK_EVENT_KEY_LABEL: Record<(typeof OPENRIG_ACTIVITY_HOOK_EVENTS)[number], string> = {
+const CODEX_HOOK_EVENT_KEY_LABEL: Record<(typeof OPENRIG_ACTIVITY_HOOK_EVENTS)[number] | "PreToolUse", string> = {
   SessionStart: "session_start",
   UserPromptSubmit: "user_prompt_submit",
   Stop: "stop",
   PermissionRequest: "permission_request",
+  PreToolUse: "pre_tool_use",
 };
 
 export interface CodexHookTrustInput {
@@ -2319,7 +2326,7 @@ export interface CodexHookTrustInput {
  * PROVISIONAL-until-VM-read-back caveat.
  */
 export function computeCodexHookTrust(
-  event: (typeof OPENRIG_ACTIVITY_HOOK_EVENTS)[number],
+  event: (typeof OPENRIG_ACTIVITY_HOOK_EVENTS)[number] | "PreToolUse",
   input: CodexHookTrustInput,
 ): { key: string; hash: string } {
   const label = CODEX_HOOK_EVENT_KEY_LABEL[event];
@@ -2481,10 +2488,15 @@ const OPENRIG_ACTIVITY_HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "Stop"
  * runs the hook under. No matcher (verified on 0.139: no-matcher fires for every
  * turn-scope event).
  */
-function upsertCodexActivityHooks(content: string, relayPath: string): string {
+const CODEX_APPROVAL_HOOK_TIMEOUT_SEC = 3660;
+
+function upsertCodexActivityHooks(content: string, relayPath: string, approvalPath: string | null = null): string {
   const command = `'node "${relayPath}"'`;
+  const approvalHandler = approvalPath
+    ? `\n\n[[hooks.PermissionRequest.hooks]]\ntype = "command"\ncommand = 'node "${approvalPath}"'\ntimeout = ${CODEX_APPROVAL_HOOK_TIMEOUT_SEC}`
+    : "";
   const stanzas = OPENRIG_ACTIVITY_HOOK_EVENTS
-    .map((ev) => `[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${command}\ntimeout = 5`)
+    .map((ev) => `[[hooks.${ev}]]\n[[hooks.${ev}.hooks]]\ntype = "command"\ncommand = ${command}\ntimeout = 5${ev === "PermissionRequest" ? approvalHandler : ""}`)
     .join("\n\n");
   const block = `${OPENRIG_ACTIVITY_HOOKS_BEGIN}\n${stanzas}\n${OPENRIG_ACTIVITY_HOOKS_END}\n`;
 
@@ -2604,11 +2616,14 @@ function openRigActivityGroup(command: string): { hooks: Array<Record<string, un
 
 /** Where OpenRig's activity relay ships, in this install or an earlier one (the absolute path moves on upgrade). */
 const OPENRIG_ACTIVITY_RELAY_SUFFIX = "/assets/plugins/openrig-core/hooks/scripts/activity-relay.cjs";
+const OPENRIG_APPROVAL_SUFFIX = "/assets/plugins/openrig-core/hooks/scripts/approval-request.cjs";
+const OPENRIG_LAUNCH_ASSET = /\/launch-assets\/[0-9a-f]{16}\/(?:activity-relay|approval-request)\.cjs$/;
 
 /** A hook command that runs OpenRig's own shipped activity relay, not a person's script that shares its name. */
 function isOpenRigRelayCommand(command: unknown): boolean {
   const relay = typeof command === "string" ? /^node "(.*)"$/.exec(command)?.[1] : undefined;
-  return relay !== undefined && relay.replaceAll("\\", "/").endsWith(OPENRIG_ACTIVITY_RELAY_SUFFIX);
+  const path = relay?.replaceAll("\\", "/");
+  return path !== undefined && (path.endsWith(OPENRIG_ACTIVITY_RELAY_SUFFIX) || path.endsWith(OPENRIG_APPROVAL_SUFFIX) || OPENRIG_LAUNCH_ASSET.test(path));
 }
 
 /** OpenRig's own group, exactly as it authors it: no matcher, and one handler with only our fields, our status and

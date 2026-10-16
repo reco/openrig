@@ -403,6 +403,7 @@ export async function startServer(port?: number) {
         deps.watchdogScheduler?.start();
         deps.networkConnector?.start();
         deps.sessionTransport?.guardedDelivery?.recover();
+        deps.stuckPromptWatch?.start();
         // S10 — start the gateway subsystem's NETWORK services (replay, outbound poll,
         // Socket Mode inbound) post-bind, contextMonitor pattern: the composed wire is
         // already active; only its dial-out half waits for the supervision tree.
@@ -474,6 +475,7 @@ export async function startServer(port?: number) {
       ["network-connector", () => deps.networkConnector?.stop()],
       ["stream-intake", () => deps.streamIntakeCoordinator?.stop()],
       ["draft-delivery", () => deps.sessionTransport?.guardedDelivery?.stop()],
+      ["stuck-prompt", () => deps.stuckPromptWatch?.stop()],
       ["seat-activity", () => deps.seatActivityService?.stop()],
       ["seat-structural-activity", () => deps.seatStructuralActivityService?.stop()],
       ["seat-identity", () => deps.seatIdentityReconciler?.stop()],

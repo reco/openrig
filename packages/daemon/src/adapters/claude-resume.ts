@@ -124,7 +124,7 @@ export class ClaudeResumeAdapter {
     if (seatToken) tokenWarnings.push(...(await this.options.claudeManagedLaunch?.tokenPrecedenceWarnings?.(nodeId!, seatToken.ref) ?? []));
     const choice = { claudePermissions, claudeAutoMode, kernelAuthority, teamPermissionDefault, nonInterruptive, launchPosture: resolvedPosture, permissionMode: selectedPermissionMode,
       // The version gate reads the Claude this resume runs, not PATH's.
-      hookBridge: nodeId ? (await this.options.hookBridgeLaunch?.(nodeId, executable ?? undefined)) === true : false };
+      hookBridge: nodeId ? (await this.options.hookBridgeLaunch?.(nodeId, executable ?? undefined)) === true : false, tmuxSession: tmuxSessionName };
     const posture = claudePostureFlag(process.env, resolvedPosture, selectedPermissionMode);
     const autoMode = claudeAutoModeForLaunch(claudeAutoMode);
     if (autoMode.warning) tokenWarnings.push(autoMode.warning);

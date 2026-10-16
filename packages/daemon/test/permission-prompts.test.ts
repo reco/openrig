@@ -58,7 +58,7 @@ describe("permission prompts", () => {
     const order: string[] = [];
     const tmux = { sendShellCommand: async () => { order.push("launch"); return { ok: true as const }; }, sendText: async () => ({ ok: true as const }), sendKeys: async () => ({ ok: true as const }),
       getPaneCommand: async () => "codex", capturePaneContent: async () => "OpenAI Codex (v0.0.0)\n› Ask Codex to do anything" } as unknown as import("../src/adapters/tmux.js").TmuxAdapter;
-    await new CodexResumeAdapter(tmux, { prepareHome: () => order.push("home") }).resume("dev@rig", "codex_id", "thread-1", "/ws");
+    await new CodexResumeAdapter(tmux, { ensureManagedConfig: async () => { order.push("home"); } }).resume("dev@rig", "codex_id", "thread-1", "/ws");
     expect(order.slice(0, 2)).toEqual(["home", "launch"]);
   });
 });

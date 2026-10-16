@@ -23,6 +23,7 @@ import { seatLaunchAdditionsForLaunch } from "./seat-launch-additions.js";
 import { terminatePaneInPlace, type PaneCutoverTiming } from "./pane-cutover.js";
 
 import type { Session, Binding } from "./types.js";
+import { seatTokenEnv } from "./seat-token.js";
 
 export type LaunchResult =
   | { ok: true; sessionName: string; session: Session; binding: Binding; warnings?: string[];
@@ -260,6 +261,7 @@ export class NodeLauncher {
       [SEAT_PROJECT_DIR_ENV]: corePluginDir || codexCorePluginDir ? sessionCwd : undefined,
       [SEAT_NODE_ENV]: corePluginDir || codexCorePluginDir ? process.execPath : undefined,
       OPENRIG_OCCUPANT_GENERATION: occupantGeneration ?? undefined,
+      ...seatTokenEnv(this.sessionEnv.OPENRIG_HOME, node.id, sessionName, occupantGeneration),
     });
     const openRigEnv = launchEnv(opts?.env);
     if (!selectedRegistrationAllowed()) {

@@ -11,6 +11,10 @@ import { CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH, parseManagedClaudeNodeCommand } fr
 // argument ends with this path — a changed prefix still matches (replace, not duplicate); a
 // user command that merely contains the path (echo, or node with extra args) does NOT.
 const LEGACY_OWNED_RELAY_SUFFIX = "/.openrig/hooks/scripts/activity-relay.cjs";
+const LEGACY_OWNED_APPROVAL_SUFFIX = "/.openrig/hooks/scripts/approval-request.cjs";
+const OWNED_APPROVAL_RELATIVE_PATH = CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH.replace(/activity-relay\.cjs$/, "approval-request.cjs");
+const OWNED_GUARD_RELATIVE_PATH = CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH.replace(/activity-relay\.cjs$/, "simple-command-guard.cjs");
+const OWNED_DENY_CHECK_RELATIVE_PATH = CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH.replace(/activity-relay\.cjs$/, "deny-check.cjs");
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -44,7 +48,11 @@ export function isOwnedRelayCommand(cmd: string | undefined): boolean {
   const relay = parsed.args[0]!;
   return relay.endsWith("/plugins/openrig-core/hooks/scripts/activity-relay.cjs")
     || relay.endsWith(LEGACY_OWNED_RELAY_SUFFIX)
-    || relay.endsWith(`/${CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH}`);
+    || relay.endsWith(`/${CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH}`)
+    || relay.endsWith(LEGACY_OWNED_APPROVAL_SUFFIX)
+    || relay.endsWith(`/${OWNED_APPROVAL_RELATIVE_PATH}`)
+    || relay.endsWith(`/${OWNED_GUARD_RELATIVE_PATH}`)
+    || relay.endsWith(`/${OWNED_DENY_CHECK_RELATIVE_PATH}`);
 }
 
 /** Strip OpenRig-owned relay entries (EXACT node-command shape) from all events, hook by hook: a group keeps its other

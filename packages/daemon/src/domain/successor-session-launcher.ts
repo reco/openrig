@@ -13,6 +13,7 @@ import { isShellForeground } from "./shell-classifier.js";
 import { resolveReadinessTimeoutMs } from "./readiness-timeout.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { terminatePaneInPlace, type PaneTerminationResult } from "./pane-cutover.js";
+import { seatTokenEnv } from "./seat-token.js";
 
 /**
  * OPR.0.4.3.04 — the explicit successor-creation seam for the seat-handover
@@ -236,6 +237,7 @@ export class SuccessorSessionLauncher {
       // Selected Claude and Codex plugin hooks use this interpreter, as at launch (node-launcher.ts).
       ...(input.node.seatProjectDir && (input.node.runtime === "codex" || input.node.runtime === "claude-code") ? { [SEAT_NODE_ENV]: process.execPath } : {}),
       OPENRIG_OCCUPANT_GENERATION: input.occupantGeneration ?? undefined,
+      ...seatTokenEnv(this.sessionEnv.OPENRIG_HOME, input.node.id, departingSession, input.occupantGeneration),
     });
     const cwd = input.node.cwd ?? undefined;
 
