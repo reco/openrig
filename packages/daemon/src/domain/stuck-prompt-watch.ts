@@ -80,7 +80,7 @@ export function promptCardBody(p: StuckPrompt): string {
     : p.dialogCut ? "No buttons: the start of this prompt is off screen, so it cannot be shown in full. "
     : "No buttons: its plain Yes and No options could not be told apart on screen. ";
   const full = promptCardDetail(p) ? "Full dialog in this card's thread. " : "";
-  const waiting = p.requestedBy ? "" : `Waiting for ${p.waitingMinutes} minutes. `;
+  const waiting = p.requestedBy ? "" : `Waiting for ${p.waitingMinutes} minute${p.waitingMinutes === 1 ? "" : "s"}. `;
   const reason = p.requestedBy ? `\n\n*Why ${p.requestedBy} asks:* ${String(p.requestReason ?? "").replace(/\s+/g, " ").trim()}` : "";
   return `${promptBlock(p)}\n\n${full}${buttons}${waiting}Attach: \`${p.attach}\`${reason}`;
 }
