@@ -1233,6 +1233,8 @@ export function readClaudeSelfReportEvidence(input: {
         return { ...base, activity: "working" };
       case "idle":
         return { ...base, activity: "idle-at-prompt" };
+      case "shell":
+        return { ...base, activity: "idle-at-prompt", backgroundShell: true };
       case "waiting":
         return { ...base, needsInput: { count: 1, reason: "dialog owns input" } };
       default:

@@ -122,6 +122,9 @@ export interface ActivityEvidence {
   observedAt: string;
   activity?: ActivityValue;
   needsInput?: NeedsInput;
+  /** The turn is over but a background shell the agent started is still running (Claude's
+   *  self-report status `shell`), e.g. a CI watch that resumes it. Liveness, not activity. */
+  backgroundShell?: boolean;
 }
 
 /** A visible rung-health transition (AM-1): arbitration can never make a silently-dead
@@ -147,6 +150,8 @@ export interface ArbitratedSeatState {
   needsInputEvidence: { rung: EvidenceRungId; observedAt: string } | null;
   /** Which rung decided `activity` — confidence made visible. */
   decidedBy: EvidenceRungId | null;
+  /** idle-at-prompt decided by a self-report that a background shell is still running. */
+  backgroundShell: boolean;
   /** Monotonic arbitrated-state sequence (wait-after-seq consumes it). */
   seq: number;
   changedAt: string;

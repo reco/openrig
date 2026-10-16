@@ -7,7 +7,7 @@ import { resolveExternal } from "./gateway/external-admission.js";
 import type { PersistedEvent } from "./types.js";
 import { QueueTransitionLog, type OwnerNotificationLevel, type QueueTransition, type RecentQueueTransitionScope } from "./queue-transition-log.js";
 import { WAKE_INTENT_PREFIX, type OutboxHandler } from "./outbox-handler.js";
-import { derivePickup, type PickupReceipt } from "./queue-pickup.js";
+import { derivePickup, ownerPickupFacts, type PickupReceipt } from "./queue-pickup.js";
 import { lastMeaningfulTransition, readWaitingView, type WaitingView, type WaitingActivityReader } from "./queue-waiting.js";
 import { wrapPaneEnvelope } from "../lib/pane-envelope.js";
 import { renderQueueHandoffNudge } from "./queue-nudge-text.js";
@@ -4058,6 +4058,16 @@ export class QueueRepository {
     try { return this.activityReader?.(session) ?? null; } catch { return null; }
   }
 
+  /** The seat's open stuck-prompt card that reached its human (the prompt card's own delivery
+   *  ledger), or null: no card, or one not posted or failed, leaves the wait unowned. */
+  deliveredPromptCard(session: string): string | null {
+    if (!session) return null;
+    const cards = this.db.prepare(`SELECT qitem_id FROM queue_items WHERE state IN ('pending', 'in-progress', 'blocked')
+      AND tags LIKE '%"stuck-prompt-session:%' AND tags LIKE ? ORDER BY ts_created DESC`)
+      .all(`%"stuck-prompt-session:${session}"%`) as Array<{ qitem_id: string }>;
+    return cards.find((card) => this.humanNotificationPostedThisEpisode(card.qitem_id))?.qitem_id ?? null;
+  }
+
   waitingView(qitemId: string): WaitingView | null {
     const view = readWaitingView(this.db, qitemId, this.activityReader);
     if (view && ["pending", "in-progress"].includes(view.state)) {
@@ -4118,8 +4128,8 @@ export class QueueRepository {
     const pickup = derivePickup({
       state: row.state,
       lastMeaningfulAt: meaningful?.at,
-      activity: activity?.activity,
-      needsInput: activity?.needsInput.count,
+      ...ownerPickupFacts(activity),
+      promptCardDelivered: row.state === "in-progress" && !!row.claimed_at && this.deliveredPromptCard(row.destination_session) !== null,
       claimedAt: row.claimed_at,
       lastHeartbeat: row.last_heartbeat,
       postClaimMotionCount: 0, // this reader supplies the current meaningful timestamp

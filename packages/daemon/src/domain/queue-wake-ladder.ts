@@ -1052,6 +1052,9 @@ async function advancePromptRefusals(
       continue;
     }
     if (state !== "blocked" || suspensionReason(deps.db, dest, graceS, now)) continue;
+    // The prompt's own card reached the person who can answer it; escalating the same prompt to
+    // the orchestrator adds a second alert nobody else can act on. Unposted or failed cards escalate.
+    if (deps.queueRepo.deliveredPromptCard(dest)) continue;
     const members = [...group.rows.values()].map(row => ({ row, reason: "interactive prompt refuses the parked-owner wake" }));
     // Recovery owned elsewhere already has a route. A fallback finding sent
     // into this same blocked seat does not: include it in the aggregate while

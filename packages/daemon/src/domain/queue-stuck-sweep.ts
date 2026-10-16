@@ -255,6 +255,13 @@ function hasLiveLadder(db: Database.Database, qitemId: string): boolean {
   return false;
 }
 
+/** The transport's interactive-prompt refusal (session-transport `Refused: '<seat>' is at an interactive prompt`). */
+const PROMPT_REFUSAL_TEXT = "is at an interactive prompt";
+
+function isPromptRefusal(nudgeResult: string | null | undefined): boolean {
+  return !!nudgeResult?.startsWith("failed:") && nudgeResult.includes(PROMPT_REFUSAL_TEXT);
+}
+
 function minutesSince(iso: string | null | undefined, now: Date): number {
   if (!iso) return 0;
   const then = Date.parse(iso);
@@ -287,6 +294,17 @@ interface Candidate {
   evidenceAt: string;
   why: string;
   verificationTargets?: string[];
+  /** One finding per stall episode: the same claim, occupant generation and owner cause. A row
+   *  that goes quiet again between owner notes is the same episode, already reported. */
+  episodeTag?: string;
+}
+
+const STALL_EPISODE_PREFIX = "stuck-sweep-episode:";
+
+function episodeReported(db: Database.Database, episodeTag: string): boolean {
+  // The first term lets the planner use idx_queue_items_recovery_tags (migration 099).
+  return !!db.prepare(`SELECT 1 FROM queue_items WHERE (tags LIKE '%"stuck-sweep:%') AND tags LIKE ? LIMIT 1`)
+    .get(`%${JSON.stringify(episodeTag)}%`);
 }
 
 function isFindingRow(item: QueueItem): boolean {
@@ -395,6 +413,8 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       if (!row || isFindingRow(row)) continue;
       const stalled = stalledPickupFinding(row);
       if (!stalled) continue;
+      const owner = deps.queueRepo.ownerActivity(row.destinationSession);
+      const ownerCause = !owner || owner.activity === "unknown" ? "owner-unknown" : "quiet";
       candidates.push({
         kind: stalled.kind,
         row,
@@ -404,6 +424,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
         // it is the first honest row-scoped writer, and wiring reopens only in that slice.
         evidenceAt: latestIso(lastMeaningfulTransition(deps.db, row.qitemId)?.at, row.lastHeartbeat, row.claimedAt),
         why: stalled.evidence,
+        episodeTag: `${STALL_EPISODE_PREFIX}${row.qitemId}|${row.claimedAt}|${owner?.lastSwap?.generation ?? ""}|${ownerCause}`,
       });
     }
 
@@ -433,6 +454,10 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
     for (const row of deps.queueRepo.findUndelivered()) {
       if (isFindingRow(row)) continue;
       if (hasLiveLadder(deps.db, row.qitemId)) continue;
+      // A wake refused because the seat sat at an interactive prompt was not lost: the prompt path
+      // owns it (parked-owner retry, prompt card, prompt-refusal escalation), and the unclaimed
+      // net below stays its backstop.
+      if (isPromptRefusal(row.lastNudgeResult)) continue;
       candidates.push({
         kind: "undelivered-wake",
         row,
@@ -445,7 +470,8 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
 
     // The A1 net — created-with-destination rows carrying real obligations, unclaimed past
     // the config-keyed age. Parks (state=blocked) legitimately wait and never appear here;
-    // failed-nudge rows already surfaced in half 2; laddered rows are S01's.
+    // failed-nudge rows already surfaced in half 2, except prompt refusals, which this net backs;
+    // laddered rows are S01's.
     const cutoff = new Date(now.getTime() - ageMinutes * 60_000).toISOString();
     const unclaimedRows = deps.db
       .prepare(
@@ -454,9 +480,9 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
             AND claimed_at IS NULL
             AND destination_session IS NOT NULL AND destination_session != ''
             AND ts_created <= ?
-            AND (last_nudge_result IS NULL OR last_nudge_result NOT LIKE 'failed:%')`,
+            AND (last_nudge_result IS NULL OR last_nudge_result NOT LIKE 'failed:%' OR last_nudge_result LIKE ?)`,
       )
-      .all(cutoff) as Array<{ qitem_id: string }>;
+      .all(cutoff, `%${PROMPT_REFUSAL_TEXT}%`) as Array<{ qitem_id: string }>;
     for (const { qitem_id } of unclaimedRows) {
       const row = deps.queueRepo.getById(qitem_id);
       if (!row || isFindingRow(row)) continue;
@@ -595,7 +621,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       if (existing && existingIsOpen) {
         // Age is derived at read time; an unchanged scan is not a transition.
         findings.push({ kind: c.kind, qitemId: c.row.qitemId, findingQitemId: existing.qitem_id, action: "refreshed" });
-      } else if (!existing || evidenceIsNewer(c.evidenceAt, existing.ts_updated)) {
+      } else if ((!existing || evidenceIsNewer(c.evidenceAt, existing.ts_updated)) && !(c.episodeTag && episodeReported(deps.db, c.episodeTag))) {
         const created = await deps.queueRepo.create({
           qitemId: recoveryId(deps.db, c.row.qitemId),
           // The detector is machinery, not a seat: the obligation's own creator is the
@@ -605,7 +631,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
           body: evidenceBody(deps.db, c),
           summary: `Stuck sweep: ${c.verificationTargets ? "successor-verification-required" : c.kind} on ${c.row.qitemId} (${c.ageMinutes} min)`,
           evidenceRef: `rig queue show ${c.row.qitemId}`,
-          tags: [STUCK_SWEEP_FINDING_TAG, dedupTag, recoveryTag(c.row.qitemId)],
+          tags: [STUCK_SWEEP_FINDING_TAG, dedupTag, recoveryTag(c.row.qitemId), ...(c.episodeTag ? [c.episodeTag] : [])],
         });
         findings.push({ kind: c.kind, qitemId: c.row.qitemId, findingQitemId: created.qitemId, action: "created" });
       }
