@@ -3,19 +3,20 @@ import { answerPrompt, makeStuckPromptWatch, promptBlock, promptCardBody, prompt
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-// The cursor off the plain Yes: not answerable from a card, so it waits the full five minutes.
+// The cursor off the plain Yes: not answerable from a card, so it waits the full minute.
 const prompt = (question: string) => ["", "  Edit file", question, "  1. Yes", "❯ 2. Yes, and don't ask again", "  3. No", ""].join("\n");
 
 describe("stuck-prompt watch", () => {
-  it("notifies once per prompt episode after five minutes, with the question and the attach command", async () => {
+  it("notifies once per prompt episode after one minute, with the question and the attach command", async () => {
     let t = 0;
     const panes = new Map<string, string>([["dev@rig", prompt("Do you want to make this edit to a.ts?")]]);
     const sent: StuckPrompt[] = [];
     const watch = makeStuckPromptWatch({ runningSessions: () => [...panes.keys()], capture: async (s) => panes.get(s) ?? null, notify: async (p) => { sent.push(p); }, now: () => t });
     await watch.tick();
-    t = 4 * 60_000; await watch.tick();
+    t = 59_000; await watch.tick();
     expect(sent).toHaveLength(0);
-    t = 5 * 60_000; await watch.tick();
+    t = 60_000; await watch.tick();
+    expect(sent).toHaveLength(1);
     t = 9 * 60_000; await watch.tick();
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ session: "dev@rig", reason: "selection_prompt", promptLine: "Do you want to make this edit to a.ts?", attach: "tmux attach -t dev@rig" });
@@ -33,9 +34,9 @@ describe("stuck-prompt watch", () => {
     const sent: StuckPrompt[] = [];
     const watch = makeStuckPromptWatch({ runningSessions: () => [...panes.keys()], capture: async (s) => panes.get(s) ?? null, notify: async (p) => { sent.push(p); }, now: () => t });
     await watch.tick();
-    t = 3 * 60_000; panes.set("dev@rig", "✻ Working… (esc to interrupt)"); await watch.tick();
-    t = 4 * 60_000; panes.set("dev@rig", prompt("Run npm test?")); await watch.tick();
-    t = 8 * 60_000; await watch.tick();
+    t = 45_000; panes.set("dev@rig", "✻ Working… (esc to interrupt)"); await watch.tick();
+    t = 60_000; panes.set("dev@rig", prompt("Run npm test?")); await watch.tick();
+    t = 105_000; await watch.tick();
     expect(sent).toHaveLength(0);
   });
 
@@ -157,6 +158,18 @@ describe("stuck-prompt watch", () => {
 
   const webSearch = claude.replace(/ Bash command[\s\S]*?(?= Do you want to proceed\?)/, " Tool use\n\n   WebSearch(query: \"r2 pricing class a operations\")\n   Claude wants to search the web for: r2 pricing class a operations\n\n")
     .replace(/ ❯ 1\. Yes[\s\S]*?4\. No/, " ❯ 1. Yes\n   2. Yes, and don't ask again for WebSearch\n   3. No, and tell Claude what to do differently (esc)");
+
+  it("an answerable prompt keeps its ten-second card: none at 9s, one at 10s, never a second", async () => {
+    let t = 0;
+    const sent: StuckPrompt[] = [];
+    const watch = makeStuckPromptWatch({ runningSessions: () => ["advisor-lead@kernel"], capture: async () => claude, notify: async (p) => { sent.push(p); }, now: () => t });
+    await watch.tick();
+    t = 9_000; await watch.tick();
+    expect(sent).toHaveLength(0);
+    t = 10_000; await watch.tick();
+    for (const s of [60, 120, 600]) { t = s * 1000; await watch.tick(); }
+    expect(sent).toHaveLength(1);
+  });
 
   it("each answerable prompt gets its own card on the second scan: a Bash dialog, then a WebSearch dialog right after", async () => {
     let t = 0;

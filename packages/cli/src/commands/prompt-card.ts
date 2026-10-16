@@ -12,7 +12,7 @@ const REFUSALS: Record<string, string> = {
 
 export function promptCardCommand(): Command {
   return new Command("prompt-card")
-    .description("Send the registered human an Approve/Deny card for a seat's current prompt now, instead of after five minutes")
+    .description("Send the registered human an Approve/Deny card for a seat's current prompt now, instead of after a minute")
     .argument("<seat>", "Canonical session name of the seat at the prompt")
     .requiredOption("--reason <text>", "Why the human should look at it now (shown on the card)")
     .option("--json", "Print the daemon's result as JSON")

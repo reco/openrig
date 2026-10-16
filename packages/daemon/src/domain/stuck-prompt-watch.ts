@@ -1,5 +1,5 @@
-// A seat waiting at an interactive prompt (a selection or permission question) for more than
-// five minutes, or ten seconds when its plain Yes and No can be answered from the card, gets a
+// A seat waiting at an interactive prompt (a selection or permission question) for a minute,
+// or ten seconds when its plain Yes and No can be answered from the card, gets a
 // notice to its human per prompt episode, once: the seat, the prompt's question and the command to
 // attach. The card stays with the human while the prompt stays; no reminders. The episode is the same
 // prompt body (the question, the command it asks about and its options) seen continuously; a
@@ -13,7 +13,7 @@ import { maskSecrets } from "./credential-mask.js";
 import type { QueueRepository } from "./queue-repository.js";
 import { ruleDecision, type ApprovalRule } from "./approval-rules.js";
 
-export const STUCK_PROMPT_AFTER_MS = 5 * 60_000;
+export const STUCK_PROMPT_AFTER_MS = 60_000;
 export const ANSWERABLE_PROMPT_AFTER_MS = 10_000;
 export const STUCK_PROMPT_SCAN_MS = 15_000;
 const PROMPT_REASONS = new Set(["selection_prompt", "permission_prompt"]);
@@ -40,7 +40,7 @@ export interface StuckPrompt {
   command?: string | null;
   /** What the dialog says that command does, in the runtime's own words. */
   title?: string | null;
-  /** A seat asked for this card before the prompt had waited five minutes, and why. */
+  /** A seat asked for this card before the prompt had waited a minute, and why. */
   requestedBy?: string;
   requestReason?: string;
 }
