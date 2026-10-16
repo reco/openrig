@@ -1,0 +1,23 @@
+⏺ Bash(bash /Users/reco/dev/imago/.openrig/monitor/webhook-unexplained.sh 2026-10-13T14:42:00Z)
+  ⎿  Waiting…
+
+⏺ Bash(bash /Users/reco/dev/imago/.openrig/monitor/reviewer-stalls.sh)
+  ⎿  Waiting…
+
+─────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Tip: auto mode handles these prompts for you — choose "switch to auto mode" below
+ Check Stripe webhook posts
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ │ bash /Users/reco/dev/imago/.openrig/monitor/webhook-unexplained.sh 2026-10-13T14:42:00Z
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ This command requires approval
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don’t ask again for: bash
+      /Users/reco/dev/imago/.openrig/monitor/webhook-unexplained.sh 2026-10-13T14:42:00Z
+   3. Yes, and switch to auto mode · auto mode handles these prompts for you
+   4. No
+
+ Esc to cancel · Tab to amend

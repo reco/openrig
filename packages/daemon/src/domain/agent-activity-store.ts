@@ -368,6 +368,11 @@ export function latestHookMovedOn(activity: AgentActivity | null | undefined, si
   return state === "running" || state === "idle";
 }
 
+/** latestHookMovedOn for a seat by its session name, read from the store with the seat's own runtime. */
+export function seatMovedOnSince(store: AgentActivityStore, sessionName: string, since: string): boolean {
+  return latestHookMovedOn(store.getLatestForNode({ sessionName }), since, store.resolveSession({ sessionName })?.runtime ?? null);
+}
+
 function normalizeHookActivity(input: {
   runtime: string | null;
   /** The managed seat's runtime, never a hook's claim. */

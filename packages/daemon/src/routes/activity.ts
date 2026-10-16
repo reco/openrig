@@ -509,3 +509,30 @@ activityRoutes.get("/parked", (c) => {
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
+
+// A seat's PermissionRequest hook asks its human in Slack (opt-in seats only) and waits for the answer.
+activityRoutes.post("/approvals", async (c) => {
+  const expectedToken = c.get("activityHookToken" as never) as string | undefined;
+  const approvals = c.get("approvalService" as never) as import("../domain/approvals.js").ApprovalService | undefined;
+  if (!expectedToken || !approvals) return c.json({ ok: true, decision: null, pending: false });
+  const authHeader = c.req.header("authorization");
+  const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length).trim() : null;
+  if (bearerToken !== expectedToken) return c.json({ ok: false, code: "activity_hook_unauthorized" }, 401);
+  let body: Record<string, unknown>;
+  try { body = await c.req.json() as Record<string, unknown>; } catch { return c.json({ ok: false, code: "invalid_json" }, 400); }
+  // Each call waits at most one slice: the hook repeats the call with the request id until an answer.
+  const sessionName = stringOrNull(body.sessionName);
+  if (!sessionName) return c.json({ ok: false, code: "missing_fields" }, 400);
+  // The shared hook token only proves a local caller; the seat token proves which seat it is.
+  if (!(await approvals.verify(sessionName, stringOrNull(body.seatToken)))) {
+    console.log(`[approvals] refused ${sessionName}: seat token ${stringOrNull(body.seatToken) ? "does not match its current occupant generation" : "missing"}; its prompt stays in the terminal`);
+    return c.json({ ok: false, code: "seat_token_mismatch", decision: null, pending: false }, 403);
+  }
+  const toolName = stringOrNull(body.toolName);
+  const requestId = stringOrNull(body.requestId) ?? await (async () => {
+    return toolName ? approvals.start({ sessionName, toolName, toolInput: body.toolInput, agentType: stringOrNull(body.agentType) }) : null;
+  })();
+  if (!requestId) return c.json({ ok: true, decision: null, pending: false });
+  const outcome = await approvals.wait(requestId, sessionName, 60_000);
+  return c.json({ ok: true, requestId, decision: outcome === "allow" || outcome === "deny" ? outcome : null, pending: outcome === "pending" });
+});

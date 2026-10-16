@@ -9,6 +9,7 @@ import type { TmuxOptionDefaultsApplier } from "./tmux-option-defaults.js";
 import { isShellForeground } from "./shell-classifier.js";
 import { resolveReadinessTimeoutMs } from "./readiness-timeout.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
+import { seatTokenEnv } from "./seat-token.js";
 import { runtimeHomeEnv } from "./runtime-homes.js";
 import type { RuntimeHomes } from "./types.js";
 
@@ -185,6 +186,7 @@ export class SuccessorSessionLauncher {
       ...(input.node.runtime ? this.runtimeSessionEnv[input.node.runtime] : undefined),
       ...runtimeHomeEnv(input.node.runtimeHomes ?? {}, input.node.runtime),
       OPENRIG_OCCUPANT_GENERATION: input.occupantGeneration ?? undefined,
+      ...seatTokenEnv(this.sessionEnv.OPENRIG_HOME, input.node.id, departingSession, input.occupantGeneration),
     });
     const cwd = input.node.cwd ?? undefined;
 

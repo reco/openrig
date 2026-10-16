@@ -998,6 +998,28 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         hooks[event] = groups;
         changed = true;
       }
+      // Slack approvals: the PermissionRequest hook that waits for the human's Approve / Deny.
+      const approvalSource = nodePath.join(nodePath.dirname(this.activityRelayPath!), "approval-request.cjs");
+      if (this.fs.exists(approvalSource)) {
+        // A project's own copy from before the shared hook dir that someone edited in place (a local
+        // policy) stays in use for that project; a shipped copy there gives way to the shared one.
+        const projectCopy = nodePath.join(cwd, ".openrig", "hooks", "scripts", "approval-request.cjs");
+        const keepProjectCopy = this.fs.exists(projectCopy) && !PACKAGED_APPROVAL_HASHES.has(hashContent(this.fs.readFile(projectCopy)));
+        const approvalDest = keepProjectCopy ? projectCopy : nodePath.join(nodePath.dirname(relayDest), "approval-request.cjs");
+        if (keepProjectCopy) {
+          console.error(`[openrig] kept the locally edited ${projectCopy}; it does not get the shipped approval-request.cjs updates`);
+        } else if (!this.fs.exists(approvalDest) || PACKAGED_APPROVAL_HASHES.has(hashContent(this.fs.readFile(approvalDest)))) {
+          // Sibling seats share this copy too: identical bytes are not rewritten while a hook reads them.
+          if (!this.fs.exists(approvalDest) || this.fs.readFile(approvalDest) !== this.fs.readFile(approvalSource)) this.fs.copyFile(approvalSource, approvalDest);
+          this.preserveMode(approvalSource, approvalDest);
+        } else if (hashContent(this.fs.readFile(approvalDest)) !== hashContent(this.fs.readFile(approvalSource))) {
+          console.error(`[openrig] kept the locally edited ${approvalDest}; it does not get the shipped approval-request.cjs updates`);
+        }
+        const groups = Array.isArray(hooks["PermissionRequest"]) ? (hooks["PermissionRequest"] as unknown[]) : [];
+        groups.push({ hooks: [{ type: "command", command: `node ${shellQuote(approvalDest)}`, timeout: APPROVAL_HOOK_TIMEOUT_SEC }] });
+        hooks["PermissionRequest"] = groups;
+      }
+      // Retired simple-command guard and deny-check entries are owned, so the strip above removes them from older settings.
     }
 
     // 3. Persist only when something changed (never touch an unchanged / never-managed file).
@@ -1029,6 +1051,25 @@ interface ActivityHookOutcome {
 // argument ends with this path — a changed prefix still matches (replace, not duplicate); a
 // user command that merely contains the path (echo, or node with extra args) does NOT.
 const LEGACY_OWNED_RELAY_SUFFIX = "/.openrig/hooks/scripts/activity-relay.cjs";
+const LEGACY_OWNED_APPROVAL_SUFFIX = "/.openrig/hooks/scripts/approval-request.cjs";
+const OWNED_APPROVAL_RELATIVE_PATH = CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH.replace(/activity-relay\.cjs$/, "approval-request.cjs");
+const OWNED_GUARD_RELATIVE_PATH = CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH.replace(/activity-relay\.cjs$/, "simple-command-guard.cjs");
+const OWNED_DENY_CHECK_RELATIVE_PATH = CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH.replace(/activity-relay\.cjs$/, "deny-check.cjs");
+/** Just above the hook's own day-long wait: a card stays answerable while the dialog is up. */
+const APPROVAL_HOOK_TIMEOUT_SEC = 86460;
+/** sha256 of every approval-request.cjs this package has shipped: a project copy matching one is ours to update. */
+export const PACKAGED_APPROVAL_HASHES = new Set([
+  "c009fe7c6717b942aa18cb5de744134aad2e52548bfc76ab337407973339232e",
+  "afc0d089bf1e46a3811c0088afc3c889e35a1164e0507b592f8363b7d88e0a0e",
+  "362370ab22d138306c19dd611074f6760863d474811dbf6bcf5a4bf79025fb7f",
+  "f6f31b1aa5271bf0129613ed7f6bff4002e4958728a3cfbcd6ab100ece93222b",
+  "4152246955b46253172cf2cdada892798daf921a509ceb46e3d12d526e7fef1c",
+  "a64f7b31db73be70962314cc310d2882c534d522b3ca4f373114c1cdbb5a1415",
+  "9a12547e7e1c0aff4d19659fd4ff6719975c8d27c429551891f72d5f0ad77960",
+  "7f95648701d0e7246c3cbca259dcfd3c80b4094e0b5f20ab567406eed2cad4ca",
+  "1407fb2a4a81a336ef9b804a27cd19fa24ec09421e26ea88628e42736a41fef7",
+  "16c933254446558cc87448c3a1e42b833b5377bef2bc5faef74321b8834a9dc9",
+]);
 
 function hookCommand(hook: unknown): string | undefined {
   return isPlainObject(hook) && typeof hook["command"] === "string" ? (hook["command"] as string) : undefined;
@@ -1069,7 +1110,11 @@ function isOwnedRelayCommand(cmd: string | undefined): boolean {
   // must never be recognised as owned and deleted.
   if (shellQuote(decoded) !== arg) return false;
   return decoded.endsWith(LEGACY_OWNED_RELAY_SUFFIX)
-    || decoded.endsWith(`/${CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH}`);
+    || decoded.endsWith(`/${CLAUDE_ACTIVITY_RELAY_RELATIVE_PATH}`)
+    || decoded.endsWith(LEGACY_OWNED_APPROVAL_SUFFIX)
+    || decoded.endsWith(`/${OWNED_APPROVAL_RELATIVE_PATH}`)
+    || decoded.endsWith(`/${OWNED_GUARD_RELATIVE_PATH}`)
+    || decoded.endsWith(`/${OWNED_DENY_CHECK_RELATIVE_PATH}`);
 }
 
 /** Decode ONE POSIX single-quoted shell token as produced by shellQuote (outer `'…'` with an
@@ -1187,7 +1232,6 @@ export function readClaudeSelfReportEvidence(input: {
       case "busy":
         return { ...base, activity: "working" };
       case "idle":
-      case "shell":
         return { ...base, activity: "idle-at-prompt" };
       case "waiting":
         return { ...base, needsInput: { count: 1, reason: "dialog owns input" } };

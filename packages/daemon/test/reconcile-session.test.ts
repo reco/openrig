@@ -108,6 +108,61 @@ describe("ClaimService.reconcileSession (OPR.0.3.4.3)", () => {
     expect(nodes[0]!.id).toBe(node.id);
   });
 
+  describe("the surviving process keeps its occupant generation", () => {
+    async function seatWithLaunchEnv(env: (node: { id: string }, sessionName: string, current: string) => Record<string, string>) {
+      const localDb = createFullTestDb();
+      let launchEnv: Record<string, string> = {};
+      const spy = spyTmux({ getSessionEnv: vi.fn(async (_s: string, key: string) => launchEnv[key]) });
+      const local = createTestApp(localDb, { tmux: spy.adapter });
+      const rig = local.rigRepo.createRig("test-rig");
+      await local.rigExpansionService.expand({ rigId: rig.id, pod: terminalPodFragment() });
+      const node = local.rigRepo.getRig(rig.id)!.nodes.find((n) => n.logicalId === "infra.server")!;
+      for (const s of local.sessionRegistry.getSessionsForRig(rig.id).filter((s) => s.nodeId === node.id)) local.sessionRegistry.markDetached(s.id);
+      const current = local.sessionRegistry.currentOccupantTenure(node.id)!.generationUuid;
+      launchEnv = env(node, "infra-server@test-rig", current);
+      const result = await local.claimService.reconcileSession({ sessionName: "infra-server@test-rig" });
+      expect(result.ok).toBe(true);
+      return { local, localDb, node, current };
+    }
+
+    it("adopting the live process that carries this node's current generation mints no new one", async () => {
+      const { local, localDb, node, current } = await seatWithLaunchEnv((n, s, gen) => ({ OPENRIG_NODE_ID: n.id, OPENRIG_SESSION_NAME: s, OPENRIG_OCCUPANT_GENERATION: gen }));
+      expect(local.sessionRegistry.currentOccupantTenure(node.id)!.generationUuid).toBe(current);
+      expect(local.sessionRegistry.liveOccupantGenerations(node.id)).toEqual([current]);
+      localDb.close();
+    });
+
+    it("an older or unknown generation, another node's env, or no launch env adopts under a fresh generation", async () => {
+      for (const env of [
+        (n: { id: string }, s: string) => ({ OPENRIG_NODE_ID: n.id, OPENRIG_SESSION_NAME: s, OPENRIG_OCCUPANT_GENERATION: "forged-or-old" }),
+        (_n: { id: string }, s: string, gen: string) => ({ OPENRIG_NODE_ID: "other-node", OPENRIG_SESSION_NAME: s, OPENRIG_OCCUPANT_GENERATION: gen }),
+        () => ({}),
+      ]) {
+        const { local, localDb, node, current } = await seatWithLaunchEnv(env);
+        expect(local.sessionRegistry.currentOccupantTenure(node.id)!.generationUuid).not.toBe(current);
+        localDb.close();
+      }
+    });
+  });
+
+  it("live occupant generations: the current one, plus the latest launch's only while adopts alone followed it", async () => {
+    const { node } = await seedDetachedSeat();
+    const reg = setup.sessionRegistry;
+    const gen = (kind: "initial" | "adopt" | "handover") => reg.mintOccupantTenure(node.id, kind).generationUuid;
+    const old = gen("initial");
+    expect(reg.liveOccupantGenerations(node.id)).toEqual([old]);
+    expect(reg.liveOccupantGenerations("no-such-node")).toEqual([]);
+    const launched = gen("initial");
+    const adopt1 = gen("adopt");
+    expect(reg.liveOccupantGenerations(node.id)).toEqual([adopt1, launched]);
+    const adopt2 = gen("adopt");
+    expect(reg.liveOccupantGenerations(node.id)).toEqual([adopt2, launched]);
+    expect(reg.liveOccupantGenerations(node.id)).not.toContain(old);
+    expect(reg.liveOccupantGenerations(node.id)).not.toContain(adopt1);
+    const handover = gen("handover");
+    expect(reg.liveOccupantGenerations(node.id)).toEqual([handover]);
+  });
+
   it("reconcileSession replaces a NULL binding pane with the live pane and the next identity pass verifies it", async () => {
     const localDb = createFullTestDb();
     const panes = [{ id: "%refreshed", index: 0, cwd: "/tmp", width: 80, height: 24, active: true }];

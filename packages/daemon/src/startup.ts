@@ -1409,6 +1409,29 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     agentActivityStore,
     seatAttentionReconciler,
     activityHookToken: resolvedActivityHookToken,
+    approvalService: await (async () => {
+      const { makeApprovalService } = await import("./domain/approvals.js");
+      const { ensureSeatTokenSecret, seatTokenProvesOccupant } = await import("./domain/seat-token.js");
+      const { loadConfig: loadSlackConfig } = await import("./domain/gateway/slack/config.js");
+      const { loadHumanRegistry } = await import("./domain/gateway/human-registry.js");
+      const service = makeApprovalService({
+        queueRepo: queueRepoInstance,
+        optedIn: () => { try { return loadSlackConfig(OPENRIG_HOME).approvalSeats; } catch { return []; } },
+        repingMs: () => { try { return loadSlackConfig(OPENRIG_HOME).approvalTimeoutSeconds * 1000; } catch { return 900_000; } },
+        approver: () => { const r = loadHumanRegistry(OPENRIG_HOME); return r.ok ? r.entities.find((e) => e.role !== "requester")?.address ?? null : null; },
+        verifySeat: async (sessionName, presented) => {
+          const row = db.prepare("SELECT node_id FROM sessions WHERE session_name = ? ORDER BY id DESC LIMIT 1").get(sessionName) as { node_id: string } | undefined;
+          if (!row) return false;
+          const [current, launched] = sessionRegistry.liveOccupantGenerations(row.node_id);
+          const liveSessionGeneration = launched ? await tmuxAdapter.getSessionEnv(sessionName, "OPENRIG_OCCUPANT_GENERATION").catch(() => undefined) : undefined;
+          return seatTokenProvesOccupant({ secret: ensureSeatTokenSecret(OPENRIG_HOME), nodeId: row.node_id, sessionName, presented, current, launched, liveSessionGeneration });
+        },
+        cwdOf: (sessionName) => (db.prepare("SELECT n.cwd AS cwd FROM nodes n JOIN sessions s ON s.node_id = n.id WHERE s.session_name = ? ORDER BY s.id DESC LIMIT 1").get(sessionName) as { cwd: string | null } | undefined)?.cwd ?? null,
+        log: (m) => console.log(`[approvals] ${m}`),
+      });
+      setInterval(() => { if (!db.open) return; void service.sweep().catch((e) => console.log(`[approvals] sweep failed: ${(e as Error).message}`)); }, 30_000).unref();
+      return service;
+    })(),
     contextUsageStore,
     healthProjection,
     healthDiagnosis,
@@ -2190,6 +2213,92 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       ],
     });
     queueRepoInstance.startWaitReminders();
+    {
+      const { hasRecentPromptCard, makeStuckPromptWatch, promptCardBody, promptCardDetail, promptTitleTags, rekeyPromptNotices, retireStalePromptNotices, supersedePromptNotices } = await import("./domain/stuck-prompt-watch.js");
+      // Enough for a long command's whole dialog, so two prompts differing only near the top differ.
+      const STUCK_PROMPT_CAPTURE_LINES = 120;
+      const { APPROVAL_OPTIONS, retireApprovalsAnsweredInTerminal, seatHasOpenApproval } = await import("./domain/approvals.js");
+      const { seatMovedOnSince } = await import("./domain/agent-activity-store.js");
+      const terminalAnswerEvidence = {
+        seen: new Set<string>(),
+        emptySince: new Map<string, number>(),
+        movedOn: (session: string, since: string) => seatMovedOnSince(agentActivityStore, session, since),
+      };
+      deps.stuckPromptWatch = makeStuckPromptWatch({
+        runningSessions: () => (db.prepare(`
+          SELECT DISTINCT s.session_name AS session_name FROM sessions s
+          LEFT JOIN bindings b ON b.node_id = s.node_id
+          WHERE s.status = 'running' AND s.session_name IS NOT NULL AND COALESCE(b.attachment_type, 'tmux') = 'tmux'
+            AND s.id = (SELECT s2.id FROM sessions s2 WHERE s2.node_id = s.node_id ORDER BY s2.id DESC LIMIT 1)
+        `).all() as Array<{ session_name: string }>).map((r) => r.session_name),
+        capture: (session) => tmuxAdapter.capturePaneContent(session, STUCK_PROMPT_CAPTURE_LINES),
+        retire: (running, shown, dialogs) => {
+          retireStalePromptNotices(queueRepoInstance, running, shown);
+          for (const id of retireApprovalsAnsweredInTerminal(queueRepoInstance, dialogs, terminalAnswerEvidence)) console.log(`[approvals] ${id} answered in the terminal; its card is closed`);
+        },
+        heldByHook: (session, dialog) => seatHasOpenApproval(queueRepoInstance, session, dialog),
+        rekey: (session, from, to) => { rekeyPromptNotices(queueRepoInstance, session, from, to); },
+        notify: async (p) => {
+          const registry = loadHumanRegistryForDelivery(OPENRIG_HOME);
+          const human = registry.ok ? registry.entities.find((e) => e.role !== "requester") : undefined;
+          const recent = hasRecentPromptCard(queueRepoInstance, p);
+          if (!human) return { skipped: "no-human" as const };
+          if (recent) return { skipped: "recent" as const };
+          const summary = `${p.session} is waiting at a ${p.reason === "permission_prompt" ? "permission" : "selection"} prompt`;
+          supersedePromptNotices(queueRepoInstance, p.session);
+          if (!p.choices) {
+            await queueRepoInstance.create({ tags: ["stuck-prompt", `stuck-prompt:${p.episodeId}`, `stuck-prompt-session:${p.session}`, `stuck-prompt-key:${p.key}`], sourceSession: "daemon@kernel",
+              destinationSession: human.address, humanIntent: "update", summary, body: promptCardBody(p), humanDetail: promptCardDetail(p), nudge: false });
+            return;
+          }
+          // Answerable from Slack: the seat is the source, so the answer's reply row reaches it.
+          const card = await queueRepoInstance.create({
+            tags: ["stuck-prompt", `stuck-prompt:${p.episodeId}`, `stuck-prompt-session:${p.session}`, `stuck-prompt-key:${p.key}`,
+              `stuck-prompt-allow:${p.choices.allow.key}`, `stuck-prompt-deny:${p.choices.deny.key}`, `stuck-prompt-since:${p.since}`, ...promptTitleTags(p.title)],
+            sourceSession: p.session,
+            destinationSession: human.address,
+            humanIntent: "decision",
+            summary,
+            body: promptCardBody(p),
+            humanDetail: promptCardDetail(p),
+            humanQuestions: [{ id: "answer", question: `Answer ${p.session}'s prompt?`, options: APPROVAL_OPTIONS }],
+            nudge: false,
+          });
+          return { qitemId: card.qitemId };
+        },
+      });
+      // A human's Approve / Deny on a stuck-prompt notice is typed into the seat's terminal once, and
+      // only while the same prompt is up; the thread says what happened either way.
+      const { actOnPromptAnswers } = await import("./domain/stuck-prompt-watch.js");
+      const answerDeps = {
+        capture: (session: string) => tmuxAdapter.capturePaneContent(session, STUCK_PROMPT_CAPTURE_LINES),
+        inMode: (session: string) => tmuxAdapter.isPaneInMode(session),
+        onSent: (session: string) => deps.stuckPromptWatch?.forget(session),
+        sendKey: async (session: string, key: string) => { const r = await tmuxAdapter.sendKeys(session, [key]); if (!r.ok) throw new Error(r.message ?? "send failed"); },
+      };
+      let answering = false;
+      setInterval(() => {
+        if (answering || !db.open) return;
+        answering = true;
+        void actOnPromptAnswers(queueRepoInstance, answerDeps)
+          .catch((e) => console.log(`[stuck-prompt] answer pass failed: ${(e as Error).message}`)).finally(() => { answering = false; });
+      }, 3_000).unref();
+      // Merge / Not now on a merge card the daemon built: the daemon re-checks the gates and merges.
+      const { actOnMergeAnswers, defaultGh } = await import("./domain/human-merge.js");
+      const { loadConfig: loadSlackConfigForMerge } = await import("./domain/gateway/slack/config.js");
+      const { loadHumanRegistry: loadRegistryForMerge } = await import("./domain/gateway/human-registry.js");
+      let merging = false;
+      setInterval(() => {
+        if (merging || !db.open) return;
+        merging = true;
+        void actOnMergeAnswers(queueRepoInstance, {
+          gh: defaultGh,
+          smokeDestination: () => { try { return loadSlackConfigForMerge(OPENRIG_HOME).mergeSmokeDestination ?? null; } catch { return null; } },
+          approver: () => { const r = loadRegistryForMerge(OPENRIG_HOME); return r.ok ? r.entities.find((e) => e.role !== "requester")?.address ?? null : null; },
+          log: (m) => console.log(`[human-merge] ${m}`),
+        }).catch((e) => console.log(`[human-merge] pass failed: ${(e as Error).message}`)).finally(() => { merging = false; });
+      }, 5_000).unref();
+    }
     const watchdogScheduler = new WatchdogScheduler({
       jobsRepo: watchdogJobsRepoInstance,
       policyEngine: watchdogPolicyEngine,

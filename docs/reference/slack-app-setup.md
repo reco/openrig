@@ -239,3 +239,43 @@ Human-readable coverage and pending bounds use ISO timestamps; JSON keeps Slack 
 The status read calls no Slack API and starts no scan. If the daemon cannot be
 observed, local configuration remains visible and live state is unknown. A
 connected socket or valid configuration alone does not prove end-to-end delivery.
+
+## Done mark on your to-dos
+
+A top-level message to you shows a done reaction once its row no longer waits on you, and loses it
+when the row comes back to you. The emoji is configurable in `slack-connector.json`:
+
+```json
+"receipts": { "done": "white_check_mark" }
+```
+
+Use any standard or custom emoji name, without colons. Slack apps cannot upload custom emoji: a
+workspace member uploads them under **Customize workspace → Emoji**, then the name goes here.
+
+## Approving permission prompts from Slack
+
+A seat listed with `rig slack setup --approval-seat <member@rig>` sends its permission prompts to
+its human as Approve / Deny buttons. The message shows the full Bash command or tool input, with
+credentials masked; an input too long to show in full is not sent (the prompt stays in the
+terminal). Only the human the request is addressed to can answer. Each request is one-shot and
+expires with the hook's 10-minute timeout; on expiry, or with no answer, the prompt appears in the
+terminal as before. A deny rule in the seat's own settings still wins over an Approve. Every answer
+is recorded on its queue row.
+
+Each request carries the seat's own token (issued at launch, bound to its node, name and occupant
+generation), so a seat cannot ask in another seat's name by mistake. It is not a defence against a
+hostile seat: every seat runs as the same OS user, so one seat can read the token secret or another
+seat's environment. The real control is the human judging the full command, the seat and its working
+directory on the card.
+
+This answers permission prompts only. It does not override a runtime's own safety decisions (for
+example Claude Code's auto-mode classifier denials). Known-safe actions belong in each seat's own
+settings allow rules, not here. Claude Code seats only for now; Codex seats come next.
+
+## Channels with several people
+
+In a channel with more than one human member, only a message that @mentions the app is for the
+seat, in threads too. Every other message still reaches the seat as quiet context (tagged
+`not-addressed`, no nudge, no reactions). With one human, every message is for the seat. The
+connector counts members (bots excluded, via `users:read`) every 10 minutes, and at once when
+someone joins or leaves (`member_joined_channel` / `member_left_channel`, part of the manifest).

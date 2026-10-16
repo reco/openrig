@@ -4,7 +4,7 @@ import { createFullTestDb } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
-import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
+import { AgentActivityStore, seatMovedOnSince } from "../src/domain/agent-activity-store.js";
 
 const NOW = new Date("2026-04-24T12:00:00.000Z");
 
@@ -230,6 +230,23 @@ describe("AgentActivityStore", () => {
       evidenceSource: "runtime_hook",
       stale: true,
     });
+  });
+
+  it("seatMovedOnSince: a tool start or turn end after the time counts; a permission wait or an older hook does not", () => {
+    const { sessionName } = seedSession("claude-code");
+    const store = new AgentActivityStore({ db, eventBus, now: () => NOW });
+    const asked = "2026-04-24T11:58:00.000Z";
+    store.recordHookEvent({ runtime: "claude-code", sessionName, hookEvent: "PreToolUse", occurredAt: "2026-04-24T11:57:00.000Z" });
+    expect(seatMovedOnSince(store, sessionName, asked)).toBe(false);
+    store.recordHookEvent({ runtime: "claude-code", sessionName, hookEvent: "PermissionRequest", occurredAt: "2026-04-24T11:58:30.000Z" });
+    expect(seatMovedOnSince(store, sessionName, asked)).toBe(false);
+    store.recordHookEvent({ runtime: "claude-code", sessionName, hookEvent: "Notification", subtype: "permission_prompt", occurredAt: "2026-04-24T11:58:40.000Z" });
+    expect(seatMovedOnSince(store, sessionName, asked)).toBe(false);
+    store.recordHookEvent({ runtime: "claude-code", sessionName, hookEvent: "PreToolUse", occurredAt: "2026-04-24T11:59:00.000Z" });
+    expect(seatMovedOnSince(store, sessionName, asked)).toBe(true);
+    store.recordHookEvent({ runtime: "claude-code", sessionName, hookEvent: "Stop", occurredAt: "2026-04-24T11:59:30.000Z" });
+    expect(seatMovedOnSince(store, sessionName, asked)).toBe(true);
+    expect(seatMovedOnSince(store, "ghost@test-rig", asked)).toBe(false);
   });
 
   it("rejects hook events without managed session identity", () => {

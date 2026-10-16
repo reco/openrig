@@ -16,6 +16,7 @@ import { SeatIdentityStore } from "./seat-identity-store.js";
 import type { OccupantKind } from "./session-registry.js";
 
 import type { Session, Binding } from "./types.js";
+import { seatTokenEnv } from "./seat-token.js";
 import { runtimeHomeEnv } from "./runtime-homes.js";
 
 export type LaunchResult =
@@ -148,6 +149,7 @@ export class NodeLauncher {
       ...(node.runtime ? this.runtimeSessionEnv[node.runtime] : undefined),
       ...runtimeHomeEnv(node.runtimeHomes ?? {}, node.runtime),
       OPENRIG_OCCUPANT_GENERATION: occupantGeneration ?? undefined,
+      ...seatTokenEnv(this.sessionEnv.OPENRIG_HOME, node.id, sessionName, occupantGeneration),
     });
     const sessionCwd = opts?.cwd ?? node.cwd ?? undefined;
     const tmuxResult = await this.tmuxAdapter.createSession(sessionName, sessionCwd, openRigEnv);
