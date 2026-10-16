@@ -155,7 +155,7 @@ async function mergeAsync(deps: MergeDeps, ref: MergeRef): Promise<AsyncMerge> {
   const uuid = result.details?.uuid;
   for (let waited = 0; result.status === "pending" && uuid && waited < MERGE_WAIT_MS; waited += MERGE_POLL_MS) {
     await sleepOf(deps)(MERGE_POLL_MS);
-    result = await githubApi(deps.gh, [`${path}/${uuid}`]);
+    try { result = await githubApi(deps.gh, [`${path}/${uuid}`]); } catch { break; }
   }
   return result;
 }
@@ -200,11 +200,11 @@ export async function actOnMergeAnswers(repo: QueueRepository, deps: MergeDeps):
             outcome = { note: `merged ${sha}`, thread: `Merged ${name} as \`${sha}\`.`, seat: `Merged ${name} (head ${ref.sha.slice(0, 12)}) as ${sha}.`, smoke: sha };
           } else if (result.status === "enqueued") {
             outcome = { note: "enqueued", thread: `Added ${name} to the merge queue; not merged yet.`, seat: `${name} (head ${ref.sha.slice(0, 12)}) is in the merge queue, not merged yet.` };
-          } else if (result.status === "pending") {
-            outcome = { note: `accepted ${result.details?.uuid ?? ""}`.trim(), thread: `GitHub accepted the merge of ${name} but had not finished it after 2 minutes; check the pull request before treating it as merged.`,
-              seat: `Merge of ${name} accepted by GitHub (request ${result.details?.uuid ?? "unknown"}), not confirmed after 2 minutes.` };
+          } else if (result.status === "failed") {
+            outcome = { note: `failed ${message}`, thread: `Not merged: GitHub failed the merge: ${message || "no reason given"}`, seat: `Merge of ${name} failed: ${message || "no reason given"}` };
           } else {
-            outcome = { note: `failed ${message}`, thread: `Not merged: GitHub failed the merge: ${message}`, seat: `Merge of ${name} failed: ${message}` };
+            outcome = { note: `accepted ${result.details?.uuid ?? ""}`.trim(), thread: `GitHub accepted the merge of ${name} but had not confirmed it; check the pull request before treating it as merged.`,
+              seat: `Merge of ${name} accepted by GitHub (request ${result.details?.uuid ?? "unknown"}), not confirmed.` };
           }
         }
       } catch (e) {

@@ -154,8 +154,18 @@ describe("merge a pull request from Slack", () => {
     click(id, human, "merge");
     await actPolling();
     expect(waits).toHaveLength(24);
-    expect(thread(id).join("\n")).toContain("had not finished it after 2 minutes");
+    expect(thread(id).join("\n")).toContain("had not confirmed it");
     expect(toSeat().map((q) => q.body).join("\n")).toContain("request u-1");
+    expect(smokeRows()).toEqual([]);
+  });
+
+  it("a status read that fails after GitHub accepted the merge is reported as accepted, never as not merged", async () => {
+    github = [pending, new Error("HTTP 502")];
+    const id = await card();
+    click(id, human, "merge");
+    await actPolling();
+    expect(thread(id).join("\n")).toContain("had not confirmed it");
+    expect(thread(id).join("\n")).not.toContain("Not merged");
     expect(smokeRows()).toEqual([]);
   });
 
