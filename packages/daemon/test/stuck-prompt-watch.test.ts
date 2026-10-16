@@ -337,6 +337,59 @@ describe("stuck-prompt watch", () => {
 });
 
 
+// advisor-lead@kernel 2026-10-16: one worker-agent request (ls -d …) waited 38 minutes while more requests queued
+// behind it; each new "1 of N" on the header posted a new card and retired the last as answered in the terminal.
+describe("Claude's waiting-request count on the dialog header", () => {
+  const base = readFileSync(resolve(__dirname, "fixtures/claude-permission-prompt-2.1.295.txt"), "utf8");
+  const pane = (header: string, command = "touch digit-probe-1.txt") => base.replace(" Bash command\n", ` ${header}\n`).replace(/╌\n touch digit-probe-1\.txt\n╌/, `╌\n ${command}\n╌`);
+  const worker = (count?: string, command?: string, from = "worker") => pane(`Bash command · from the ${from} agent${count ? `${" ".repeat(48)}${count}` : ""}`, command);
+
+  it("the same shown request is one episode whatever the total behind it; its exact key still differs", () => {
+    const [none, two, three] = [worker(), worker("1 of 2"), worker("1 of 3")].map((p) => readPrompt(p)!);
+    expect(new Set([none.episodeKey, two.episodeKey, three.episodeKey]).size).toBe(1);
+    expect(new Set([none.key, two.key, three.key]).size).toBe(3);
+    expect([none.queueTotal, two.queueTotal, three.queueTotal]).toEqual([1, 2, 3]);
+  });
+
+  it("another command, another requesting agent or another position is another request", () => {
+    const one = readPrompt(worker("1 of 3"))!.episodeKey;
+    expect(readPrompt(worker("1 of 3", "touch other.txt"))!.episodeKey).not.toBe(one);
+    expect(readPrompt(worker("1 of 3", undefined, "review"))!.episodeKey).not.toBe(one);
+    expect(readPrompt(worker("2 of 3"))!.episodeKey).not.toBe(one);
+  });
+
+  it("one card while the total grows, re-keyed to what the pane now shows; a falling total is a new episode", async () => {
+    let t = 0;
+    let shown = worker();
+    const sent: StuckPrompt[] = [];
+    const rekeys: Array<[string, string]> = [];
+    const retired: Array<string | null> = [];
+    const watch = makeStuckPromptWatch({ runningSessions: () => ["advisor-lead@kernel"], capture: async () => shown, notify: async (p) => { sent.push(p); },
+      now: () => t, rekey: (_s, from, to) => { rekeys.push([from, to]); }, retire: (_r, keys) => { retired.push(keys.get("advisor-lead@kernel") ?? null); } });
+    await watch.tick(); t = 15_000; await watch.tick();
+    expect(sent).toHaveLength(1);
+    const first = sent[0]!.key;
+    shown = worker("1 of 2"); t = 30_000; await watch.tick();
+    shown = worker("1 of 3"); t = 45_000; await watch.tick();
+    t = 600_000; await watch.tick();
+    expect(sent).toHaveLength(1);
+    expect(rekeys).toEqual([[first, readPrompt(worker("1 of 2"))!.key], [readPrompt(worker("1 of 2"))!.key, readPrompt(worker("1 of 3"))!.key]]);
+    expect(retired.at(-1)).toBe(readPrompt(worker("1 of 3"))!.key);
+
+    shown = worker("1 of 2"); t = 615_000; await watch.tick(); t = 630_000; await watch.tick();
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toMatchObject({ since: 615_000, key: readPrompt(worker("1 of 2"))!.key });
+  });
+
+  it("an answer is typed only for the exact prompt on screen: the re-keyed key answers, the card's first key no longer does", async () => {
+    const keys: string[] = [];
+    const deps = { capture: async () => worker("1 of 3"), inMode: async () => false, sendKey: async (_s: string, k: string) => { keys.push(k); } };
+    expect(await answerPrompt(deps, "advisor-lead@kernel", readPrompt(worker("1 of 2"))!.key, "allow")).toEqual({ outcome: "moved-on" });
+    expect(await answerPrompt(deps, "advisor-lead@kernel", readPrompt(worker("1 of 3"))!.key, "allow")).toEqual({ outcome: "sent", key: "1" });
+    expect(keys).toEqual(["1"]);
+  });
+});
+
 describe("prompt card text", () => {
   const prompt: StuckPrompt = { session: "dev@rig", reason: "permission_prompt", promptLine: "Do you want to proceed?", attach: "tmux attach -t dev@rig", waitingMinutes: 6, episodeId: "e", key: "k",
     choices: { allow: { key: "1", label: "Yes" }, deny: { key: "3", label: "No" } } };

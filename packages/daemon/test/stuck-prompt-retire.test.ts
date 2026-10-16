@@ -13,7 +13,7 @@ import { buildSlackGatewayWire } from "../src/domain/gateway/slack/slack-subsyst
 import { DEFAULT_CONFIG, saveConfig } from "../src/domain/gateway/slack/config.js";
 import { resolveSlackHandle } from "../src/domain/gateway/human-registry.js";
 import { makeApprovalService } from "../src/domain/approvals.js";
-import { hasRecentPromptCard, promptCardBody, promptCardDetail, retireStalePromptNotices, supersedePromptNotices } from "../src/domain/stuck-prompt-watch.js";
+import { hasRecentPromptCard, promptCardBody, promptCardDetail, rekeyPromptNotices, retireStalePromptNotices, supersedePromptNotices } from "../src/domain/stuck-prompt-watch.js";
 
 const founder = { entityId: "reco", class: "human" as const, displayName: "reco", address: "reco@external", connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:SLACK_BOT_TOKEN", role: "primary" as const, handle: "UFOUNDER" }], prefs: { deliveryClass: "A" as const } };
 const registry = { ok: true as const, entities: [founder] };
@@ -182,6 +182,16 @@ describe("stale stuck-prompt cards are retired", () => {
     repo.recordHumanAnswer({ qitemId: id, actorSession: "reco@external", questionId: "approval", optionId: "allow" });
     repo.resolveDirectHumanReply({ qitemId: id, actorSession: "reco@external", decision: "allow" });
     expect(await service.wait(id, "cfo@finance", 3000)).toBe("allow");
+  });
+
+  it("a card re-keyed because more requests queued behind its prompt stays open with its buttons; another prompt still retires it", async () => {
+    const card = await postedCard("advisor-lead@kernel", "k-one-of-two");
+    expect(rekeyPromptNotices(repo, "advisor-lead@kernel", "k-one-of-two", "k-one-of-three")).toEqual([card.id]);
+    expect(repo.getById(card.id)!.tags).toContain("stuck-prompt-key:k-one-of-three");
+    expect(retireStalePromptNotices(repo, ["advisor-lead@kernel"], new Map([["advisor-lead@kernel", "k-one-of-three"]]))).toEqual([]);
+    expect(hasRecentPromptCard(repo, { session: "advisor-lead@kernel", key: "k-one-of-three" })).toBe(true);
+    expect(retireStalePromptNotices(repo, ["advisor-lead@kernel"], new Map([["advisor-lead@kernel", "k-other"]]))).toEqual([card.id]);
+    await vi.waitFor(() => expect(updates.some((u) => u.ts === card.ts && !actionable(u))).toBe(true));
   });
 
   it("a newer card for the seat closes its earlier ones, saying a newer card replaced them", async () => {

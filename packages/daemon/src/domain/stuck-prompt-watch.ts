@@ -109,18 +109,19 @@ export function promptChoices(pane: string): PromptChoices | undefined {
 
 /** What the pane shows now: the prompt's reason, fingerprint, question and choices, or null when
  *  it is not at a prompt. The same reading names an episode and checks it before an answer. */
-export function readPrompt(pane: string): { reason: string; key: string; promptLine: string; choices?: PromptChoices; dialog: string; dialogCut: boolean; command: string | null; title: string | null } | null {
+export function readPrompt(pane: string): { reason: string; key: string; episodeKey: string; queueTotal: number; promptLine: string; choices?: PromptChoices; dialog: string; dialogCut: boolean; command: string | null; title: string | null } | null {
   const seen = classifyPaneActivity(pane);
   if (seen.state !== "attention" || !PROMPT_REASONS.has(seen.reason ?? "")) return null;
   const evidence = String(seen.evidence ?? "");
-  const { body, dialog: text, topKnown } = promptBody(pane, evidence);
+  const { body, episodeBody, queueTotal, dialog: text, topKnown } = promptBody(pane, evidence);
   const key = createHash("sha256").update(`${seen.reason}|${body}`).digest("hex");
+  const episodeKey = createHash("sha256").update(`${seen.reason}|${episodeBody}`).digest("hex");
   const dialog = maskSecrets(text);
   const dialogCut = !topKnown;
   // A dialog too long for the card shows in full in the card's thread, so its buttons stay; one whose
   // start is off screen cannot be shown in full, so it gets none.
   const command = dialogCut ? null : promptCommand(pane);
-  return { reason: seen.reason!, key, promptLine: questionLine(pane, evidence), choices: dialogCut ? undefined : promptChoices(pane), dialog, dialogCut,
+  return { reason: seen.reason!, key, episodeKey, queueTotal, promptLine: questionLine(pane, evidence), choices: dialogCut ? undefined : promptChoices(pane), dialog, dialogCut,
     command, title: command ? promptTitle(pane) : null };
 }
 
@@ -187,6 +188,8 @@ export interface StuckPromptWatchDeps {
   log?: (msg: string) => void;
   /** The seat's own PermissionRequest hook holds an open Slack request: its card is the one. */
   heldByHook?: (session: string, dialog: string | null) => boolean;
+  /** The prompt a card was posted for still shows, only its waiting total grew: the card now answers to `to`. */
+  rekey?: (session: string, from: string, to: string) => void;
 }
 
 const OPTION_LINE = /^\s*[❯›]?\s*\d+\.\s/;
@@ -217,7 +220,13 @@ const DIALOG_HEADER = /^\s*(?:Bash command|Edit file|Create file|Write file|Read
 
 /** The prompt's text from its dialog's top border (else 60 lines above the options) to the end. The
  *  border starts at the left edge; a rule inside the shown command is indented. */
-function promptBody(pane: string, evidence: string): { body: string; dialog: string; topKnown: boolean } {
+/** Claude's count of waiting permission requests (its agents' included), right-aligned on the dialog's header:
+ *  "Bash command · from the worker agent        1 of 3". */
+const QUEUE_COUNTER = /\s{3,}(\d+) of (\d+)\s*$/;
+
+/** `body` is the prompt as shown; `episodeBody` the same without the waiting total, which grows while the
+ *  shown request stays the same. */
+function promptBody(pane: string, evidence: string): { body: string; episodeBody: string; queueTotal: number; dialog: string; topKnown: boolean } {
   const raw = pane.split("\n");
   const at = Math.max(0, anchorLine(raw.map((l) => l.trim()), evidence));
   let from = at;
@@ -232,7 +241,13 @@ function promptBody(pane: string, evidence: string): { body: string; dialog: str
   const firstOption = above.findIndex((l) => OPTION_LINE.test(l));
   const dialog = (firstOption >= 0 ? above.slice(0, firstOption) : above).map((l) => l.trim())
     .filter((l) => l && !/^[╌─━-]+$/.test(l)).join("\n");
-  return { body: flat(raw.slice(from).join("")), dialog, topKnown: start >= 0 };
+  // Only the dialog's header carries the counter: the first text line of a dialog whose start is on screen.
+  let headerAt = -1;
+  for (let i = start; start >= 0 && i < raw.length && headerAt < 0; i++) if (flat(raw[i]!) !== "") headerAt = i;
+  const counter = headerAt >= 0 ? QUEUE_COUNTER.exec(raw[headerAt]!) : null;
+  // A single request shows no counter: it reads as "1 of 1", so the first position is left out too.
+  const episode = counter ? raw.map((l, i) => (i === headerAt ? l.replace(QUEUE_COUNTER, counter[1] === "1" ? "" : ` ${counter[1]}`) : l)) : raw;
+  return { body: flat(raw.slice(from).join("")), episodeBody: flat(episode.slice(from).join("")), queueTotal: counter ? Number(counter[2]) : 1, dialog, topKnown: start >= 0 };
 }
 
 export interface StuckPromptWatch {
@@ -250,7 +265,7 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
   const afterMs = deps.afterMs ?? STUCK_PROMPT_AFTER_MS;
   const answerableAfterMs = deps.answerableAfterMs ?? ANSWERABLE_PROMPT_AFTER_MS;
   const log = deps.log ?? ((m: string) => console.log(`[stuck-prompt] ${m}`));
-  const open = new Map<string, { key: string; since: number; notifiedAt?: number }>();
+  const open = new Map<string, { key: string; episodeKey: string; total: number; since: number; notifiedAt?: number }>();
   let timer: ReturnType<typeof setInterval> | undefined;
   let ticking = false;
   const episodeIdOf = (session: string, key: string) => createHash("sha256").update(`${session}|${key}`).digest("hex").slice(0, 20);
@@ -278,7 +293,16 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
         if (!prompt) { open.delete(session); continue; }
         const { key, promptLine } = prompt;
         const episode = open.get(session);
-        if (!episode || episode.key !== key) { open.set(session, { key, since: now() }); continue; }
+        // A fall in the waiting total means a request left the queue: what shows may be another one.
+        if (!episode || episode.episodeKey !== prompt.episodeKey || prompt.queueTotal < episode.total) {
+          open.set(session, { key, episodeKey: prompt.episodeKey, total: prompt.queueTotal, since: now() });
+          continue;
+        }
+        if (episode.key !== key) {
+          if (episode.notifiedAt !== undefined) deps.rekey?.(session, episode.key, key);
+          episode.key = key;
+          episode.total = prompt.queueTotal;
+        }
         const wait = prompt.choices ? answerableAfterMs : afterMs;
         if (deps.heldByHook?.(session, prompt.choices ? prompt.dialog : null)) continue;
         if (episode.notifiedAt !== undefined || now() - episode.since < wait) continue;
@@ -303,7 +327,7 @@ export function makeStuckPromptWatch(deps: StuckPromptWatchDeps): StuckPromptWat
       if (deps.heldByHook?.(session, prompt.dialog)) return { outcome: "already-posted" };
       const episode = open.get(session);
       const since = episode?.key === prompt.key ? episode.since : now();
-      open.set(session, { key: prompt.key, since, notifiedAt: now() });
+      open.set(session, { key: prompt.key, episodeKey: prompt.episodeKey, total: prompt.queueTotal, since, notifiedAt: now() });
       const result = await deps.notify({ session, reason: prompt.reason, promptLine: prompt.promptLine, attach: `tmux attach -t ${session}`,
         episodeId: episodeIdOf(session, prompt.key), since, key: prompt.key, dialog: prompt.dialog, choices: prompt.choices, command: prompt.command, title: prompt.title,
         waitingMinutes: Math.floor((now() - since) / 60_000), requestedBy: request.by, requestReason: maskSecrets(request.reason).slice(0, 300) })
@@ -373,6 +397,19 @@ export function hasRecentPromptCard(repo: QueueRepository, p: { session: string;
   return !!repo.db.prepare(`SELECT 1 FROM queue_items WHERE tags LIKE ? AND tags LIKE ?
       AND (state IN ('pending', 'in-progress', 'blocked') OR (human_intent = 'update' AND state != 'canceled' AND ts_created > ?)) LIMIT 1`)
     .get(`%"stuck-prompt-session:${p.session}"%`, `%"stuck-prompt-key:${p.key}"%`, new Date(now - 50 * 60_000).toISOString());
+}
+
+/** The seat's open cards for prompt `from` now answer to `to`: the same request still shows, only the count of
+ *  requests waiting behind it grew. An answer is still typed only while the pane shows exactly `to`. */
+export function rekeyPromptNotices(repo: QueueRepository, session: string, from: string, to: string): string[] {
+  const cards = openPromptNotices(repo).filter((n) => n.session === session && n.key === from);
+  for (const n of cards) {
+    const row = repo.getById(n.qitemId);
+    if (!row?.tags) continue;
+    repo.db.prepare("UPDATE queue_items SET tags = ? WHERE qitem_id = ?")
+      .run(JSON.stringify(row.tags.map((t) => (t === `stuck-prompt-key:${from}` ? `stuck-prompt-key:${to}` : t))), n.qitemId);
+  }
+  return cards.map((n) => n.qitemId);
 }
 
 /** Cancel the seat's open cards before a newer one is posted, so only the latest card has buttons. */
