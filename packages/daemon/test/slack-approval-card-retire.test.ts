@@ -107,7 +107,7 @@ describe("an expired or canceled approval card loses its buttons", () => {
     expect(repo.getById(id)?.tags).toContain("prompt-title:Check GitHub Actions status");
     await vi.waitFor(() => expect(posts.some((p) => String(p.text).includes("gh run view 38645788786"))).toBe(true));
     const ts = `${posts.findIndex((p) => String(p.text).includes("gh run view 38645788786")) + 1}.1`;
-    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["dev@rig", null]]), { seen: new Set(), movedOn: () => true }, Date.now() + 11_000)).toEqual([id]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["dev@rig", null]]), { seen: new Set(), emptySince: new Map(), movedOn: () => true }, Date.now() + 11_000)).toEqual([id]);
     await vi.waitFor(() => expect(updates.find((u) => u.ts === ts)).toMatchObject({
       text: "Resolved in Terminal · Check GitHub Actions status",
       blocks: [{ type: "section", text: { type: "mrkdwn", text: "*Resolved in Terminal · Check GitHub Actions status*" } }],

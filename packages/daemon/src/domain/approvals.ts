@@ -115,14 +115,19 @@ function approvalTitle(toolInput: unknown): { text: string; network: boolean } |
 /** A request this new may not have its dialog drawn yet: it is never retired as answered. */
 export const APPROVAL_RETIRE_GRACE_MS = 10_000;
 
-interface OpenApproval { qitemId: string; session: string; createdAt: number; shows: string | null }
+/** A never-seen request whose seat shows no prompt this long past its grace was answered between scans. Its
+ *  dialog becomes readable within about 35 s of the card when it is still up. */
+export const APPROVAL_UNSEEN_RETIRE_MS = 90_000;
+
+interface OpenApproval { qitemId: string; session: string; createdAt: number; shows: string | null; subagent: boolean }
 
 function openApprovals(repo: QueueRepository): OpenApproval[] {
   return (repo.db.prepare(`SELECT qitem_id, source_session, ts_created, body FROM queue_items WHERE state = 'pending' AND tags LIKE '%"approval-request"%'
       AND (human_answers IS NULL OR human_answers = '{}')`).all() as Array<{ qitem_id: string; source_session: string; ts_created: string; body: string | null }>)
     .map((r) => {
       const text = /```\n([\s\S]*?)\n```/.exec(r.body ?? "")?.[1] ?? "";
-      return { qitemId: r.qitem_id, session: r.source_session, createdAt: Date.parse(r.ts_created), shows: dialogMark(text) };
+      return { qitemId: r.qitem_id, session: r.source_session, createdAt: Date.parse(r.ts_created), shows: dialogMark(text),
+        subagent: /^Asked by its .+ subagent$/m.test(r.body ?? "") };
     });
 }
 
@@ -146,26 +151,35 @@ export function seatHasOpenApproval(repo: QueueRepository, session: string, dial
 export interface TerminalAnswerEvidence {
   /** Requests whose own dialog was on screen at some scan; filled by the retire check itself. */
   seen: Set<string>;
+  /** When each never-seen request's seat began showing no prompt, past its grace; filled by the retire check. */
+  emptySince: Map<string, number>;
   /** The seat's hooks show it started work or ended its turn after `since` (an ISO time). */
   movedOn: (session: string, since: string) => boolean;
 }
 
 /** The terminal dialog shows while the hook waits, and an answer typed there leaves the hook running.
- *  A request past its grace whose readable pane shows no prompt was answered in the terminal once its own
- *  dialog was seen and is gone, or the seat moved on since it asked: it expires, so its card loses its
- *  buttons and the hook stops waiting. A pane that shows no prompt but neither of those is not an answer
- *  (a dialog not read yet), so the card stays. While some dialog is up nothing is retired: it may be this
- *  request's, cut short, or one queued behind it. */
+ *  A request past its grace whose readable pane shows no prompt was answered in the terminal when its own
+ *  dialog was seen and is gone, when the seat moved on since it asked (not for a subagent's request: the main
+ *  agent works on meanwhile), or when no prompt has shown for APPROVAL_UNSEEN_RETIRE_MS (an answer between
+ *  scans, such as a quick No that ends the turn without a hook). It then expires, so its card loses its buttons
+ *  and the hook stops waiting. Until then a pane with no prompt is a dialog not read yet, and the card stays.
+ *  While some dialog is up nothing is retired: it may be this request's, cut short, or one queued behind it. */
 export function retireApprovalsAnsweredInTerminal(repo: QueueRepository, dialogs: Map<string, string | null>, evidence: TerminalAnswerEvidence, now = Date.now()): string[] {
   const retired: string[] = [];
   const open = openApprovals(repo);
   for (const id of evidence.seen) if (!open.some((a) => a.qitemId === id)) evidence.seen.delete(id);
+  for (const id of evidence.emptySince.keys()) if (!open.some((a) => a.qitemId === id)) evidence.emptySince.delete(id);
   for (const a of open) {
     if (!dialogs.has(a.session)) continue;
     const dialog = dialogs.get(a.session) ?? null;
+    if (dialog !== null) evidence.emptySince.delete(a.qitemId);
     if (dialog !== null && (a.shows === null || flat(dialog).includes(a.shows))) evidence.seen.add(a.qitemId);
     if (dialog !== null || now - a.createdAt < APPROVAL_RETIRE_GRACE_MS) continue;
-    if (!evidence.seen.has(a.qitemId) && !evidence.movedOn(a.session, new Date(a.createdAt).toISOString())) continue;
+    if (!evidence.emptySince.has(a.qitemId)) evidence.emptySince.set(a.qitemId, now);
+    const answered = evidence.seen.has(a.qitemId)
+      || (!a.subagent && evidence.movedOn(a.session, new Date(a.createdAt).toISOString()))
+      || now - evidence.emptySince.get(a.qitemId)! >= APPROVAL_UNSEEN_RETIRE_MS;
+    if (!answered) continue;
     repo.update({ qitemId: a.qitemId, actorSession: "daemon@kernel", state: "canceled", transitionNote: `approval expired: ${ANSWERED_IN_TERMINAL}` });
     retired.push(a.qitemId);
   }

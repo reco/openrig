@@ -2244,11 +2244,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       // Enough for a long command's whole dialog, so two prompts differing only near the top differ.
       const STUCK_PROMPT_CAPTURE_LINES = 120;
       const { alwaysOffer, retireApprovalsAnsweredInTerminal, seatHasOpenApproval } = await import("./domain/approvals.js");
-      const { latestHookMovedOn } = await import("./domain/agent-activity-store.js");
+      const { seatMovedOnSince } = await import("./domain/agent-activity-store.js");
       const terminalAnswerEvidence = {
         seen: new Set<string>(),
-        movedOn: (session: string, since: string) => latestHookMovedOn(agentActivityStore.getLatestForNode({ sessionName: session }), since,
-          agentActivityStore.resolveSession({ sessionName: session })?.runtime ?? null),
+        emptySince: new Map<string, number>(),
+        movedOn: (session: string, since: string) => seatMovedOnSince(agentActivityStore, session, since),
       };
       deps.stuckPromptWatch = makeStuckPromptWatch({
         runningSessions: () => (db.prepare(`

@@ -150,7 +150,29 @@ describe("Slack approvals", () => {
     expect(seatHasOpenApproval(repo, "psa-dev@psa", bashDialog("touch x"))).toBe(false);
   });
 
-  const evidence = (movedOn = false) => ({ seen: new Set<string>(), movedOn: () => movedOn });
+  const evidence = (movedOn = false) => ({ seen: new Set<string>(), emptySince: new Map<string, number>(), movedOn: () => movedOn });
+
+  it("a subagent's request is not answered by the main agent moving on; its no-prompt window still retires it", async () => {
+    const s = service();
+    const id = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "touch x" }, agentType: "general-purpose" }))!;
+    const t0 = Date.now() + 11_000;
+    const e = evidence(true);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), e, t0)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), e, t0 + 89_000)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), e, t0 + 90_000)).toEqual([id]);
+  });
+
+  it("a never-seen request retires once its seat has shown no prompt for the whole window; a dialog in between restarts it", async () => {
+    const s = service();
+    const id = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "touch x" } }))!;
+    const t0 = Date.now() + 11_000;
+    const e = evidence(false);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), e, t0)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", bashDialog("rm -rf build")]]), e, t0 + 60_000)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), e, t0 + 100_000)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), e, t0 + 189_000)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), e, t0 + 190_000)).toEqual([id]);
+  });
 
   it("a request whose dialog was seen and is gone expires as answered in the terminal", async () => {
     const s = service();
