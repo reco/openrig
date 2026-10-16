@@ -112,6 +112,20 @@ describe("Slack approvals", () => {
     expect(repo.getById(edit)?.body).toContain(`\`\`\`\n${patch}\n\`\`\``);
   });
 
+  it("an Always click after the re-ping still saves its rule and records the answer", async () => {
+    const saved: unknown[] = [];
+    const s = makeApprovalService({ queueRepo: repo, optedIn: () => ["psa-dev@psa"], approver: () => "reco@external", verifySeat: () => true, repingMs: () => 30, pollMs: 10, saveRule: (r) => { saved.push(r); } });
+    const id = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "lsof -nP -iTCP:7433" } }))!;
+    await new Promise((r) => setTimeout(r, 40));
+    expect(await s.wait(id, "psa-dev@psa", 1)).toBe("pending");
+    await s.sweep();
+    expect(repo.list({ limit: 50 }).filter((q) => q.replyTo === id)).toHaveLength(1);
+    click(id, "reco@external", "always_allow");
+    expect(await s.wait(id, "psa-dev@psa", 20)).toBe("allow");
+    expect(saved).toEqual([expect.objectContaining({ effect: "allow", match: "Bash(lsof -nP -iTCP:7433)", seats: "psa-dev@psa" })]);
+    expect(repo.transitionLog.listForQitem(id).some((t) => t.transitionNote?.startsWith("approval allow by reco@external"))).toBe(true);
+  });
+
   it("the sweep expires a request whose hook stopped asking, never one whose hook still asks", async () => {
     let t = Date.now();
     const s = makeApprovalService({ queueRepo: repo, optedIn: () => ["psa-dev@psa"], approver: () => "reco@external", verifySeat: () => true, repingMs: () => 1_800_000, pollMs: 10, now: () => t });

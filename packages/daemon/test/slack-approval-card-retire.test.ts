@@ -54,7 +54,7 @@ describe("an expired or canceled approval card loses its buttons", () => {
   afterEach(() => { for (const stop of stops.splice(0)) stop(); db.close(); rmSync(home, { recursive: true, force: true }); });
 
   async function postedApproval(t: { now: number }) {
-    const service = makeApprovalService({ queueRepo: repo, optedIn: () => ["dev@rig"], approver: () => "reco@external", verifySeat: () => true, timeoutMs: () => 1_800_000, now: () => t.now, pollMs: 5 });
+    const service = makeApprovalService({ queueRepo: repo, optedIn: () => ["dev@rig"], approver: () => "reco@external", verifySeat: () => true, repingMs: () => 600_000, now: () => t.now, pollMs: 5 });
     const id = (await service.start({ sessionName: "dev@rig", toolName: "Bash", toolInput: { command: "rm -rf build" } }))!;
     await vi.waitFor(() => expect(posts.some((p) => String(p.text).includes("rm -rf build"))).toBe(true));
     const card = posts.find((p) => String(p.text).includes("rm -rf build"))!;
@@ -93,8 +93,10 @@ describe("an expired or canceled approval card loses its buttons", () => {
   it("an unanswered card past the re-ping time keeps its buttons and gets one reply in its thread", async () => {
     const t = { now: Date.now() };
     const { service, id, ts } = await postedApproval(t);
-    t.now += 960_000; expect(await service.wait(id, "dev@rig", 1)).toBe("pending"); await service.sweep(); await service.sweep();
-    await vi.waitFor(() => expect(posts.filter((p) => p.thread_ts === ts && String(p.text).includes("has waited 15 minutes"))).toHaveLength(1));
+    t.now += 540_000; expect(await service.wait(id, "dev@rig", 1)).toBe("pending"); await service.sweep();
+    expect(repo.list({ limit: 50 }).filter((q) => q.replyTo === id)).toHaveLength(0);
+    t.now += 100_000; expect(await service.wait(id, "dev@rig", 1)).toBe("pending"); await service.sweep(); await service.sweep();
+    await vi.waitFor(() => expect(posts.filter((p) => p.thread_ts === ts && String(p.text).includes("has waited 10 minutes"))).toHaveLength(1));
     expect(updates.filter((u) => u.ts === ts)).toEqual([]);
     expect(repo.getById(id)?.state).toBe("pending");
   });

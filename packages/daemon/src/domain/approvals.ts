@@ -84,7 +84,8 @@ const RULED = new RegExp(`^${PROMPT_CLEARED_PREFIX}(approved|denied) by rule (.+
 export const APPROVAL_ABANDONED_MS = 120_000;
 
 export const APPROVAL_REPING_MS = 900_000;
-const REPINGED = "approval re-pinged";
+/** Not "approval ...": wait() reads a note with that prefix as an answer already recorded. */
+const REPINGED = "re-pinged: approval still waiting";
 const QUESTION_ID = "approval";
 const MAX_PENDING_PER_SEAT = 3;
 /** What the card's thread can carry within Slack's 20 message parts, escaped, with half-full cuts. */
