@@ -162,21 +162,21 @@ describe("Claude activity-hook delivery — ENABLE (entry present, source + mani
     expect(fs._modes[RELAY_DEST]! & 0o777).toBe(0o755);
   });
 
-  it("projects the simple-command guard as one Bash PreToolUse hook with its shared definition, without duplicating it", async () => {
+  it("projects only the deny check as a Bash PreToolUse hook, once, and strips a retired simple-command guard entry", async () => {
     const dir = "/assets/plugins/openrig-core/hooks/scripts";
-    const fs = enableFs({ [`${dir}/simple-command-guard.cjs`]: "// guard", [`${dir}/plain-command.cjs`]: "// plain", [`${dir}/deny-check.cjs`]: "// deny" });
+    const fs = enableFs({ [`${dir}/deny-check.cjs`]: "// deny" });
+    const guardDest = `${STATE_DIR}/state/claude-activity-hooks/simple-command-guard.cjs`;
+    const denyDest = `${STATE_DIR}/state/claude-activity-hooks/deny-check.cjs`;
+    fs._store["/project/.claude/settings.local.json"] = JSON.stringify({ hooks: {
+      PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: `node ${shellQuote(guardDest)}`, timeout: 5 }] }],
+    } });
     const adapter = makeAdapter(fs);
     await adapter.project(plan([activityEntry()]), binding());
     await adapter.project(plan([activityEntry()]), binding());
-    const guardDest = `${STATE_DIR}/state/claude-activity-hooks/simple-command-guard.cjs`;
-    const denyDest = `${STATE_DIR}/state/claude-activity-hooks/deny-check.cjs`;
-    expect(fs._store[guardDest]).toBe("// guard");
     expect(fs._store[denyDest]).toBe("// deny");
-    expect(fs._store[`${STATE_DIR}/state/claude-activity-hooks/plain-command.cjs`]).toBe("// plain");
+    expect(fs._store[guardDest]).toBeUndefined();
     const pre = readSettings(fs).hooks.PreToolUse as Array<{ matcher: string; hooks: Array<{ command: string }> }>;
-    for (const dest of [guardDest, denyDest]) {
-      expect(pre.filter((g) => g.hooks.some((h) => h.command === `node ${shellQuote(dest)}`))).toEqual([{ matcher: "Bash", hooks: [{ type: "command", command: `node ${shellQuote(dest)}`, timeout: 5 }] }]);
-    }
+    expect(pre).toEqual([{ matcher: "Bash", hooks: [{ type: "command", command: `node ${shellQuote(denyDest)}`, timeout: 5 }] }]);
   });
 
   it("copies the relay outside cwd into the configured instance at mode 0755", async () => {

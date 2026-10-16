@@ -1019,21 +1019,15 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         groups.push({ hooks: [{ type: "command", command: `node ${shellQuote(approvalDest)}`, timeout: APPROVAL_HOOK_TIMEOUT_SEC }] });
         hooks["PermissionRequest"] = groups;
       }
-      // Simple commands only: a Bash command approval rules cannot read is refused before any prompt.
-      const scriptsDir = nodePath.dirname(this.activityRelayPath!);
-      const guardSource = nodePath.join(scriptsDir, "simple-command-guard.cjs");
-      if (this.fs.exists(guardSource)) {
-        // The deny check: the human's deny rules, through the daemon's matcher, before Claude's own allow rules.
-        const scripts = ["plain-command.cjs", "simple-command-guard.cjs", "deny-check.cjs"].filter((name) => this.fs.exists(nodePath.join(scriptsDir, name)));
-        for (const name of scripts) {
-          const source = nodePath.join(scriptsDir, name), dest = nodePath.join(nodePath.dirname(relayDest), name);
-          if (!this.fs.exists(dest) || this.fs.readFile(dest) !== this.fs.readFile(source)) this.fs.copyFile(source, dest);
-          this.preserveMode(source, dest);
-        }
+      // The deny check: the human's deny rules, through the daemon's matcher, before Claude's own allow rules.
+      // (A retired simple-command guard entry is owned, so the strip above removes it from older settings.)
+      const denySource = nodePath.join(nodePath.dirname(this.activityRelayPath!), "deny-check.cjs");
+      if (this.fs.exists(denySource)) {
+        const denyDest = nodePath.join(nodePath.dirname(relayDest), "deny-check.cjs");
+        if (!this.fs.exists(denyDest) || this.fs.readFile(denyDest) !== this.fs.readFile(denySource)) this.fs.copyFile(denySource, denyDest);
+        this.preserveMode(denySource, denyDest);
         const groups = Array.isArray(hooks["PreToolUse"]) ? (hooks["PreToolUse"] as unknown[]) : [];
-        for (const name of scripts.filter((n) => n !== "plain-command.cjs")) {
-          groups.push({ matcher: "Bash", hooks: [{ type: "command", command: `node ${shellQuote(nodePath.join(nodePath.dirname(relayDest), name))}`, timeout: 5 }] });
-        }
+        groups.push({ matcher: "Bash", hooks: [{ type: "command", command: `node ${shellQuote(denyDest)}`, timeout: 5 }] });
         hooks["PreToolUse"] = groups;
       }
     }
