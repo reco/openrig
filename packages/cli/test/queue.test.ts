@@ -226,6 +226,48 @@ describe("rig queue CLI", () => {
     expect(calls.find((c) => c.path === "/api/queue/create")?.body).toMatchObject({ humanIntent: "update", replyTo: "qitem-earlier" });
   });
 
+  it("create --human-intent ack fails locally and points to update", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { deps, calls } = makeDeps();
+    await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "human-founder@external", "--body", "Restarted.", "--human-intent", "ack", "--json"]);
+    expect(calls.find((c) => c.path === "/api/queue/create")).toBeUndefined();
+    expect(err.mock.calls.flat().join("\n")).toMatch(/human_intent_ack_removed.*--human-intent update/s);
+    err.mockRestore();
+    process.exitCode = 0;
+  });
+
+  it("create to a human without an intent or buttons warns that it will show a Confirm button", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { deps } = makeDeps();
+    await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "human-founder@external", "--body", "FYI: done.", "--json"]);
+    expect(err.mock.calls.flat().join("\n")).toMatch(/Confirm button.*--human-intent update/s);
+    expect(err.mock.calls.flat().join("\n")).not.toMatch(/--human-intent ack/);
+    err.mockClear();
+    await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "human-founder@external", "--body", "FYI: done.", "--human-intent", "update", "--json"]);
+    expect(err.mock.calls.flat().join("\n")).not.toMatch(/Confirm button/);
+    err.mockRestore();
+  });
+
+  it("create --reply-to with a decision is allowed when it carries --confirm", async () => {
+    const { deps, calls } = makeDeps();
+    await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "human-founder@external", "--body", "Build?", "--reply-to", "qitem-earlier", "--confirm", "Build it", "--json"]);
+    expect(calls.find((c) => c.path === "/api/queue/create")?.body).toMatchObject({ replyTo: "qitem-earlier", humanConfirm: "Build it" });
+  });
+
+  it("create --confirm sends the reading as humanConfirm", async () => {
+    const { deps, calls } = makeDeps();
+    await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "human-founder@external", "--body", "My reading.", "--human-intent", "update", "--reply-to", "qitem-decision", "--confirm", "Ship the schema migration only.", "--json"]);
+    expect(calls.find((c) => c.path === "/api/queue/create")?.body).toMatchObject({ replyTo: "qitem-decision", humanConfirm: "Ship the schema migration only." });
+  });
+
+  it("create and update send each repeated --link", async () => {
+    const { deps, calls } = makeDeps();
+    await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "human-founder@external", "--body", "Ship?", "--link", "pr:https://github.com/reco/openrig/pull/1", "--link", "qitem:qitem-work", "--json"]);
+    expect(calls.find((c) => c.path === "/api/queue/create")?.body).toMatchObject({ links: ["pr:https://github.com/reco/openrig/pull/1", "qitem:qitem-work"] });
+    await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "update", "qitem-decision", "--link", "issue:https://github.com/reco/openrig/issues/2", "--json"]);
+    expect(calls.find((c) => c.path === "/api/queue/qitem-decision/update")?.body).toMatchObject({ links: ["issue:https://github.com/reco/openrig/issues/2"] });
+  });
+
   it("delivery verification names a --reply-to fallback to a top-level post", async () => {
     const result = await waitForDeliveryOutcome(
       { get: async <T>() => ({ status: 200, data: { deliveryOutcome: "posted", replyTo: "qitem-earlier", replyToFallback: "root-missing (qitem-earlier)" } as T }) },

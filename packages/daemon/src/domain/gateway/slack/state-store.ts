@@ -258,6 +258,29 @@ export interface ChannelCoverage {
   nextRetryAt?: number;
   /** Available history was scanned, but Slack reported older history beyond its plan limit. */
   historyLimited?: boolean;
+  /** Replies in followed threads, tracked apart from top-level history and per thread root. */
+  threads?: ThreadCoverage;
+}
+
+export interface ThreadCoverage {
+  /** Where reply tracking began for this channel: the floor for a root without its own watermark. */
+  since: string;
+  /** Per followed root: replies read through this timestamp. */
+  roots: Record<string, string>;
+  /** Roots Slack reports deleted: nothing left to read. */
+  deleted?: string[];
+  /** Roots the app cannot read (missing_scope, not_in_channel, ...): retried every pass, never covered. */
+  degraded?: Record<string, string>;
+  /** Slack asked us to wait (429 Retry-After) before the next replies read. */
+  nextRetryAt?: number;
+}
+
+function validThreads(t: ThreadCoverage | undefined): boolean {
+  const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+  return isRecord(t) && slackMicros(t.since) !== null && isRecord(t.roots) && Object.values(t.roots).every((ts) => slackMicros(ts as string) !== null) &&
+    (t.deleted === undefined || (Array.isArray(t.deleted) && t.deleted.every((r) => typeof r === "string"))) &&
+    (t.degraded === undefined || (isRecord(t.degraded) && Object.values(t.degraded).every((e) => typeof e === "string"))) &&
+    (t.nextRetryAt === undefined || (Number.isFinite(t.nextRetryAt) && t.nextRetryAt >= 0));
 }
 
 function readOptional(file: string, fsops: StateFsOps): string | undefined {
@@ -287,6 +310,8 @@ export class ChannelCoverageStore {
         const upper = slackMicros(c.pending.upper), next = slackMicros(c.pending.nextLatest);
         if (upper === null || next === null || next <= through || next > upper) throw new Error("invalid pending interval");
       }
+      // Replies replay from the coverage start when thread progress is unreadable; the seen store dedupes.
+      if (c.threads !== undefined && !validThreads(c.threads)) c.threads = { since: c.coverageStart, roots: {} };
     }
     return data;
   }

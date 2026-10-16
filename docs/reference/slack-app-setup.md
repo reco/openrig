@@ -63,10 +63,13 @@ groups:
   a member of, and reading channel details.
   `rig slack verify` checks these.
 - **Feature scopes**: `files:read` (download attachments people send), `files:write` (upload
-  attachments to Slack), `app_mentions:read` (receive @-mentions of the app), and `reactions:read`
-  (receive emoji reactions). `rig slack verify` warns when one of these is missing (if Slack returns
-  the granted scopes) but does not require them, so a READY from verify does not prove attachments,
-  mentions or reactions will work.
+  attachments to Slack), `app_mentions:read` (receive @-mentions of the app), `reactions:read`
+  (receive emoji reactions: a ✅ that answers a decision, any other reaction on an ask reaches the asking seat), `reactions:write` (the done
+  mark on a top-level message to you once it no longer waits on you), `users:read` (tell people from bots
+  among a channel's members), and `groups:history` / `groups:read` (use a private
+  channel: its messages, history and membership check). `rig slack verify` warns when one of these is missing (if
+  Slack returns the granted scopes) but does not require them, so a READY from verify does not
+  prove attachments, mentions, reactions or a private channel will work.
 
 If a feature scope was not granted, the effect differs by feature:
 
@@ -76,28 +79,46 @@ If a feature scope was not granted, the effect differs by feature:
   the failure appears only in the daemon log (`rig daemon logs`).
 - **Mentions** (`app_mentions:read`): Slack does not deliver `app_mention` events to the app.
   Only `rig slack verify` warns that the scope is missing; nothing reports the missing events.
-- **Reactions** (`reactions:read`): Slack does not deliver `reaction_added` events, so a reaction
-  on an ask doesn't reach the asking agent. A reply in the ask's thread still does.
+- **Reactions** (`reactions:read`): Slack does not deliver `reaction_added` events, so a ✅ answers
+  nothing and a reaction on an ask doesn't reach the asking agent. Use a button or an `answer:`
+  reply instead; a reply in the ask's thread still reaches the agent.
+- **Private channel** (`groups:history`, `groups:read`): Slack delivers no messages from a private
+  channel, history recovery fails there, and `rig slack verify` cannot confirm the app is a member.
+  A public channel needs neither scope.
 
-So after installing, compare the granted scopes Slack shows for the app with all seven scopes that
+So after installing, compare the granted scopes Slack shows for the app with all ten scopes that
 `rig slack manifest --json` lists.
 
-The app subscribes to messages in public channels it is a member of (`message.channels`), to
-mentions of the app (`app_mention`), and to emoji reactions (`reaction_added`). It does not request
-direct-message or private-channel access.
-
-A reaction added to an ask reaches the agent that asked, as a note naming who reacted and with
-which emoji; the agent decides what it means. Every message OpenRig posted for the ask counts:
-its first message, a long ask's numbered parts, and an ask posted as a reply in a thread. A
-reaction on any other message, including a person's reply in the thread, is ignored. An app created from an older manifest has neither the `reactions:read` scope nor the
-`reaction_added` event: add both under **OAuth & Permissions** and **Event Subscriptions**, then
-reinstall the app to the workspace.
+The app subscribes to messages in public and private channels it is a member of
+(`message.channels`, `message.groups`), to mentions of the app (`app_mention`), and to reactions
+(`reaction_added`). It does not request direct-message access. For a private channel, invite the
+app to it (`/invite @<app name>`); Slack does not let an app join a private channel by itself.
 
 The manifest also turns on **Interactivity**, so the human can answer a decision's structured
 questions by clicking a button (`rig queue create --human-questions-file`). In Socket Mode the
 clicks arrive over the same socket, so no request URL is needed. An app created from an older
 manifest has Interactivity off: turn it on under **Interactivity & Shortcuts**, or the buttons
-will do nothing. A typed reply in the thread still answers the decision either way.
+will do nothing.
+
+How a decision is answered depends on `explicitAnswersOnly` in `slack-connector.json`:
+
+- **On (this build's default):** a typed reply in the decision's thread is conversation. It goes
+  to the asking seat, which can answer in the same thread (`rig queue create --human-intent update
+  --reply-to <decision>`), and it resolves nothing. Every decision shows buttons: the seat's
+  action (or "Confirm"), or option buttons; typing is always possible and reaches the seat. Information
+  (`--human-intent update`) has no buttons and needs no acknowledgement. Other reactions on an ask
+  reach the asking seat and never decide. The decision resolves on a button click
+  (including an approve button carrying the seat's call to action, `--confirm "Build it"` on the
+  decision), a reply starting with `answer:`, a Confirm click on the seat's stated reading
+  (`--confirm <reading>` on an update replying to the decision), or a ✅ from the asked human on
+  their own reply in the thread (that reply's text), or on a Confirm
+  offer. It resolves once; later answers reach the seat as messages.
+  Answering does not close the request: its thread stays open until the outcome the seat linked
+  (`rig queue update --link pr:<url>|issue:<url>|qitem:<id>`) is finished, or the asked human
+  replies `cancel`. After `staleReminderDays` (default 3) without activity, an unanswered request
+  reminds its human in the thread and an answered one reminds its seat. Reminders close nothing.
+- **Off:** any typed reply in the thread answers the decision.
+
 Each click gets one short reply in the decision's thread: what was recorded, or, when OpenRig
 refuses the click or can't record it, why and what to do instead (the sender isn't registered, the
 decision is no longer waiting for answers or was sent to someone else, the button no longer
@@ -106,7 +127,7 @@ click OpenRig already handled gets no second reply. The reply is best effort: wh
 rate-limiting OpenRig's posts it may not be posted, and the click is handled the same either way.
 
 In the decision's `humanAnswers`, clicked answers remain option-id strings. A whole typed reply
-is stored as `{kind: "typed-reply", text: "…", placement: "first-unanswered", unansweredCount: N}`
+that answers (explicitAnswersOnly off, or an `answer:` reply) is stored as `{kind: "typed-reply", text: "…", placement: "first-unanswered", unansweredCount: N}`
 under the first unanswered question. That placement is automatic; it does not mean the person
 selected that question. `N` counts the other question slots still empty in `humanAnswers` after
 that placement. Earlier button answers are preserved; no other questions are filled in.

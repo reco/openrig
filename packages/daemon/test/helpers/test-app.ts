@@ -4,6 +4,7 @@ import { queueTransitionsQitemIdOrderSchema } from "../../src/db/migrations/098_
 import { queueItemsRecoveryTagsSchema } from "../../src/db/migrations/099_queue_items_recovery_tags.js";
 import { resumeRotationSchema } from "../../src/db/migrations/101_claude_resume_rotation.js";
 import { rigNonInterruptiveSchema } from "../../src/db/migrations/095_rig_non_interruptive.js";
+import { humanConfirmSchema } from "../../src/db/migrations/096_human_confirm.js";
 import { mockShellCommand } from "./shell-command-mock.js";
 import { vi } from "vitest";
 import type Database from "better-sqlite3";

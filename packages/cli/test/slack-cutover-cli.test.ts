@@ -36,6 +36,7 @@ function makeDeps(overrides: Partial<SlackDeps> = {}): { deps: SlackDeps; logs: 
       checkEnvFilePermissions: () => null,
       verifyScopes: async () => ({ ok: true, granted: [], missing: [] }),
       verifyChannelMembership: async () => ({ ok: true, isMember: true }),
+      mappedChannels: (cfg: { channel?: string | null }) => (cfg.channel ? [{ channel: cfg.channel, isDefault: true, matches: [] as string[] }] : []),
       buildSlackAppManifest, FEATURE_SCOPES, BASELINE_REQUIRED_SCOPES,
     }),
     clientFactory: () => ({
@@ -96,6 +97,38 @@ describe("S10 CLI cutover — admin verbs route to the daemon", () => {
     expect(process.exitCode).toBe(1);
     process.exitCode = 0;
   });
+  it("verify is NOT ready while the app is missing from an extra channel", async () => {
+    const { deps } = makeDeps();
+    const base = await deps.surface!();
+    const logs: string[] = [];
+    await run(slackCommand({ ...deps, log: (m) => logs.push(m), surface: async () => ({
+      ...base,
+      loadConfig: () => ({ ...base.loadConfig(), extraChannels: [{ id: "C2", inboundDestination: "psa-dev@psa" }] }),
+      resolveSecret: () => "xoxb-EXAMPLE-fake",
+      verifyScopes: async () => ({ ok: true, granted: ["chat:write"], missing: [] }),
+      verifyChannelMembership: async (_token: string, channel: string) => ({ ok: true, isMember: channel === "C1" }),
+    }) as never }), ["verify", "--json"]);
+    expect(JSON.parse(logs[0]!)).toMatchObject({ ready: false, channels: [{ channel: "C1", member: { isMember: true } }, { channel: "C2", matches: ["inbound psa-dev@psa"], member: { isMember: false } }] });
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+
+  it("verify checks membership in the notifications channel too", async () => {
+    const { deps } = makeDeps();
+    const base = await deps.surface!();
+    const logs: string[] = [];
+    await run(slackCommand({ ...deps, log: (m) => logs.push(m), surface: async () => ({
+      ...base,
+      loadConfig: () => ({ ...base.loadConfig(), notificationsChannel: "C3" }),
+      resolveSecret: () => "xoxb-EXAMPLE-fake",
+      verifyScopes: async () => ({ ok: true, granted: ["chat:write"], missing: [] }),
+      verifyChannelMembership: async (_token: string, channel: string) => ({ ok: true, isMember: channel === "C1" }),
+    }) as never }), ["verify", "--json"]);
+    expect(JSON.parse(logs[0]!)).toMatchObject({ ready: false, channels: [{ channel: "C1", member: { isMember: true } }, { channel: "C3", matches: ["notifications"], member: { isMember: false } }] });
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+
   it("`rig slack enable` POSTs /api/gateway/slack/enable and prints the honest online-status", async () => {
     const { deps, logs, posts } = makeDeps();
     await run(slackCommand(deps), ["enable"]);

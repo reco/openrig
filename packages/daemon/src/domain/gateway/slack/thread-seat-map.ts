@@ -113,12 +113,52 @@ export class ThreadSeatMap {
     return row ? project(row) : null;
   }
 
+  /** Every root a conversation opened, open or closed. */
+  listRootsByConversation(conversationId: string): ThreadMapping[] {
+    return (this.db.prepare(`SELECT * FROM thread_seat_map WHERE conversation_id = ?`).all(conversationId) as Record<string, unknown>[]).map(project);
+  }
+
+  /** Open thread roots in one channel opened since an instant, newest first (reply recovery). */
+  listOpenRootsInChannel(channel: string, sinceIso: string, limit = 1000): string[] {
+    return (this.db.prepare(`SELECT thread_ts FROM thread_seat_map WHERE channel = ? AND state = 'open' AND opened_at >= ? ORDER BY ${NEWEST_ROOT_FIRST} LIMIT ?`)
+      .all(channel, sinceIso, limit) as Array<{ thread_ts: string }>).map((r) => r.thread_ts);
+  }
+
+  /** Open roots in one channel posted, or whose conversation row changed, since an instant (fast recovery). */
+  listActiveRootsInChannel(channel: string, sinceIso: string, limit = 10): string[] {
+    return (this.db.prepare(`SELECT m.thread_ts FROM thread_seat_map m LEFT JOIN queue_items q ON q.qitem_id = m.conversation_id
+        WHERE m.channel = ? AND m.state = 'open' AND (CAST(m.thread_ts AS REAL) >= ? OR q.ts_updated >= ?)
+        ORDER BY COALESCE(q.ts_updated, '') DESC, CAST(m.thread_ts AS REAL) DESC LIMIT ?`)
+      .all(channel, Date.parse(sinceIso) / 1000, sinceIso, limit) as Array<{ thread_ts: string }>).map((r) => r.thread_ts);
+  }
+
+  /** Phase 1 — the open requests: one row per conversation with an open root, its newest root. */
+  listOpenConversations(): ThreadMapping[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM thread_seat_map WHERE state = 'open' ORDER BY ${NEWEST_ROOT_FIRST}`)
+      .all() as Record<string, unknown>[];
+    const seen = new Set<string>();
+    return rows.map(project).filter((m) => !seen.has(m.conversationId) && seen.add(m.conversationId));
+  }
+
+  closeConversation(conversationId: string): void {
+    this.db
+      .prepare(`UPDATE thread_seat_map SET state = 'closed', closed_at = ? WHERE conversation_id = ? AND state = 'open'`)
+      .run(this.now().toISOString(), conversationId);
+  }
+
   /** #899 — record a message OpenRig posted into a thread for an ask, with that ask and its seat (idempotent). */
   recordPart(m: { messageTs: string; channel: string; threadTs: string; seat: string; conversationId: string }): void {
     this.db
       .prepare(`INSERT INTO thread_part_map (message_ts, channel, thread_ts, seat, conversation_id) VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(channel, message_ts) DO NOTHING`)
       .run(m.messageTs, m.channel, m.threadTs, m.seat, m.conversationId);
+  }
+
+  /** What OpenRig posted into a thread (its replies, not the root), newest first: each part's ask and seat. */
+  partsInThread(threadTs: string, channel: string): Array<{ seat: string; conversationId: string }> {
+    return (this.db.prepare(`SELECT seat, conversation_id FROM thread_part_map WHERE thread_ts = ? AND channel = ? AND message_ts != thread_ts ORDER BY CAST(message_ts AS REAL) DESC`)
+      .all(threadTs, channel) as Array<{ seat: string; conversation_id: string }>).map((r) => ({ seat: r.seat, conversationId: r.conversation_id }));
   }
 
   /** #899 — the ask and seat of a message OpenRig posted into a thread in this channel; null for any other message. */

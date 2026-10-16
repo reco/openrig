@@ -33,6 +33,7 @@ export interface OutboundPostPayload {
   /** #96: an update posted into this earlier qitem's thread (subsystem-resolved). */
   replyTo?: string | null;
   humanQuestions?: import("../../human-questions.js").HumanQuestion[] | null;
+  humanConfirm?: string | null;
   summary?: string | null;
   body?: string | null;
   destinationSession?: string | null;
@@ -68,6 +69,8 @@ export class SlackOutboundDriver {
   private readonly inflight = new Set<string>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private sweeping = false;
+  private sweepAgain = false;
+  private kickTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly deps: OutboundDriverDeps) {}
 
@@ -89,7 +92,7 @@ export class SlackOutboundDriver {
 
   /** One sweep: fresh = active human alerts minus seen minus inflight. Dispatch each. */
   async sweepOnce(): Promise<SweepResult> {
-    if (this.sweeping) return { alerts: 0, fresh: 0, dispatched: [], refused: [] };
+    if (this.sweeping) { this.sweepAgain = true; return { alerts: 0, fresh: 0, dispatched: [], refused: [] }; }
     this.sweeping = true;
     try {
       const alerts = await this.deps.queue.listHumanAlerts(this.deps.filter);
@@ -114,7 +117,14 @@ export class SlackOutboundDriver {
       return result;
     } finally {
       this.sweeping = false;
+      if (this.sweepAgain) { this.sweepAgain = false; void this.sweepOnce(); }
     }
+  }
+
+  /** A queue change may have produced a human alert: sweep now (coalesced), not at the next poll. */
+  kick(debounceMs = 100): void {
+    if (this.kickTimer) return;
+    this.kickTimer = setTimeout(() => { this.kickTimer = undefined; void this.sweepOnce(); }, debounceMs);
   }
 
   /** The delivery layer marked a qitem seen (delivered) — release the in-memory guard. */
@@ -125,6 +135,8 @@ export class SlackOutboundDriver {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
+    clearTimeout(this.kickTimer);
+    this.kickTimer = undefined;
   }
 }
 
@@ -138,6 +150,7 @@ function toPayload(q: QueueItem): OutboundPostPayload {
     humanDetail: q.humanDetail,
     replyTo: q.replyTo,
     humanQuestions: q.humanQuestions,
+    humanConfirm: q.humanConfirm,
     summary: q.summary,
     body: q.body,
     destinationSession: q.destinationSession,

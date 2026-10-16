@@ -36,7 +36,8 @@ export const ENTITY_ID_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
 export const ADDRESS_DOMAIN = "external";
 
 // Closed key sets — a typo'd field must fail LOUD, never silently degrade behavior.
-const ALLOWED_FRAGMENT_KEYS = new Set(["entityId", "class", "displayName", "address", "connectorBindings", "prefs"]);
+const ALLOWED_FRAGMENT_KEYS = new Set(["entityId", "class", "displayName", "address", "connectorBindings", "prefs", "role", "channels"]);
+export const HUMAN_ROLES = new Set(["approver", "requester"]);
 const ALLOWED_BINDING_KEYS = new Set(["kind", "connectorRef", "secretsRef", "role", "handle"]);
 // A connector handle (M1 A6 v3 schema 9e468b2f): the platform-native id of the human ON that
 // connector (e.g. a Slack user id). Constrained so it can never forge a session ref (no ':' / '@'
@@ -88,6 +89,10 @@ export interface HumanFragment {
   address: string;
   connectorBindings: HumanConnectorBinding[];
   prefs: HumanPrefs;
+  /** Absent = approver. A requester talks to seats but never resolves a gate. */
+  role?: "approver" | "requester";
+  /** Slack channel ids this human may write in; absent = any configured channel. */
+  channels?: string[];
 }
 
 export type ValidateResult =
@@ -105,7 +110,13 @@ export function validateHumanFragment(raw: unknown): ValidateResult {
   if (!isObj(raw)) return { ok: false, error: "human fragment must be a mapping" };
   const uk = unknownKey(raw, ALLOWED_FRAGMENT_KEYS);
   if (uk) return { ok: false, error: `unknown fragment key "${uk}" — allowed: ${[...ALLOWED_FRAGMENT_KEYS].join(", ")} (a typo must not silently degrade)` };
-  const { entityId, class: cls, displayName, address, connectorBindings, prefs } = raw;
+  const { entityId, class: cls, displayName, address, connectorBindings, prefs, role, channels } = raw;
+  if (channels !== undefined && (!Array.isArray(channels) || channels.length === 0 || channels.some((c) => typeof c !== "string" || !/^[A-Z0-9-]+$/.test(c)))) {
+    return { ok: false, error: "channels must be a non-empty list of Slack channel ids" };
+  }
+  if (role !== undefined && !HUMAN_ROLES.has(String(role))) {
+    return { ok: false, error: `role "${String(role)}" must be one of ${[...HUMAN_ROLES].join("|")}` };
+  }
 
   if (typeof entityId !== "string" || !ENTITY_ID_PATTERN.test(entityId)) {
     return { ok: false, error: `entityId "${String(entityId)}" must be a lowercase slug (a-z0-9._- , no leading/trailing separator)` };
@@ -199,7 +210,7 @@ export function validateHumanFragment(raw: unknown): ValidateResult {
 
   return {
     ok: true,
-    fragment: { entityId, class: "human", displayName, address, connectorBindings: bindings, prefs: validatedPrefs },
+    fragment: { entityId, class: "human", displayName, address, connectorBindings: bindings, prefs: validatedPrefs, ...(role !== undefined ? { role: role as HumanFragment["role"] } : {}), ...(channels !== undefined ? { channels: channels as string[] } : {}) },
   };
 }
 
@@ -415,16 +426,13 @@ export interface HumanSummary {
   away: boolean;
   bindings: HumanBindingsSummary;
   fragmentPath: string;
+  role: "approver" | "requester";
 }
 
 export type ListHumansResult =
-  | { ok: true; humans: HumanSummary[]; advisory?: string }
+  | { ok: true; humans: HumanSummary[] }
   | { ok: false; error: string };
 
-/** Amendment A1 (founder R5): the human surface is SINGLE-HUMAN. Several fragments render
- *  honestly, but enumeration is display, never management — the advisory names the boundary. */
-export const MULTI_HUMAN_ADVISORY =
-  "several human fragments exist; OpenRig supports one configured human, so they are displayed as found and no command manages several";
 
 /** A field value with its provenance: authored in the fragment, or filled by a default. */
 export interface ProvenancedValue<T> {
@@ -515,9 +523,10 @@ export function listHumans(home: string = getOpenRigHome()): ListHumansResult {
         inboundResolvable: e.connectorBindings.some((b) => b.handle !== undefined),
       },
       fragmentPath: fragmentPathFor(e.entityId, home),
+      role: e.role ?? "approver",
     };
   });
-  return humans.length > 1 ? { ok: true, humans, advisory: MULTI_HUMAN_ADVISORY } : { ok: true, humans };
+  return { ok: true, humans };
 }
 
 /** Read one fragment RAW (for authored-vs-default provenance) + validated. */
@@ -802,6 +811,10 @@ export function loadHumanRegistry(home: string = getOpenRigHome(), opts: { readO
   return { ok: true, entities: proj.entities };
 }
 
+export function isRequesterAddress(address: string, entities: readonly HumanFragment[]): boolean {
+  return entities.find((entity) => entity.address === address)?.role === "requester";
+}
+
 /** Resolve every registered spelling of a human to its canonical external address.
  * Identity comes from the registry entity, never from a domain/suffix allow-list. */
 export function resolveRegisteredHumanAddress(
@@ -815,6 +828,8 @@ export function resolveRegisteredHumanAddress(
     : parsed.kind === "canonical"
       ? parsed.member
       : null;
-  if (!identity) return null;
-  return entities.find((entity) => entity.entityId === identity)?.address ?? null;
+  // A human seat ref like `human-founder@kernel` names its entity by the whole local part.
+  const local = sessionRef.split("@")[0];
+  return entities.find((entity) => entity.entityId === local)?.address
+    ?? (identity ? entities.find((entity) => entity.entityId === identity)?.address ?? null : null);
 }

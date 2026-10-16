@@ -59,8 +59,10 @@ describe("#192 channel map through the real Slack wire", () => {
       home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
       wsFactory: () => { const ws: WsLike = { send: () => {}, close: () => {}, onopen: null, onmessage: null, onclose: null, onerror: null }; sockets.push(ws); return ws; },
       inboundMaxConnects: 1,
+      outboundKick: false,
       fetchImpl: async (url, init) => {
         if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
+        if (/auth\.test|conversations\.members|users\.info|reactions\.(add|remove)$/.test(url)) return reply({ ok: true });
         if (url.includes("conversations.history") || url.includes("conversations.replies")) {
           const raw = String(init?.body ?? "");
           const params = raw.startsWith("{") ? JSON.parse(raw) as Record<string, string> : Object.fromEntries(new URLSearchParams(raw));
@@ -350,15 +352,14 @@ describe("#192 channel map through the real Slack wire", () => {
     expect(posts.at(-1)).toMatchObject({ channel: "C0NEWDEFAULT" });
   });
 
-  it("no map: after the default channel changes, an item's next notification still threads under its root, exactly as before the map existed", async () => {
-    // Pins upstream behaviour for map-less installs: the open root is reused whatever channel it
-    // was posted in, and the post goes to the current default channel with that root's thread_ts.
+  it("no map (fork): after the default channel changes, an item's next notification still threads under its root, in the root's own channel", async () => {
+    // The fork posts into a thread's own channel: a thread_ts names a message only within its channel.
     rewire(undefined, false, "C0OLDDEFAULT");
     const pr = await ask("pr@my-rig");
     expect((await deliver(pr.qitemId)).channel).toBe("C0OLDDEFAULT");
     rewire(undefined, false, "C0NEWDEFAULT");
     const again = await deliverEpisode(pr.qitemId, "episode-2");
-    expect(again).toMatchObject({ channel: "C0NEWDEFAULT", thread_ts: "1.1" });
+    expect(again).toMatchObject({ channel: "C0OLDDEFAULT", thread_ts: "1.1" });
   });
 
   it("after a remap, a root left in the old channel is not reused: the post opens a fresh root in the new channel", async () => {

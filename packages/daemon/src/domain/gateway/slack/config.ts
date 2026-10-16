@@ -35,12 +35,32 @@ export interface SlackConnectorConfig {
   queueUrl: string | null;
   minimumLevelThatPosts: OwnerNotificationLevel;
   minimumLevelThatInterrupts: OwnerNotificationLevel;
+  /** Phase 1: a typed thread reply is conversation; only a button, an `answer:` reply or a ✅
+   *  resolves a decision. False keeps the #96 contract: any typed reply answers the decision. */
+  explicitAnswersOnly: boolean;
+  /** Phase 1: an open request quiet this many days gets a reminder; reminders never close. */
+  staleReminderDays: number;
+  /** The reaction emoji (standard or the workspace's custom name) a top-level message to a human
+   *  shows once its row no longer waits on them. */
+  receipts: { done: string };
+  /** More channels beside `channel`, each landing its new messages on its own seat. */
+  extraChannels: Array<{ id: string; inboundDestination: string }>;
+  /** Seats (session names) whose permission prompts go to Slack as Approve / Deny buttons. */
+  approvalSeats: string[];
+  /** How long an unanswered Slack approval waits before its card's thread is pinged once; the card stays
+   *  answerable while the seat waits. */
+  approvalTimeoutSeconds: number;
   /**
    * #192: optional per-rig / per-seat outbound channels (channel-map.ts). Absent or empty = every
    * item posts to `channel`, as before. Deliberately not in DEFAULT_CONFIG, so a config without
    * it saves and digests unchanged.
    */
   channelMap?: ChannelMapEntry[];
+  /** Optional channel for pure FYI posts: an update with no buttons that is not a reply in a thread.
+   *  Inbound there lands on `inboundDestination`. Absent = those post where everything else does. */
+  notificationsChannel?: string | null;
+  /** Seat that gets a smoke-check row after a merge from Slack; absent = none. */
+  mergeSmokeDestination?: string | null;
 }
 
 export const DEFAULT_CONFIG: SlackConnectorConfig = {
@@ -54,7 +74,21 @@ export const DEFAULT_CONFIG: SlackConnectorConfig = {
   queueUrl: null,
   minimumLevelThatPosts: "NOTICE",
   minimumLevelThatInterrupts: "ALERT",
+  explicitAnswersOnly: true,
+  staleReminderDays: 3,
+  receipts: { done: "white_check_mark" },
+  extraChannels: [],
+  approvalSeats: [],
+  approvalTimeoutSeconds: 900,
 };
+
+export const MAX_APPROVAL_TIMEOUT_SECONDS = 3600;
+
+/** Every configured channel with the seat its new messages land on; `channel` first. */
+export function channelsOf(cfg: SlackConnectorConfig): Array<{ id: string; inboundDestination: string }> {
+  return [...(cfg.channel ? [{ id: cfg.channel, inboundDestination: cfg.inboundDestination }] : []), ...cfg.extraChannels,
+    ...(cfg.notificationsChannel ? [{ id: cfg.notificationsChannel, inboundDestination: cfg.inboundDestination }] : [])];
+}
 
 function validateLevel(field: string, value: unknown): asserts value is OwnerNotificationLevel {
   if (!OWNER_NOTIFICATION_LEVELS.includes(value as OwnerNotificationLevel)) {
@@ -67,6 +101,29 @@ function validateLevel(field: string, value: unknown): asserts value is OwnerNot
 function validateConfig(cfg: SlackConnectorConfig, opts: { reading?: boolean } = {}): void {
   validateLevel("minimumLevelThatPosts", cfg.minimumLevelThatPosts);
   validateLevel("minimumLevelThatInterrupts", cfg.minimumLevelThatInterrupts);
+  if (typeof cfg.receipts?.done !== "string" || !/^[a-z0-9_+'-]+$/.test(cfg.receipts.done)) {
+    throw new Error(`receipts.done must be a Slack emoji name without colons (got ${String(cfg.receipts?.done)})`);
+  }
+  if (!Array.isArray(cfg.extraChannels) || cfg.extraChannels.some((c) => !c || typeof c.id !== "string" || !/^[A-Z0-9-]+$/.test(c.id) || typeof c.inboundDestination !== "string" || !c.inboundDestination)) {
+    throw new Error("extraChannels must be a list of { id: <Slack channel id>, inboundDestination: <seat> }");
+  }
+  if (cfg.mergeSmokeDestination != null && (typeof cfg.mergeSmokeDestination !== "string" || !cfg.mergeSmokeDestination.includes("@"))) {
+    throw new Error(`mergeSmokeDestination must be a seat session name (member@rig) (got ${String(cfg.mergeSmokeDestination)})`);
+  }
+  if (cfg.notificationsChannel != null && (typeof cfg.notificationsChannel !== "string" || !/^[A-Z0-9-]+$/.test(cfg.notificationsChannel))) {
+    throw new Error(`notificationsChannel must be a Slack channel id (got ${String(cfg.notificationsChannel)})`);
+  }
+  const ids = channelsOf(cfg).map((c) => c.id);
+  if (new Set(ids).size !== ids.length) throw new Error("each Slack channel may be configured once (channel + extraChannels + notificationsChannel)");
+  if (!Array.isArray(cfg.approvalSeats) || cfg.approvalSeats.some((s) => typeof s !== "string" || !s.includes("@"))) {
+    throw new Error("approvalSeats must be a list of seat session names (member@rig)");
+  }
+  if (!Number.isInteger(cfg.approvalTimeoutSeconds) || cfg.approvalTimeoutSeconds < 60 || cfg.approvalTimeoutSeconds > MAX_APPROVAL_TIMEOUT_SECONDS) {
+    throw new Error(`approvalTimeoutSeconds must be a whole number of seconds from 60 to ${MAX_APPROVAL_TIMEOUT_SECONDS} (got ${String(cfg.approvalTimeoutSeconds)})`);
+  }
+  if (typeof cfg.staleReminderDays !== "number" || !(cfg.staleReminderDays > 0)) {
+    throw new Error(`staleReminderDays must be a positive number of days (got ${String(cfg.staleReminderDays)})`);
+  }
   validateChannelMap(cfg, { allowUnknownFields: opts.reading });
 }
 
@@ -76,14 +133,15 @@ export function configPathFor(home?: string): string {
 
 export function loadConfig(home?: string): SlackConnectorConfig {
   const p = configPathFor(home);
-  let raw: Partial<SlackConnectorConfig> & { alertTag?: unknown };
+  let raw: Partial<SlackConnectorConfig> & { alertTag?: unknown; feedbackReactions?: unknown };
   try {
-    raw = JSON.parse(fs.readFileSync(p, "utf8")) as Partial<SlackConnectorConfig> & { alertTag?: unknown };
+    raw = JSON.parse(fs.readFileSync(p, "utf8")) as Partial<SlackConnectorConfig> & { alertTag?: unknown; feedbackReactions?: unknown };
   } catch {
     return { ...DEFAULT_CONFIG };
   }
-  const { alertTag: _retiredAlertTag, ...supported } = raw;
-  const cfg = { ...DEFAULT_CONFIG, ...supported };
+  const { alertTag: _retiredAlertTag, feedbackReactions: _retiredFeedback, ...supported } = raw;
+  // Only the done mark remains of the receipts; the retired progress stages are ignored.
+  const cfg = { ...DEFAULT_CONFIG, ...supported, receipts: { done: supported.receipts?.done ?? DEFAULT_CONFIG.receipts.done } };
   validateConfig(cfg, { reading: true });
   return cfg;
 }

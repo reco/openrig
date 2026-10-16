@@ -1,7 +1,7 @@
 // OPR.0.6.0.5 — `rig slack manifest` is offline: it runs on the real lazily-imported daemon
 // surface with no daemon client, no tokens and no network.
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
@@ -96,6 +96,23 @@ describe("next-step routing names `rig slack manifest` first", () => {
     const { deps, logs } = offline({ surface: surface(true) as SlackDeps["surface"] });
     await run(deps, ["status", "--json"]);
     expect(JSON.parse(logs[0]!).next).toBeNull();
+  });
+
+  it("setup records extra channels with their seats", async () => {
+    const { deps } = offline();
+    await run(deps, ["setup", "--channel", "C123", "--extra-channel", "C456=psa-dev@psa", "--reason", "fixture", "--actor", "fixture-operator"]);
+    const saved = JSON.parse(readFileSync(join(deps.home!, "slack-connector.json"), "utf8")) as { extraChannels: unknown };
+    expect(saved.extraChannels).toEqual([{ id: "C456", inboundDestination: "psa-dev@psa" }]);
+  });
+
+  it("setup on an enabled connector says how to apply the change; a disabled one does not", async () => {
+    const { deps, logs } = offline();
+    await run(deps, ["setup", "--channel", "C123", "--reason", "fixture", "--actor", "fixture-operator"]);
+    expect(logs.join("\n")).not.toContain("rig slack disable && rig slack enable");
+    const file = join(deps.home!, "slack-connector.json");
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), enabled: true }));
+    await run(deps, ["setup", "--extra-channel", "C456=psa-dev@psa", "--reason", "fixture", "--actor", "fixture-operator"]);
+    expect(logs.join("\n")).toContain("run `rig slack disable && rig slack enable` to apply this change");
   });
 
   it("setup's next-step hint starts with the manifest", async () => {

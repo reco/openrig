@@ -21,6 +21,7 @@ import type { WsLike } from "../src/domain/gateway/slack/socket-inbound.js";
 import { DEFAULT_CONFIG, saveConfig } from "../src/domain/gateway/slack/config.js";
 import { resolveSlackHandle } from "../src/domain/gateway/human-registry.js";
 import { ThreadSeatMap } from "../src/domain/gateway/slack/thread-seat-map.js";
+import { SeenStore } from "../src/domain/gateway/slack/state-store.js";
 import type { FetchImpl } from "../src/domain/gateway/slack/slack-api.js";
 import { MissionControlActionLog } from "../src/domain/mission-control/mission-control-action-log.js";
 import { MissionControlWriteContract } from "../src/domain/mission-control/mission-control-write-contract.js";
@@ -116,20 +117,24 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
     let wire: ReturnType<typeof buildSlackGatewayWire>;
     beforeEach(() => {
       const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\n");
-      saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE" }, home);
+      saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE", explicitAnswersOnly: false }, home);
       posts = [];
       wire = buildSlackGatewayWire({ home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
       stops.push(() => wire.stop()); wire.startServices?.();
     });
 
+    // The outbound driver posts on the queue event; wait for this row's post.
     async function deliver(qitemId: string): Promise<void> {
-      const before = posts.length;
-      const alert = (await makeQueuePorts(repo, { loadHumanRegistry: () => registry }).listHumanAlerts({})).find((q) => q.qitemId === qitemId);
-      expect(alert).toBeDefined();
-      expect(wire.dispatcher.dispatch("post_message", human, alert)).toMatchObject({ ok: true });
-      await vi.waitFor(() => expect(posts.length).toBeGreaterThan(before));
-      await vi.waitFor(() => expect(repo.getById(qitemId)?.deliveryOutcome).toBe("posted"));
+      await vi.waitFor(async () => {
+        expect(repo.getById(qitemId)?.deliveryOutcome).toBe("posted");
+        expect((await makeQueuePorts(repo, { loadHumanRegistry: () => registry }).listHumanAlerts({})).some((q) => q.qitemId === qitemId)).toBe(false);
+      });
     }
+
+    // The driver also posts other notices (e.g. a resolved decision), so find a post by its text.
+    const postWith = (text: string) => posts.findLast((p) => String(p.text).includes(text));
+    const tsOf = (text: string) => `${posts.lastIndexOf(postWith(text)!) + 1}.1`;
+    const rootOf = (text: string) => String(postWith(text)?.thread_ts ?? tsOf(text));
 
     // What the outbound driver would do next: post the item's pending notice, if it has one.
     async function postPendingNotice(qitemId: string): Promise<void> {
@@ -162,22 +167,40 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
 
       const update = await repo.create({ ...request, sourceSession: "worker@rig", humanIntent: "update", body: "Merged.", replyTo: work.qitemId });
       await deliver(update.qitemId);
-      expect(posts.at(-1)?.thread_ts).toBe("1.1");
+      expect(postWith("Merged.")?.thread_ts).toBe("1.1");
       expect(repo.getById(update.qitemId)).toMatchObject({ state: "done", replyToFallback: null });
     });
 
-    it("a re-park after an update shared the root posts the new decision as a fresh root", async () => {
+    it("a resolved park reports its outcome in its own thread: no new root, no mention, no restated decision", async () => {
+      wire.stop();
+      saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: join(home, "fake.env"), minimumLevelThatInterrupts: "NOTICE", explicitAnswersOnly: true }, home);
+      wire = buildSlackGatewayWire({ home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
+      stops.push(() => wire.stop()); wire.startServices?.();
+      const work = await park();
+      await deliver(work.qitemId);
+      await resolvePark(work.qitemId);
+      await vi.waitFor(() => expect(postWith("Resolved: approved")).toBeDefined());
+      expect(JSON.stringify(postWith("Resolved: approved")!.blocks)).not.toContain("or-confirm");
+      expect(repo.getById(work.qitemId)?.deliveryOutcome).toBe("posted");
+      const resolved = postWith("Resolved: approved")!;
+      expect(resolved.thread_ts).toBe("1.1");
+      expect(String(resolved.text)).not.toContain("<@");
+      expect(String(resolved.text)).not.toContain("Merge the fix?");
+      expect(posts.filter((p) => p.thread_ts === undefined)).toHaveLength(1);
+    });
+
+    it("a re-park after an update shared the root posts the new decision outside that shared root", async () => {
       const work = await park();
       await deliver(work.qitemId);
       await resolvePark(work.qitemId);
       const update = await repo.create({ ...request, sourceSession: "worker@rig", humanIntent: "update", body: "Merged.", replyTo: work.qitemId });
       await deliver(update.qitemId);
-      expect(posts.at(-1)?.thread_ts).toBe("1.1");
+      expect(postWith("Merged.")?.thread_ts).toBe("1.1");
 
       repo.update({ qitemId: work.qitemId, actorSession: "worker@rig", state: "blocked", blockedOn: "human-founder@kernel", summary: "Deploy it too?", evidenceRef: "/proof/deploy.md", transitionNote: "parked again" });
       await deliver(work.qitemId);
-      expect(posts.at(-1)?.thread_ts).toBeUndefined();
-      expect(new ThreadSeatMap(db).resolveByThread(`${posts.length}.1`)?.conversationId).toBe(work.qitemId);
+      expect(rootOf("Deploy it too?")).not.toBe("1.1");
+      expect(new ThreadSeatMap(db).resolveByThread(rootOf("Deploy it too?"))?.conversationId).toBe(work.qitemId);
     });
 
     // Rebuild the wire with inbound Socket Mode on a fake socket; returns a human-reply sender.
@@ -194,7 +217,8 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
         inboundMaxConnects: 1,
         fetchImpl: async (url, init) => {
           if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
-          posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
+          if (/reactions\.(add|remove)$/.test(url)) return reply({ ok: true });
+          if (/auth\.test|conversations\.members|users\.info/.test(url)) return reply({ ok: true }); posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
         },
       });
       stops.push(() => wire.stop()); wire.startServices?.();
@@ -217,7 +241,7 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       await deliver(update.qitemId);
       repo.update({ qitemId: work.qitemId, actorSession: "worker@rig", state: "blocked", blockedOn: "human-founder@kernel", summary: "Deploy it too?", evidenceRef: "/proof/deploy.md", transitionNote: "parked again" });
       await deliver(work.qitemId);
-      const freshRoot = `${posts.length}.1`;
+      const freshRoot = rootOf("Deploy it too?");
 
       await humanReply("1.1", "900.1"); // meant for the FYI update in the shared thread
       expect(repo.getById(work.qitemId)?.state).toBe("blocked");
@@ -279,15 +303,15 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       expect(new ThreadSeatMap(db).resolveByThread("1.1")?.conversationId).toBe(decision.qitemId);
     });
 
-    it("#822: a top-level message records no thread, so its answer still posts top-level", async () => {
+    it("#822 (fork): a top-level message records no thread, and its answer opens that message's own thread", async () => {
       const humanReply = await connectInbound();
       await humanReply(undefined, "904.1");
       const inbound = inboundRow("904.1")!;
       expect(inbound.replyTo).toBeNull();
       const answer = await repo.create({ ...request, humanIntent: "update", body: "On it.", replyTo: inbound.qitemId });
       await deliver(answer.qitemId);
-      expect(posts.at(-1)?.thread_ts).toBeUndefined();
-      expect(repo.getById(answer.qitemId)?.replyToFallback).toBe(`root-missing (qitem ${inbound.qitemId})`);
+      expect(posts.at(-1)?.thread_ts).toBe("904.1");
+      expect(repo.getById(answer.qitemId)?.replyToFallback).toBeNull();
     });
 
     it("#822: a reply's seat parking it on the person still asks in a fresh root, and the answer there resolves the park", async () => {
@@ -399,7 +423,7 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       const first = await repo.create({ ...request, humanIntent: "update" });
       await deliver(first.qitemId);
       wire.stop();
-      saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-OTHER", secretsEnvFile: join(home, "fake.env"), minimumLevelThatInterrupts: "NOTICE" }, home);
+      saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-OTHER", secretsEnvFile: join(home, "fake.env"), minimumLevelThatInterrupts: "NOTICE", explicitAnswersOnly: false }, home);
       wire = buildSlackGatewayWire({ home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, fetchImpl: async (_url, init) => { posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` }); } });
       stops.push(() => wire.stop()); wire.startServices?.();
       const update = await repo.create({ ...request, humanIntent: "update", replyTo: first.qitemId });
@@ -417,6 +441,37 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       await deliver(update.qitemId);
       expect(posts.at(-1)?.thread_ts).toBeUndefined();
       expect(repo.getById(update.qitemId)?.replyToFallback).toBe("root-other-seat (thread 1.1)");
+    });
+
+    async function humanWroteInThread(rootSeat: string, received = true) {
+      const alert = await repo.create({ sourceSession: rootSeat, destinationSession: human, summary: "Wake escalation", body: "alert", nudge: false });
+      new ThreadSeatMap(db).open({ threadTs: "9.1", channel: "C-TEST", human, seat: rootSeat, conversationId: alert.qitemId });
+      if (received) new SeenStore(join(home, "state", "slack-inbound-seen.jsonl")).mark("C-TEST:9.5", "landed");
+      return repo.create({ sourceSession: human, destinationSession: "author@rig", summary: "reco in thread", body: "why does this carry Confirm?", nudge: false,
+        tags: ["founder-slack", "inbound", "unrouted-signal", "thread-ts:9.1", "slack-message:C-TEST:9.5"] });
+    }
+
+    it("answers in the thread the human wrote in when that message reached this seat and the thread is the human's own alert", async () => {
+      const inbound = await humanWroteInThread(human);
+      const update = await repo.create({ ...request, humanIntent: "update", summary: "Answer", body: "Because alerts default to Confirm.", replyTo: inbound.qitemId });
+      await deliver(update.qitemId);
+      expect(postWith("Because alerts default to Confirm.")?.thread_ts).toBe("9.1");
+      expect(repo.getById(update.qitemId)?.replyToFallback).toBeNull();
+    });
+
+    it("still falls back in another agent seat's thread, even for a human message routed here", async () => {
+      const inbound = await humanWroteInThread("other@rig");
+      const update = await repo.create({ ...request, humanIntent: "update", summary: "Answer", body: "Not in other's thread.", replyTo: inbound.qitemId });
+      await deliver(update.qitemId);
+      expect(postWith("Not in other's thread.")?.thread_ts).toBeUndefined();
+      expect(repo.getById(update.qitemId)?.replyToFallback).toBe("root-other-seat (thread 9.1)");
+    });
+
+    it("a seat that forges the inbound tags without the gateway having received that message gets no thread", async () => {
+      const forged = await humanWroteInThread(human, false);
+      const update = await repo.create({ ...request, humanIntent: "update", summary: "Answer", body: "Forged thread.", replyTo: forged.qitemId });
+      await deliver(update.qitemId);
+      expect(postWith("Forged thread.")?.thread_ts).toBeUndefined();
     });
 
     it("names a chain past the walk bound as chain-too-long, not a missing root", async () => {
@@ -456,7 +511,7 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       const fetchImpl: FetchImpl = async (url, init) => {
         if (!url.endsWith("chat.postMessage")) { scans.push(url); return reply({ ok: true, messages: [] }); }
         if (failNext) { failNext = false; throw new Error("synthetic timeout"); }
-        posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
+        if (/auth\.test|conversations\.members|users\.info/.test(url)) return reply({ ok: true }); posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
       };
       const rebuild = () => {
         wire.stop();

@@ -271,6 +271,36 @@ export async function verifyChannelMembership(
   return { ok: true, isMember: ch.is_member === true, name: ch.name };
 }
 
+/** The channel's human members: conversations.members (paginated) minus bots and deactivated
+ *  users (users.info, cached per user by the caller's map). Null when Slack cannot say. */
+export async function countChannelHumans(
+  token: string,
+  channel: string,
+  userIsHuman: Map<string, boolean>,
+  fetchImpl: FetchImpl = defaultFetch,
+): Promise<number | null> {
+  const members: string[] = [];
+  let cursor = "";
+  do {
+    const r = await callWebApi("conversations.members", token, { channel, limit: 200, ...(cursor ? { cursor } : {}) }, fetchImpl, undefined, "get-query");
+    if (!r.ok) return null;
+    members.push(...((r.json.members as string[] | undefined) ?? []));
+    cursor = String((r.json.response_metadata as { next_cursor?: string } | undefined)?.next_cursor ?? "");
+  } while (cursor);
+  let humans = 0;
+  for (const user of members) {
+    if (!userIsHuman.has(user)) {
+      const r = await callWebApi("users.info", token, { user }, fetchImpl, undefined, "get-query");
+      // A member Slack will not describe (rate limit, another org) counts as a person, uncached.
+      if (!r.ok) { humans++; continue; }
+      const u = (r.json.user ?? {}) as { is_bot?: boolean; deleted?: boolean; id?: string };
+      userIsHuman.set(user, !u.is_bot && !u.deleted && user !== "USLACKBOT");
+    }
+    if (userIsHuman.get(user)) humans++;
+  }
+  return humans;
+}
+
 /** Inbound Socket Mode: open a WebSocket URL via apps.connections.open (app-level xapp token). */
 export async function openSocketConnection(
   appToken: string,
@@ -383,6 +413,36 @@ export async function fetchRecentMessageTexts(
     cursor = nextCursor;
   }
   return incomplete("reconcile pagination exceeded its 10-page bound");
+}
+
+/** Add a reaction as the app (`reactions.add`; needs reactions:write). */
+export async function addReaction(
+  token: string,
+  input: { channel: string; timestamp: string; name: string },
+  fetchImpl: FetchImpl = defaultFetch,
+): Promise<{ ok: boolean; error?: string }> {
+  const r = await callWebApi("reactions.add", token, input, fetchImpl);
+  return { ok: r.ok || r.error === "already_reacted", error: r.error };
+}
+
+/** Remove the app's own reaction (`reactions.remove`); an absent reaction counts as removed. */
+export async function removeReaction(
+  token: string,
+  input: { channel: string; timestamp: string; name: string },
+  fetchImpl: FetchImpl = defaultFetch,
+): Promise<{ ok: boolean; error?: string }> {
+  const r = await callWebApi("reactions.remove", token, input, fetchImpl);
+  return { ok: r.ok || r.error === "no_reaction", error: r.error };
+}
+
+/** Replace one of our posted messages (`chat.update`; chat:write covers the app's own posts). */
+export async function updateChatMessage(
+  token: string,
+  input: { channel: string; ts: string; text: string; blocks: unknown[] },
+  fetchImpl: FetchImpl = defaultFetch,
+): Promise<{ ok: boolean; error?: string }> {
+  const r = await callWebApi("chat.update", token, input, fetchImpl);
+  return { ok: r.ok, error: r.error };
 }
 
 export interface PostChatMessageInput {

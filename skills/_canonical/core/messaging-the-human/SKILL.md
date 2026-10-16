@@ -87,10 +87,50 @@ that item. Send the update from the seat that owns that thread: the seat that
 parked the row, or the author of the earlier item. A human reply in a thread
 reaches its owning seat, so an update from any other seat posts as a new
 message. It also posts as a new message, rather than being refused, if the
-earlier thread is missing or closed, or while the earlier item still waits on
-the human (a pending human decision, or a row parked on the human), since a
-reply in that thread would answer the decision. In every such case the
-`--verify` result says `threaded: false` with the reason.
+earlier thread is missing or closed. With the Slack connector's
+`explicitAnswersOnly` off, it also posts as a new message while the earlier item
+still waits on the human, since any reply in that thread would answer the
+decision. In every such case the `--verify` result says `threaded: false` with
+the reason.
+
+With `explicitAnswersOnly` on, a human's typed reply in a decision's thread is
+**conversation**: it reaches you tagged `conversation` and resolves nothing.
+Answer it in the same thread with `--human-intent update --reply-to
+<decision-id>`. When you believe you have their answer, offer it with
+`--confirm "<your reading>"` on that update; never treat prose such as "yes" as
+approval. A status, an answer or other information for the human is
+`--human-intent update` (no buttons); without `--human-intent` the request is a
+decision and shows a Confirm button. Pick the kind that fits:
+- an action to approve (merge a PR, close an issue): a decision with
+  `--confirm "<the action>"`; it shows that one button;
+- a plan or long text to approve: a plain decision; it shows "Confirm";
+- a choice: `--human-questions-file` option buttons;
+- information: `--human-intent update`; no buttons and no acknowledgement.
+  Silence means read; if the human disagrees, it arrives as a thread reply.
+A decision with buttons of its own (`--confirm` or `--human-questions-file`) may
+also go into an earlier request's thread with `--reply-to`; its clicks answer it,
+not the thread's request.
+On every kind the human may type instead; that reaches you as conversation.
+Always answer. For a yes/go decision,
+put the action on a button with
+`--confirm "<call to action>"` on the decision itself (e.g. "Build it", "Write the
+issue"); a click approves with exactly that text. The decision resolves, once,
+on a button click, a reply starting with `answer:`, a Confirm click (with
+exactly your stated reading), or a ✅ on a Confirm offer (a ✅ on a decision's own
+message does nothing). After a click, the buttons
+turn into the outcome; an offer that lost to another answer shows "Not used". Answering does not close the request. Link its outcome with
+`--link pr:<url>`, `--link issue:<url>` or `--link qitem:<id>` on `rig queue
+update` or `create`: the thread closes once every linked outcome is finished, or
+when the human replies `cancel`. A request quiet for `staleReminderDays` (default
+3) reminds the human while unanswered and you once answered; reminders close
+nothing.
+
+Write Slack mrkdwn, not plain prose: bold item labels, `inline code` for
+commands, paths and identifiers, triple-backtick blocks for multi-line code or
+output, _italic_, ~strike~, and one blank line between list items and sections.
+The `--summary` is the one heading (without one, the body starts the message);
+the body never adds or repeats a bold heading, and bold is only for item labels. Only `&`, `<` and `>` are escaped, so this
+formatting arrives intact.
 
 To answer a reply the human typed inside one of your threads, `--reply-to` the
 row their reply landed as. The update posts in that thread unless one of the
@@ -105,7 +145,9 @@ options (labels up to 75 characters, at most one recommended). Slack shows each
 question as a row of buttons. Each click records that answer on the item, and
 the decision resolves once every question has one. You then receive one reply
 row listing the answers. In `humanAnswers`, clicked answers are option-id strings.
-A whole typed reply is an object:
+The human may instead answer in the thread (any reply with `explicitAnswersOnly`
+off, an `answer:` reply with it on), so read the reply rather than assuming an
+option was picked. A whole typed reply that answers is an object:
 `{kind: "typed-reply", text: "…", placement: "first-unanswered", unansweredCount: N}`.
 It is placed automatically under the first unanswered question; the person did
 not select that question. `N` counts the other question slots still empty in

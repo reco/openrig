@@ -40,6 +40,19 @@ describe("A3 human-fragment validation (add-time == load-time)", () => {
     expect(r.ok).toBe(true);
   });
 
+  it("keeps a channel binding and rejects an empty or malformed one", () => {
+    const bound = validateHumanFragment(fragment({ channels: ["C0PSA"] }));
+    expect(bound.ok && bound.fragment.channels).toEqual(["C0PSA"]);
+    expect(validateHumanFragment(fragment({ channels: [] })).ok).toBe(false);
+    expect(validateHumanFragment(fragment({ channels: ["#psa"] })).ok).toBe(false);
+  });
+
+  it("keeps a requester role and rejects an unknown one", () => {
+    const requester = validateHumanFragment(fragment({ role: "requester" }));
+    expect(requester.ok && requester.fragment.role).toBe("requester");
+    expect(validateHumanFragment(fragment({ role: "admin" as HumanFragment["role"] })).ok).toBe(false);
+  });
+
   it("rejects an unknown class (closed enum)", () => {
     const r = validateHumanFragment(fragment({ class: "agent" as HumanFragment["class"] }));
     expect(r.ok).toBe(false);

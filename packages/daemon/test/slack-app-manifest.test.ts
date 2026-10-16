@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import { parse } from "yaml";
 import { buildSlackAppManifest, CANONICAL_MANIFEST_SOURCES } from "../src/domain/gateway/slack/manifest.js";
-import { BASELINE_REQUIRED_SCOPES, EVENT_SUBSCRIPTIONS, FEATURE_SCOPES } from "../src/domain/gateway/slack/capabilities.js";
+import { BASELINE_REQUIRED_SCOPES, EVENT_SUBSCRIPTIONS, FEATURE_SCOPES, MEMBER_EVENT_TYPES, REACTION_EVENT_TYPES } from "../src/domain/gateway/slack/capabilities.js";
 import { DEFAULT_CONFIG } from "../src/domain/gateway/slack/config.js";
 import { ingestDecision } from "../src/domain/gateway/slack/inbound.js";
 import { gatewayRoutes } from "../src/routes/gateway.js";
@@ -11,8 +11,9 @@ const setOf = (xs: Iterable<string>) => new Set(xs);
 
 // Payload types to probe the REAL admission gate with: the admitted ones plus plausible others,
 // including a subscription name that is not itself a payload type.
-const PROBE_TYPES = ["message", "app_mention", "reaction_added", "member_joined_channel", "message.channels", "file_shared"];
+const PROBE_TYPES = ["message", "app_mention", "reaction_added", "member_joined_channel", "member_left_channel", "message.channels", "file_shared"];
 const admits = (type: string) => {
+  if (REACTION_EVENT_TYPES.includes(type) || MEMBER_EVENT_TYPES.includes(type)) return true;
   const d = ingestDecision({ type, user: "U1", text: "hello" });
   return d.ingest || d.reason !== "type";
 };
@@ -37,13 +38,13 @@ describe("shipped Slack app manifest — canonical sources", () => {
   it("subscribes to events for exactly the payload types the inbound gate admits", () => {
     const admittedByBehavior = setOf(PROBE_TYPES.filter(admits));
     const subscribedPayloadTypes = setOf(Object.entries(EVENT_SUBSCRIPTIONS)
-      .filter(([, m]) => bundle.events.includes(m.subscription)).map(([type]) => type));
+      .filter(([, ms]) => ms.every((m) => bundle.events.includes(m.subscription))).map(([type]) => type));
     expect(admittedByBehavior).toEqual(subscribedPayloadTypes);
     expect(setOf(bundle.manifest.settings.event_subscriptions.bot_events)).toEqual(setOf(bundle.events));
   });
 
   it("requests the scope Slack requires for every subscribed event", () => {
-    for (const m of Object.values(EVENT_SUBSCRIPTIONS)) {
+    for (const m of Object.values(EVENT_SUBSCRIPTIONS).flat()) {
       if (bundle.events.includes(m.subscription)) expect(scopeSet.has(m.scope)).toBe(true);
     }
   });
@@ -65,6 +66,12 @@ describe("shipped Slack app manifest — canonical sources", () => {
     expect(bundle.url.slice(prefix.length)).not.toMatch(/[\s\n:]/);
   });
 
+  it("works in private channels: message.groups with groups:history, and groups:read for verify", () => {
+    expect(bundle.events).toEqual(expect.arrayContaining(["message.channels", "message.groups", "reaction_added"]));
+    expect(scopeSet.has("groups:history")).toBe(true);
+    expect(scopeSet.has("groups:read")).toBe(true);
+  });
+
   it("carries no private instance, host, rig, seat or workspace identifiers", () => {
     const text = bundle.yaml + bundle.url + JSON.stringify(bundle);
     for (const forbidden of [/esoteric/i, /v-openrig/i, /mm2/i, /openrig-build/i, /\/Users\//, /kernel/i, /@[a-z0-9-]+\b/i, /\bT0[A-Z0-9]{6,}\b/]) {
@@ -75,24 +82,24 @@ describe("shipped Slack app manifest — canonical sources", () => {
 
 describe("shipped Slack app manifest — mutation controls", () => {
   it("refuses an admitted payload type that has no subscription mapping", () => {
-    expect(() => buildSlackAppManifest({ ...CANONICAL_MANIFEST_SOURCES, admittedEventTypes: ["message", "app_mention", "member_joined_channel"] }))
-      .toThrow(/"member_joined_channel" has no subscription mapping/);
+    expect(() => buildSlackAppManifest({ ...CANONICAL_MANIFEST_SOURCES, admittedEventTypes: ["message", "app_mention", "file_shared"] }))
+      .toThrow(/"file_shared" has no subscription mapping/);
   });
 
   it("refuses a subscribed event whose scope is not requested", () => {
-    expect(() => buildSlackAppManifest({ ...CANONICAL_MANIFEST_SOURCES, featureScopes: ["files:read", "files:write"] }))
+    expect(() => buildSlackAppManifest({ ...CANONICAL_MANIFEST_SOURCES, featureScopes: ["files:read", "files:write", "groups:history", "groups:read", "reactions:read"] }))
       .toThrow(/needs scope "app_mentions:read"/);
   });
 
   it("changes the scope set when a feature scope is dropped (the equality test would fail)", () => {
-    const narrowed = buildSlackAppManifest({ ...CANONICAL_MANIFEST_SOURCES, featureScopes: ["files:write", "app_mentions:read", "reactions:read"] });
+    const narrowed = buildSlackAppManifest({ ...CANONICAL_MANIFEST_SOURCES, featureScopes: ["files:write", "app_mentions:read", "reactions:read", "groups:history", "groups:read"] });
     expect(setOf(narrowed.scopes)).not.toEqual(setOf(buildSlackAppManifest().scopes));
   });
 
   it("would detect the inbound gate admitting a type the manifest does not subscribe to", () => {
     // Behavior-level check: a probe type the gate rejects today must stay out of the manifest.
-    expect(admits("member_joined_channel")).toBe(false);
-    expect(buildSlackAppManifest().events).not.toContain("member_joined_channel");
+    expect(admits("file_shared")).toBe(false);
+    expect(buildSlackAppManifest().events).not.toContain("file_shared");
   });
 
   it("subscribes to reactions through an optional feature scope, so verify does not require it (#899)", () => {

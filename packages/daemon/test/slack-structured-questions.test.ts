@@ -1,7 +1,7 @@
 // #193 — a decision may carry 1–4 structured questions, each with 2–4 clickable options.
 // Slack renders them as buttons; a click (block_actions over Socket Mode) records that
 // question's answer on the same item, and the decision resolves once every question has one.
-// A typed reply in the thread still resolves the decision as before ("Other").
+// An `answer:` reply in the thread resolves the decision with free text ("Other").
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -142,12 +142,20 @@ describe("structured human questions (#193)", () => {
     type Block = { type: string; block_id?: string; text?: { text: string }; elements?: Array<{ type: string; action_id: string; value: string; style?: string; text: { type: string; text: string } }> };
     const render = () => buildOutboundMessage({ qitemId: "q", summary: "Two quick questions", body: "Pick one for each.", humanQuestions: questions }, { sourceLabel: "proof" });
 
-    it("renders one button row per question, the recommended option styled primary", () => {
+    it("a long recommended label is shortened to fit the button with its suffix", () => {
+      const long = "x".repeat(70);
+      const msg = buildOutboundMessage({ qitemId: "q", summary: "s", body: "b", humanQuestions: [{ id: "a", question: "Pick?", options: [{ id: "l", label: long, recommended: true }, { id: "s", label: "Short" }] }] }, { sourceLabel: "proof" });
+      const button = (msg.blocks as Block[]).find((b) => b.type === "actions")!.elements![0]!;
+      expect(button.text.text.length).toBeLessThanOrEqual(75);
+      expect(button.text.text.endsWith("… (recommended)")).toBe(true);
+    });
+
+    it("renders one button row per question, the recommended option said in words (green reads as selected)", () => {
       const blocks = render().blocks as Block[];
       const rows = blocks.filter((b) => b.type === "actions");
       expect(rows.map((r) => r.block_id)).toEqual(["or-q:db", "or-q:ship"]);
       expect(rows[0]!.elements).toEqual([
-        { type: "button", action_id: "or-opt:pg", value: "pg", style: "primary", text: { type: "plain_text", text: "Postgres" } },
+        { type: "button", action_id: "or-opt:pg", value: "pg", text: { type: "plain_text", text: "Postgres (recommended)" } },
         { type: "button", action_id: "or-opt:sqlite", value: "sqlite", text: { type: "plain_text", text: "SQLite" } },
       ]);
       // Each row follows its question's text.
@@ -167,6 +175,18 @@ describe("structured human questions (#193)", () => {
       const json = JSON.stringify(blocks);
       expect(json).not.toContain("<!channel>");
       expect(json).toContain("&lt;!channel&gt;");
+    });
+
+    it("a row without a summary has no headline: the body starts the message", () => {
+      const m = buildOutboundMessage({ qitemId: "q1", summary: null, body: "Status: all green." }, { sourceLabel: "rig" });
+      expect(m.text).not.toContain("(no summary)");
+      expect(m.text.startsWith("Status: all green.")).toBe(true);
+      expect((m.blocks[0] as { text: { text: string } }).text.text).toBe("Status: all green.");
+    });
+
+    it("keeps Slack formatting characters in agent text: only & < > are escaped", () => {
+      const m = buildOutboundMessage({ qitemId: "q1", summary: "Plan", body: "*bold* `code` _it_ ~old~\n```\nrig ps\n```" }, { sourceLabel: "rig" });
+      expect(m.text).toContain("*bold* `code` _it_ ~old~\n```\nrig ps\n```");
     });
 
     it("renders a plain decision exactly as before", () => {
@@ -189,7 +209,7 @@ describe("structured human questions (#193)", () => {
     beforeEach(async () => {
       const secrets = join(home, "fake.env");
       writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
-      saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE" }, home);
+      saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-TEST", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE", explicitAnswersOnly: false }, home);
       posts = [];
       failThreadPosts = 0;
       rateLimitThreadPosts = 0;
@@ -206,6 +226,7 @@ describe("structured human questions (#193)", () => {
         inboundRetryIntervalMs: 50, // dead-lettered clicks retry promptly
         fetchImpl: async (url, init) => {
           if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
+          if (/auth\.test|conversations\.members|users\.info/.test(url)) return reply({ ok: true });
           const body = JSON.parse(String(init?.body));
           if (body.thread_ts && failThreadPosts > 0) { failThreadPosts -= 1; return reply({ ok: false, error: "internal_error" }); }
           if (body.thread_ts && rateLimitThreadPosts > 0) {
@@ -289,6 +310,21 @@ describe("structured human questions (#193)", () => {
       expect(answer?.body).toContain("Ship this week?: Yes");
     });
 
+    it("shows each pick on the card as it is answered, and every pick once all are answered", async () => {
+      await click("db", "pg");
+      const partial = posts.filter((p) => p.ts === "1.1");
+      expect(partial).toHaveLength(1);
+      expect(String(partial[0]?.text)).toContain("✓ Postgres");
+      expect(JSON.stringify(partial[0]?.blocks)).not.toContain("or-opt:pg");
+      expect(JSON.stringify(partial[0]?.blocks)).toContain("or-opt:yes");
+      await click("ship", "yes");
+      const edits = posts.filter((p) => p.ts === "1.1");
+      expect(edits).toHaveLength(2);
+      expect(JSON.stringify(edits[1]?.blocks)).not.toContain("or-opt:");
+      expect(String(edits[1]?.text)).toContain("Answered: Which database?: Postgres");
+      expect(String(edits[1]?.text)).toContain("Answered: Ship this week?: Yes");
+    });
+
     it("lands exactly one reply when the final click is replayed or clicked again", async () => {
       await click("db", "pg");
       await click("ship", "no", { actionTs: "2000.1" });
@@ -367,6 +403,12 @@ describe("structured human questions (#193)", () => {
       await click("db", "pg");
       expect(await click("ship", "yes")).toMatchObject({ status: "refused", reason: "resolve-not-applicable" });
       expect(threadAcks().some((t) => t.startsWith("All answered"))).toBe(false);
+    });
+
+    it("resolves on an `answer:` reply in the thread (the \"Other\" answer)", async () => {
+      socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-typed", type: "events_api", payload: { event: { type: "message", user: "UFOUNDER", text: "answer: Neither — use DuckDB", ts: "3000.1", thread_ts: "1.1", channel: "C-TEST" } } }) });
+      await vi.waitFor(() => expect(repo.getById(decisionId)?.state).toBe("done"));
+      expect(repliesToSeat()[0]?.body).toContain("Neither — use DuckDB");
     });
 
     // A refused or unrecorded click is answered in the thread, once per click (0.6.9).

@@ -23,6 +23,7 @@ export interface QueueItem {
   humanDetail?: string | null;
   replyTo?: string | null;
   humanQuestions?: HumanQuestion[] | null;
+  humanConfirm?: string | null;
   summary?: string | null;
   body?: string | null;
   evidenceRef?: string | null;
@@ -54,6 +55,7 @@ export interface CreateQitemInput {
   body: string;
   priority?: string;
   tags?: string[];
+  nudge?: boolean;
   /** #822 — the item whose OpenRig thread this reply was typed in (the route's correlation). */
   inReplyTo?: string;
 }
@@ -81,6 +83,9 @@ function project(q: RepoQueueItem, transition: QueueTransition, entities: readon
   } else {
     destinationSession = resolveRegisteredHumanAddress(q.destinationSession, entities);
     sourceSession = q.sourceSession;
+    // A row a human addressed to themselves is never an ask to them: posting it back would offer
+    // them a button on their own message (a Confirm click there created the next such row).
+    if (destinationSession && resolveRegisteredHumanAddress(q.sourceSession, entities) === destinationSession) return null;
   }
   if (!destinationSession) return null;
   return {
@@ -94,12 +99,16 @@ function project(q: RepoQueueItem, transition: QueueTransition, entities: readon
     humanDetail: q.humanDetail,
     replyTo: q.replyTo ?? null,
     humanQuestions: q.humanQuestions ?? null,
+    humanConfirm: q.humanConfirm ?? null,
     summary: (r.summary as string | null) ?? null,
     body: (r.body as string | null) ?? null,
     evidenceRef: (r.evidenceRef as string | null) ?? null,
     notificationKey: `${q.qitemId}:${transition.transitionId}`,
     ownerNotificationKind: transition.ownerNotificationKind,
     ownerNotificationLevel: transition.ownerNotificationLevel,
+    ...(transition.ownerNotificationKind === "human-decision-resolved"
+      ? { summary: `Resolved: ${transition.transitionNote ?? "done"}`, body: "", humanDetail: null, humanQuestions: null, humanConfirm: null, evidenceRef: null }
+      : {}),
   };
 }
 
@@ -144,6 +153,7 @@ export function makeQueuePorts(
         summary: input.summary,
         priority: (input.priority ?? "routine") as never,
         tags: input.tags ?? ["founder-slack", "inbound"],
+        ...(input.nudge === false ? { nudge: false } : {}),
         inboundReplyTo: input.inReplyTo ?? null,
       });
       return (created as unknown as { qitemId: string }).qitemId;

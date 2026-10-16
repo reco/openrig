@@ -100,8 +100,8 @@ describe("gateway human lifecycle (S12, amended A1: single-human surface): list 
     }
   });
 
-  it("A1 advisory receipt: several fragments render HONESTLY plus the one-human advisory (display, never management)", () => {
-    seedAna(home); // hand-authored second human — the amendment's multi-fragment case
+  it("several humans render sorted, each with its role, and no advisory", () => {
+    seedAna(home);
     const res = listHumans(home);
     expect(res.ok).toBe(true);
     if (!res.ok) return;
@@ -111,8 +111,8 @@ describe("gateway human lifecycle (S12, amended A1: single-human surface): list 
     expect(ana.away).toBe(true);
     expect(ana.bindings.count).toBe(2);
     expect(ana.bindings.inboundResolvable).toBe(true);
-    expect(res.advisory).toContain("one configured human");
-    expect(res.advisory).not.toMatch(/\d+\.\d+\.\d+/); // no promise of a release that manages several
+    expect(ana.role).toBe("approver");
+    expect("advisory" in res).toBe(false);
   });
 
   it("list is a READ: it does not touch the projection file (byte receipt)", () => {

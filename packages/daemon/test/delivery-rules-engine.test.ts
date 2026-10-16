@@ -9,7 +9,7 @@
 // exhausts in the same breath, and no digest/deferral machinery exists.
 // Every section below fails at base for exactly those reasons.
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -326,6 +326,20 @@ describe("OPR.0.5.6.1 §3 — the gateway consults the engine before dispatch", 
       },
     });
   }
+
+  it("a park on a human posts on the queue event, not at the next poll", async () => {
+    const posts: Array<Record<string, unknown>> = [];
+    const wire = wireWith({ deliveryClass: "B", availability: "available" }, posts);
+    try {
+      wire.startServices?.();
+      const started = Date.now();
+      await parkOnFounder();
+      await vi.waitFor(() => expect(posts.length).toBe(1), { timeout: 1000 });
+      expect(Date.now() - started).toBeLessThan(1000);
+    } finally {
+      wire.stop();
+    }
+  });
 
   it("F-7 CELL, END TO END: an off human's ALERT park POSTS (delivery never suppressed) with NO mention, and the termination is recorded on the row (RED at base: ALERT mentions)", async () => {
     // Fixture correction (visible, W2 finding 4): the termination is the

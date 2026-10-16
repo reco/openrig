@@ -34,6 +34,12 @@ describe("Slice-11 config — first-class + honest unconfigured (item 5)", () =>
     expect(raw).not.toMatch(/xox[bp]-|xapp-|hooks\.slack\.com/);
   });
 
+  it("a config written with the retired progress receipts loads; only its done mark is kept", () => {
+    fs.writeFileSync(path.join(home, "slack-connector.json"), JSON.stringify({ ...DEFAULT_CONFIG,
+      receipts: { received: "rr-scanning", picked: "rr-thinking", working: "rr-working", coding: "rr-coding", typing: "rr-typing", done: "rr-check" } }));
+    expect(loadConfig(home).receipts).toEqual({ done: "rr-check" });
+  });
+
   it("#192: a config without channelMap loads and saves byte-identically (no new key, no new readiness row)", () => {
     const authored = { ...DEFAULT_CONFIG, channel: "C0DEFAULT", enabled: true };
     const p = saveConfig(authored, home);

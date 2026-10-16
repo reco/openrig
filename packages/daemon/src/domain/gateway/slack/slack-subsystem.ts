@@ -12,6 +12,7 @@
 // the relay's history IS the subsystem's history — enabling the subsystem replays nothing the
 // relay already delivered (the enable-time backlog rule survives the cutover by construction).
 
+import { unansweredQuestions } from "../../human-questions.js";
 import { ChannelRecovery } from "./channel-recovery.js";
 import { channelStateDigest } from "../channel-operations.js";
 import path from "node:path";
@@ -19,23 +20,25 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { buildInProcessWire, type GatewayWire, type SubsystemDeliverFn } from "../gateway-subsystem.js";
 import { DispatchBuffer } from "../dispatch-buffer.js";
-import { downloadPrivateFile, isSlackHost, postChatMessage } from "./slack-api.js";
-import { loadConfig } from "./config.js";
+import { addReaction, callWebApi, countChannelHumans, downloadPrivateFile, isSlackHost, postChatMessage, removeReaction, updateChatMessage } from "./slack-api.js";
+import { channelsOf, loadConfig } from "./config.js";
 import { resolveSecret } from "./secrets.js";
 import { SeenStore, DeadLetterStore, InboundReceiptStore } from "./state-store.js";
 import { makeQueuePorts } from "./queue-access.js";
 import { SlackOutboundDriver, OUTBOUND_OP, type OutboundPostPayload } from "./outbound-driver.js";
-import { abortableSleep, subsystemSlackDeliver } from "./slack-delivery.js";
-import { InboundRouter, type SlackEvent, type SlackBlockActions, type InboundFilePort, type InboundFileResult, type StoredInboundFile, type FailedInboundFile } from "./inbound.js";
+import { abortableSleep, evidenceAttachment, subsystemSlackDeliver } from "./slack-delivery.js";
+import { InboundRouter, inboundQitemIdFor, NOT_ADDRESSED_TAG, SLACK_MESSAGE_TAG, type ReactionTarget, type SlackEvent, type SlackBlockActions, type InboundFilePort, type InboundFileResult, type StoredInboundFile, type FailedInboundFile } from "./inbound.js";
 import { makeInboundSenderResolver, type RegistrySurface } from "./inbound-admission.js";
 import { ThreadSeatMap, formatPostedStamp } from "./thread-seat-map.js";
+import { attributionFromSession, buildCompactClosedMessage, buildOutboundMessage, DEFAULT_CONFIRM_DECISION } from "./message.js";
 import { makeThreadRouteResolver } from "./thread-routing.js";
+import { closeRequest, isRequestToHuman, currentGateResolved, entityOf, gateOpenedAt, githubLinkState, isRequestHuman, sweepRequests, type LinkState, type RequestLifecycleDeps, type RequestLink } from "./request-lifecycle.js";
 import { resolveOutboundChannel, unsupportedChannelMapFields } from "./channel-map.js";
 import { startSocketInbound, type SocketInboundHandle, type WsLike } from "./socket-inbound.js";
-import { loadHumanRegistry, resolveSlackHandle } from "../human-registry.js";
-import { hasLiveHumanGate, isBlockerLive, type QueueRepository } from "../../queue-repository.js";
+import { loadHumanRegistry, resolveRegisteredHumanAddress, resolveSlackHandle } from "../human-registry.js";
+import { hasLiveHumanGate, isBlockerLive, type QueueItem, type QueueRepository } from "../../queue-repository.js";
 import { formatReplyToChoice, REPLY_TO_CHOICE_ACTOR, type ReplyToChoice } from "../../reply-to-choice.js";
-import { parseSessionName } from "../../session-name.js";
+import { isHumanSeatSessionRef, parseSessionName } from "../../session-name.js";
 import type { FetchImpl } from "./slack-api.js";
 import { ownerNotificationLevelAtLeast } from "../../queue-transition-log.js";
 // OPR.0.5.6.1 — the delivery rules engine: ONE decision per message replaces
@@ -64,15 +67,24 @@ export interface SlackWireOpts {
   fetchImpl?: FetchImpl;
   wsFactory?: (url: string) => WsLike;
   outboundIntervalMs?: number;
+  /** Sweep outbound at once on a queue change that produced a human notification (default true); false = poll only. */
+  outboundKick?: boolean;
   inboundRetryIntervalMs?: number;
   inboundMaxConnects?: number;
   registry?: RegistrySurface;
+  /** Phase 1 request sweep cadence and PR/issue state source (tests inject both). */
+  requestSweepIntervalMs?: number;
+  /** How often top-level history and the recently active threads are read for missed messages. */
+  fastRecoveryIntervalMs?: number;
+  linkState?: (link: RequestLink) => Promise<LinkState>;
   resolveHumanReply?: (input: { qitemId: string; actorSession: string; decision: string }) => Promise<"resolved" | "already-resolved" | "not-applicable">;
 }
 
 interface HumanReplyActionPort {
-  act(input: { verb: "resolve"; qitemId: string; actorSession: string; decision: string }): Promise<unknown>;
+  act(input: { verb: "resolve"; qitemId: string; actorSession: string; decision: string; parkedOnActor?: boolean }): Promise<unknown>;
 }
+
+const isResolvedNotice = (q: { ownerNotificationKind?: string | null }) => q.ownerNotificationKind === "human-decision-resolved";
 
 /** Compose an inbound reply with Mission Control's existing human-park resolver.
  * A replay after the durable resolve but before inbound seen-mark is absorbed by
@@ -85,7 +97,8 @@ export function makeHumanReplyResolver(
     if (queueRepo.getById(input.qitemId)?.humanIntent === "update") return "not-applicable";
     if (!contract) return "not-applicable";
     try {
-      await contract.act({ verb: "resolve", ...input });
+      // Only reached behind the gateway's asked-human check, so a park on that human's own address counts.
+      await contract.act({ verb: "resolve", ...input, parkedOnActor: true });
       return "resolved";
     } catch (error) {
       if ((error as { code?: string }).code !== "qitem_not_leg1_parked") throw error;
@@ -174,6 +187,59 @@ export function makeInboundFilePort(opts: {
   };
 }
 
+const CONFIRM_WON_NOTE = "slack-confirm-won";
+
+/** Phase 1 — classify the message a human added ✅ to, using only our own records: the
+ *  decision's root (a plain decision only), a Confirm offer we posted, or the human's own
+ *  reply in the decision's thread. The target keeps the reacted message's own root, so the
+ *  router's current-root check applies, and anything from an earlier gate answers nothing.
+ *  Only the request's asked human may answer. */
+export function makeReactionTarget(queueRepo: QueueRepository, threadMap: ThreadSeatMap, explicitAnswersOnly = false, askedHuman?: (qitemId: string) => string | null): (input: { channel: string; messageTs: string; actorSession: string }) => ReactionTarget | null {
+  const askedIn = (threadTs: string, actorSession: string) => {
+    const root = threadMap.resolveByThread(threadTs);
+    return root && isRequestHuman(root, actorSession) ? root : null;
+  };
+  return ({ channel, messageTs, actorSession }) => {
+    const root = threadMap.resolveByThread(messageTs);
+    if (root) {
+      const decision = queueRepo.getById(root.conversationId);
+      if (!decision || decision.humanIntent === "update" || !isRequestHuman(root, actorSession)) return null;
+      // With explicit answers every decision carries buttons, and ✅ on it does nothing.
+      if (explicitAnswersOnly || decision.humanQuestions?.length || decision.humanConfirm) return null;
+      return { kind: "answer", decisionQitemId: decision.qitemId, threadTs: messageTs, text: "acknowledged and agreed" };
+    }
+    const offerId = queueRepo.postedQitemForMessage(messageTs);
+    const offer = offerId ? queueRepo.getById(offerId) : null;
+    if (offer?.humanConfirm && offer.replyTo) {
+      const threadTs = queueRepo.postedThreadForMessage(messageTs);
+      const asked = askedHuman ? askedHuman(offer.replyTo) === actorSession : !!(threadTs && askedIn(threadTs, actorSession));
+      return threadTs && asked ? { kind: "confirm", offerQitemId: offer.qitemId, threadTs } : null;
+    }
+    const reply = queueRepo.getById(inboundQitemIdFor(channel, messageTs));
+    const conversation = reply?.tags?.find((t) => t.startsWith("reply-to:"))?.slice("reply-to:".length);
+    const threadTs = reply?.tags?.find((t) => t.startsWith("thread-ts:"))?.slice("thread-ts:".length);
+    if (!reply || !conversation || !threadTs || reply.sourceSession !== actorSession || !askedIn(threadTs, actorSession)) return null;
+    if (reply.tags?.includes(NOT_ADDRESSED_TAG)) return null;
+    if (reply.tsCreated < gateOpenedAt(queueRepo, conversation)) return null;
+    const text = reply.body.split("\n\n---\nSource: ")[0]?.trim();
+    return text ? { kind: "answer", decisionQitemId: conversation, threadTs, text } : null;
+  };
+}
+
+/** The instant this home first ran the request lifecycle, persisted so older threads are never
+ *  reminded about or closed after an upgrade. */
+function lifecycleFloorMs(home: string): number {
+  const file = path.join(stateDir(home), "slack-request-lifecycle-floor");
+  try {
+    return Number(fs.readFileSync(file, "utf8").trim());
+  } catch {
+    const now = Date.now();
+    fs.mkdirSync(stateDir(home), { recursive: true });
+    fs.writeFileSync(file, `${now}\n`);
+    return now;
+  }
+}
+
 function stateDir(home: string): string {
   return path.join(home, "state");
 }
@@ -204,6 +270,14 @@ function deadLetterBacklogFields(
 
 /** Build the production Slack gateway wire from config + secrets. Never throws on a missing
  *  configuration — that is an honest inert wire, not a boot failure. */
+/** A message's Slack link (chat.getPermalink), or null when Slack cannot give one. */
+export async function slackPermalink(home: string, channel: string, messageTs: string, fetchImpl?: FetchImpl): Promise<string | null> {
+  const bot = resolveSecret(SECRET_BOT, { envFile: loadConfig(home).secretsEnvFile ?? undefined });
+  if (!bot) return null;
+  const r = await callWebApi("chat.getPermalink", bot, { channel, message_ts: messageTs }, fetchImpl, undefined, "get-query");
+  return r.ok && typeof r.json.permalink === "string" ? r.json.permalink : null;
+}
+
 export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const log = opts.log ?? (() => {});
   const cfg = loadConfig(opts.home);
@@ -262,11 +336,59 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
 
   // S10 thread routing — the map shares the daemon DB (queue rows carry the rebuild stamps).
   const threadMap = new ThreadSeatMap(opts.queueRepo.db);
-  // #192 — the channel a payload posts to: its seat's (or rig's) mapped channel, else the
-  // default. The seat is the row's agent side (queue-access projects it into sourceSession for
-  // requests, blocked items and resolved decisions alike); an aggregate digest has none and
-  // posts to the default. Only called when outbound is ready, so the default is set.
-  const channelFor = (p: OutboundPostPayload): string => resolveOutboundChannel(cfg, p.sourceSession) ?? cfg.channel!;
+  const channels = channelsOf(cfg);
+  // The addressed-only rule: a channel with more than one human answers only messages that
+  // @mention the app. A message waits for its channel's first count; later counts refresh every
+  // 10 minutes in the background, and at once on member_joined/left_channel. When Slack cannot
+  // give a count (cached as unknown for 10 minutes) every message counts as addressed.
+  const HUMAN_COUNT_TTL_MS = 10 * 60_000;
+  const humanCounts = new Map<string, { count: number | null; at: number }>();
+  const counting = new Map<string, Promise<number | null>>();
+  const userIsHuman = new Map<string, boolean>();
+  const recount = (channel: string): Promise<number | null> => {
+    const running = counting.get(channel);
+    if (running) return running;
+    const next = (bot ? countChannelHumans(bot, channel, userIsHuman, opts.fetchImpl) : Promise.resolve(null))
+      .catch(() => null)
+      .then((count) => {
+        humanCounts.set(channel, { count, at: Date.now() });
+        counting.delete(channel);
+        if (count === null) log(`human count unavailable for ${channel}; every message counts as addressed for 10 minutes`);
+        return count;
+      });
+    counting.set(channel, next);
+    return next;
+  };
+  const humansIn = async (channel: string): Promise<number | null> => {
+    const known = humanCounts.get(channel);
+    if (!known) return recount(channel);
+    if (Date.now() - known.at > HUMAN_COUNT_TTL_MS) void recount(channel);
+    return known.count;
+  };
+  let appUser: Promise<string | undefined> | undefined;
+  const appUserId = (): Promise<string | undefined> => appUser ??= bot
+    ? callWebApi("auth.test", bot, {}, opts.fetchImpl).then((r) => (typeof r.json.user_id === "string" ? r.json.user_id : undefined)).catch(() => undefined)
+    : Promise.resolve(undefined);
+  const askedHumanOf = (qitemId: string): string | null => {
+    const item = opts.queueRepo.getById(qitemId);
+    const registry = registrySurface.loadHumanRegistry(opts.home);
+    return item && registry.ok ? resolveRegisteredHumanAddress(item.blockedOn || item.destinationSession, registry.entities) : null;
+  };
+  const resolveSender = makeInboundSenderResolver(registrySurface, opts.home);
+  const isConfiguredChannel = (channel: string) => channels.some((c) => c.id === channel) || (cfg.channelMap ?? []).some((e) => e.channel === channel);
+  // A new root goes to the configured channel its row names, else to the channel whose seat is
+  // posting; replies stay in their thread's channel.
+  const SLACK_CHANNEL_TAG = "slack-channel:";
+  const taggedChannel = (p: OutboundPostPayload): string | undefined => {
+    const id = p.tags?.find((t) => t.startsWith(SLACK_CHANNEL_TAG))?.slice(SLACK_CHANNEL_TAG.length);
+    if (!id || isConfiguredChannel(id)) return id || undefined;
+    log(`qitem ${p.qitemId} names unconfigured channel ${id}; posting in the seat's channel`);
+    return undefined;
+  };
+  const channelForPost = (p: OutboundPostPayload, threadTs: string | undefined): string =>
+    (threadTs ? threadMap.resolveByThread(threadTs)?.channel : undefined)
+      ?? taggedChannel(p)
+      ?? channels.find((c) => c.inboundDestination === p.sourceSession)?.id ?? cfg.channel!;
 
   // OPR.0.5.6.14 — a failed post writes the transport-failed ledger transition so the
   // undelivered surface (and --verify) can name the gateway's error instead of guessing
@@ -321,27 +443,72 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   };
 
   // #822: a person's inbound reply records the item it answers as replyTo. If its seat parks
-  // that row on the person, the park is a decision and opens its own root, so only an update's
-  // replyTo steers where a post goes.
-  const threadReplyTo = (p: OutboundPostPayload): string | null => (p.humanIntent === "update" ? p.replyTo ?? null : null);
+  // that row on the person, the park is a decision and opens its own root. A decision a seat
+  // itself created with --reply-to (fork: an action button in an earlier request's thread) and
+  // every update steer where the post goes.
+  // A pure FYI post (an update with no buttons, not a reply in a thread, not pinned by tag) goes to
+  // the notifications channel when one is set; anything the human answers stays on the default.
+  // A seat with its own channel (channel map, extra channel) keeps its FYI there.
+  const notificationsChannelFor = (p: OutboundPostPayload, replyTo: string | null, threadTs: string | undefined, otherwise: string): string | null =>
+    cfg.notificationsChannel && otherwise === cfg.channel && p.humanIntent === "update" && !p.humanConfirm && !p.humanQuestions?.length && !replyTo && !threadTs && !taggedChannel(p)
+      ? cfg.notificationsChannel : null;
+
+  const threadReplyTo = (p: OutboundPostPayload): string | null => {
+    if (!p.replyTo) return null;
+    if (p.humanIntent === "update") return p.replyTo;
+    const row = opts.queueRepo.getById(p.qitemId);
+    return row && !isHumanSeatSessionRef(row.sourceSession) ? p.replyTo : null;
+  };
 
   // #96 — where a replyTo update posts. Walks back through earlier threaded updates (which
   // open no root of their own) to the item that owns the root.
   const MAX_REPLY_TO_CHAIN = 32;
+  // The human wrote there, so the bot can answer there even when the channel is not configured.
+  // A tag alone is not proof (a seat can set tags); the gateway's own inbound record is.
+  const inboundReceived = new SeenStore(path.join(stateDir(opts.home), "slack-inbound-seen.jsonl"));
+  const isReceivedHere = (message: { channel: string; ts: string } | null): boolean =>
+    !!message && inboundReceived.load().has(`${message.channel}:${message.ts}`);
+  const isHumanStartedRoot = (root: { threadTs: string; channel: string; conversationId: string }) => {
+    const message = receivedMessage(opts.queueRepo.getById(root.conversationId)?.tags);
+    return message?.channel === root.channel && message.ts === root.threadTs && isReceivedHere(message);
+  };
+  // The human wrote in this thread and their message reached this seat; the thread belongs to no
+  // other agent (it is the human's own alert, or the daemon's), so the answer goes where they asked.
+  const humanWroteHere = (item: QueueItem, root: { threadTs: string; seat: string }, seat: string) =>
+    item.destinationSession === seat && isReceivedHere(receivedMessage(item.tags))
+    && item.tags?.includes(`thread-ts:${root.threadTs}`) === true
+    && (parseSessionName(root.seat).kind === "external" || root.seat === "daemon@kernel");
   const deriveReplyToChoice = (p: OutboundPostPayload, channel: string): ReplyToChoice => {
     let item = p.replyTo ? opts.queueRepo.getById(p.replyTo) : null;
     for (let depth = 0; item && depth < MAX_REPLY_TO_CHAIN; depth++) {
-      if (hasLiveHumanGate(item)) return { kind: "fallback", reason: "reference-has-live-gate", qitemId: item.qitemId };
-      const root = threadMap.resolveByConversation(item.qitemId);
+      if (!cfg.explicitAnswersOnly && hasLiveHumanGate(item)) return { kind: "fallback", reason: "reference-has-live-gate", qitemId: item.qitemId };
+      // An inbound reply answers in the thread the human wrote in, even a superseded root.
+      const inThread = item.tags?.find((t) => t.startsWith("thread-ts:"))?.slice("thread-ts:".length);
+      const root = (inThread ? threadMap.resolveByThread(inThread) : null) ?? threadMap.resolveByConversation(item.qitemId);
       if (root) {
         if (root.state === "closed") return { kind: "fallback", reason: "root-closed", threadTs: root.threadTs };
-        if (root.channel !== channel) return { kind: "fallback", reason: "root-other-channel", threadTs: root.threadTs };
-        if (root.human !== (p.destinationSession ?? "")) return { kind: "fallback", reason: "root-other-human", threadTs: root.threadTs };
-        if (root.seat !== (p.sourceSession ?? "")) return { kind: "fallback", reason: "root-other-seat", threadTs: root.threadTs };
+        // #192: with a channel map a root in another channel than this attempt's cannot carry the post.
+        if (cfg.channelMap?.length && root.channel !== channel) return { kind: "fallback", reason: "root-other-channel", threadTs: root.threadTs };
+        if (!isConfiguredChannel(root.channel) && !isHumanStartedRoot(root)) return { kind: "fallback", reason: "root-other-channel", threadTs: root.threadTs };
+        if (root.seat !== (p.sourceSession ?? "") && !humanWroteHere(item, root, p.sourceSession ?? "")) return { kind: "fallback", reason: "root-other-seat", threadTs: root.threadTs };
         return { kind: "thread", threadTs: root.threadTs };
       }
-      if (!item.replyTo) return { kind: "fallback", reason: "root-missing", qitemId: item.qitemId };
-      item = opts.queueRepo.getById(item.replyTo);
+      // A human-started message has no root of ours: answer in that message's own thread, in the
+      // channel the human wrote in, and register it as the thread's root, so the human's later
+      // replies route back to this seat.
+      const humanMessage = receivedMessage(item.tags);
+      if (humanMessage && !item.tags?.some((t) => t.startsWith("reply-to:"))) {
+        if (!isConfiguredChannel(humanMessage.channel) && !isReceivedHere(humanMessage)) return { kind: "fallback", reason: "root-other-channel", threadTs: humanMessage.ts };
+        if (cfg.channelMap?.length && humanMessage.channel !== channel) return { kind: "fallback", reason: "root-other-channel", threadTs: humanMessage.ts };
+        const root = { threadTs: humanMessage.ts, channel: humanMessage.channel, human: item.sourceSession, seat: p.sourceSession ?? "", conversationId: item.qitemId };
+        threadMap.open(root);
+        opts.queueRepo.update({ qitemId: item.qitemId, actorSession: "daemon@kernel", transitionNote: formatPostedStamp({ ...root, messageTs: humanMessage.ts }) });
+        return { kind: "thread", threadTs: humanMessage.ts };
+      }
+      // An inbound reply inside a thread names its conversation by tag, not by the replyTo field.
+      const next = item.replyTo ?? item.tags?.find((t) => t.startsWith("reply-to:"))?.slice("reply-to:".length);
+      if (!next) return { kind: "fallback", reason: "root-missing", qitemId: item.qitemId };
+      item = opts.queueRepo.getById(next);
     }
     return item
       ? { kind: "fallback", reason: "chain-too-long", qitemId: item.qitemId }
@@ -370,6 +537,75 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     return choice;
   };
 
+  // A replaced post keeps everything the original showed except its buttons.
+  const repostInputs = (row: { sourceSession: string; evidenceRef?: string | null; summary: string | null }) => ({
+    sourceLabel: cfg.sourceLabel,
+    answerHint: cfg.explicitAnswersOnly,
+    attribution: attributionFromSession(row.sourceSession),
+    ...evidenceAttachment(undefined, row.evidenceRef, row.summary),
+  });
+
+  const lifecycle: RequestLifecycleDeps = {
+    queueRepo: opts.queueRepo,
+    threadMap,
+    staleReminderDays: cfg.staleReminderDays,
+    floorMs: lifecycleFloorMs(opts.home),
+    linkState: opts.linkState ?? githubLinkState,
+    postInThread: async (channel, threadTs, text) => {
+      if (!bot) return false;
+      const r = await postChatMessage(bot, { channel, thread_ts: threadTs, text }, opts.fetchImpl);
+      if (!r.ok) log(`request lifecycle post failed thread=${threadTs}: ${r.error}`);
+      return r.ok;
+    },
+    closeCard: async (qitemId, channel, line, compact) => {
+      const item = opts.queueRepo.getById(qitemId);
+      // The request's own card: the message its latest posted receipt names (a resolved notice is a
+      // separate message, never the card).
+      const transitions = opts.queueRepo.transitionLog.listForQitem(qitemId);
+      const messageTs = [...transitions].reverse()
+        .find((t) => t.actorSession === "daemon@kernel" && t.transitionNote?.startsWith("slack-owner-notification-posted ") && !/\skind=human-decision-resolved(\s|$)/.test(t.transitionNote))
+        ?.transitionNote?.split(/\s+/).find((f) => f.startsWith("message_ts="))?.slice("message_ts=".length) ?? null;
+      if (!item || !messageTs) return { ok: true, messageTs: null };
+      if (!bot) return { ok: false, messageTs, error: "bot token unavailable" };
+      const won = transitions.some((t) => t.transitionNote === CONFIRM_WON_NOTE && t.actorSession === "daemon@kernel");
+      const message = compact ? buildCompactClosedMessage(line)
+        : buildOutboundMessage(item, { ...repostInputs(item), closedNote: line, ...(won ? { confirmOutcome: "confirmed" as const } : {}) });
+      const r = await updateChatMessage(bot, { channel, ts: messageTs, ...message }, opts.fetchImpl);
+      return r.ok ? { ok: true, messageTs } : { ok: false, messageTs, error: r.error ?? "update failed" };
+    },
+    log,
+  };
+
+  // The gateway tags each inbound row with the message it came from (never parsed from the human's text).
+  const receivedMessage = (tags: readonly string[] | null | undefined): { channel: string; ts: string } | null => {
+    const ref = tags?.find((t) => t.startsWith(SLACK_MESSAGE_TAG))?.slice(SLACK_MESSAGE_TAG.length);
+    const sep = ref?.lastIndexOf(":") ?? -1;
+    return ref && sep > 0 ? { channel: ref.slice(0, sep), ts: ref.slice(sep + 1) } : null;
+  };
+  // A top-level message to a human is their to-do: it shows the done reaction once its row no
+  // longer waits on them, and loses it when the row is reopened to them.
+  const rootDone = new Map<string, boolean>(); // root threadTs -> whether it shows the done reaction
+  const rootChains = new Map<string, Promise<void>>();
+  const syncRootDone = (qitemId: string): Promise<void> => {
+    const run = (rootChains.get(qitemId) ?? Promise.resolve()).catch(() => {}).then(async () => {
+      const row = opts.queueRepo.getById(qitemId);
+      if (!bot || !row) return;
+      const done = !(["pending", "in-progress", "blocked"].includes(row.state) && askedHumanOf(qitemId) !== null);
+      // The human's own message is a root too; it gets no done mark.
+      const ownMessage = receivedMessage(row.tags);
+      for (const root of threadMap.listRootsByConversation(qitemId)) {
+        if (ownMessage?.channel === root.channel && ownMessage.ts === root.threadTs) continue;
+        if ((rootDone.get(root.threadTs) ?? false) === done) continue;
+        const input = { channel: root.channel, timestamp: root.threadTs, name: cfg.receipts.done };
+        const r = done ? await addReaction(bot, input, opts.fetchImpl) : await removeReaction(bot, input, opts.fetchImpl);
+        if (!r.ok) { log(`root ${done ? "done mark" : "done unmark"} failed ts=${root.threadTs}: ${r.error}`); continue; }
+        rootDone.set(root.threadTs, done);
+      }
+    });
+    rootChains.set(qitemId, run);
+    void run.finally(() => { if (rootChains.get(qitemId) === run) rootChains.delete(qitemId); });
+    return run;
+  };
   // One run = one wire build. The abort controller lets stop() cancel anything this
   // run still has in flight — chiefly the inline rate-limit wait in postChatMessage,
   // whose stale retry must never post once a restart's replay owns the decision.
@@ -382,16 +618,26 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     ? subsystemSlackDeliver({
         botToken: bot!,
         channel: cfg.channel!,
-        // #192: a reply-to update whose choice is already recorded posts in that choice's channel:
-        // the one it names, or, for a choice recorded without one (before any map existed), the
-        // default channel it was made for. Otherwise the map. (The delivery layer first reuses the
-        // channel of this post's first attempt.) With no map every branch is the default channel.
-        resolveChannel: (p) => {
-          const recorded = threadReplyTo(p) ? opts.queueRepo.replyToChoiceFor(p.qitemId) : null;
-          return recorded ? recorded.channel ?? cfg.channel! : channelFor(p);
+        // #192: with a channel map, a reply-to update whose choice is already recorded posts in that
+        // choice's channel (the default for a choice recorded before any map existed), everything else
+        // follows the map. Without a map (the fork's channels), a post follows its thread's channel,
+        // else its slack-channel tag, its seat's channel or the default.
+        resolveChannel: (p, threadTs) => {
+          const replyTo = threadReplyTo(p);
+          const recorded = replyTo ? opts.queueRepo.replyToChoiceFor(p.qitemId) : null;
+          if (cfg.channelMap?.length) {
+            if (recorded) return recorded.channel ?? cfg.channel!;
+            const mapped = resolveOutboundChannel(cfg, p.sourceSession) ?? cfg.channel!;
+            return notificationsChannelFor(p, replyTo, threadTs, mapped) ?? mapped;
+          }
+          if (recorded?.channel) return recorded.channel;
+          const usual = channelForPost(p, threadTs);
+          return notificationsChannelFor(p, replyTo, threadTs, usual) ?? usual;
         },
         pinChannel: Boolean(cfg.channelMap?.length),
         sourceLabel: cfg.sourceLabel,
+        answerHint: cfg.explicitAnswersOnly,
+        asksHuman: (p) => !!p.qitemId && askedHumanOf(p.qitemId) !== null,
         fetchImpl: opts.fetchImpl,
         stopSignal: runCtl.signal,
         delivered,
@@ -404,6 +650,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         // Re-delivery/new notification episodes for one qitem still reuse its exact root.
         // #96: an update may name an earlier qitem's root; the guard lives in deriveReplyToChoice.
         resolveThreadTs: (p, channel) => {
+          if (isResolvedNotice(p)) return threadMap.resolveByConversation(p.qitemId)?.threadTs;
           if (threadReplyTo(p)) {
             const choice = chooseReplyToThread(p, channel);
             if (choice.kind === "thread") return choice.threadTs;
@@ -425,7 +672,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         },
         // S14: posting and interruption are separate threshold dials over one vocabulary.
         resolveMentionUserId: (p) => {
-          if (p.humanIntent === "update") return undefined;
+          if (p.humanIntent === "update" || isResolvedNotice(p)) return undefined;
           // OPR.0.5.6.1: the engine's decided loudness is the mention rule for
           // registered humans; the dial pair remains only for the null degrade.
           if ((p as { deliveryDigestPost?: boolean }).deliveryDigestPost) return undefined; // notify-class aggregate, never a mention
@@ -660,6 +907,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const starts: Array<() => void> = [];
   let inboundHandle: SocketInboundHandle | undefined;
   let recovery: ChannelRecovery | undefined;
+  let extraRecoveries: ChannelRecovery[] = [];
 
   if (outboundReady) {
     const driver = new SlackOutboundDriver({
@@ -672,11 +920,38 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       log,
     });
     releaseRef = (q) => driver.release(q);
+    let sweepTimer: ReturnType<typeof setInterval> | undefined;
+    let sweeping = false;
+    starts.push(() => {
+      sweepTimer = setInterval(() => {
+        if (sweeping) return;
+        sweeping = true;
+        void sweepRequests(lifecycle).finally(() => { sweeping = false; });
+      }, opts.requestSweepIntervalMs ?? 10 * 60_000);
+      sweepTimer.unref?.();
+    });
+    stops.push(() => clearInterval(sweepTimer));
+    let unsubscribeOutbound: (() => void) | undefined;
     starts.push(() => {
       driver.start();
+      unsubscribeOutbound = opts.queueRepo.events.subscribe((event) => {
+        if ((event.type === "queue.created" || event.type === "queue.updated" || event.type === "queue.handed_off")
+          && opts.outboundKick !== false && opts.queueRepo.transitionLog.latestOwnerNotificationForQitem(event.qitemId)) driver.kick();
+        // A canceled request (an expired approval included) closes now, not at the next sweep, so its
+        // card loses its buttons while the human may still be looking at it.
+        const change = event as { type: string; qitemId: string; fromState?: string; toState?: string };
+        if (change.type === "queue.updated" && change.toState === "canceled" && change.fromState !== "canceled") {
+          // After the current write finishes: a close already under way (a human's cancel) has closed the thread by then.
+          setImmediate(() => {
+            const root = threadMap.resolveByConversation(change.qitemId);
+            if (root?.state !== "open" || root.conversationId !== change.qitemId || !isRequestToHuman(opts.queueRepo.getById(change.qitemId), root)) return;
+            void closeRequest(lifecycle, root, "canceled-by-seat", "daemon@kernel").catch((e) => log(`request ${change.qitemId} close failed: ${(e as Error).message}`));
+          });
+        }
+      });
       log("slack outbound driver started (subsystem path)");
     });
-    stops.push(() => driver.stop());
+    stops.push(() => { unsubscribeOutbound?.(); driver.stop(); });
   }
 
   // Hoisted out of the inbound block so status() can report the durable backlog.
@@ -698,15 +973,94 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       seen: inboundSeen,
       deadLetter: dead,
       destination: cfg.inboundDestination,
-      resolveSender: makeInboundSenderResolver(registry, opts.home),
+      resolveSender,
       // S10 — deterministic thread routing: mapped thread → exactly the mapped seat; unmapped
       // or human-initiated → the configured orchestrator slot as an unrouted-signal row.
-      resolveRoute: makeThreadRouteResolver({ map: threadMap, unroutedDestination: cfg.inboundDestination, log }),
-      resolveHumanReply: opts.resolveHumanReply,
+      resolveRoute: makeThreadRouteResolver({ map: threadMap, unroutedDestination: cfg.inboundDestination, log,
+        destinationForChannel: (channel) => channels.find((c) => c.id === channel)?.inboundDestination,
+        // Machinery sends as daemon@kernel, <name>@host, <name>@system or system:<name> and never has a
+        // session here; a real rig that happens to use such a name does.
+        isAgentSeat: (seat) => !(/^daemon@kernel$|@host$|@system$|^system:/.test(seat))
+          || !!opts.queueRepo.db.prepare("SELECT 1 FROM sessions WHERE session_name = ? LIMIT 1").get(seat),
+        newestOpenDecision: (threadTs, channel, slackUser) => {
+          const root = threadMap.resolveByThread(threadTs);
+          const who = resolveSender(slackUser, channel);
+          if (!channel || !who.admitted) return null;
+          // Only a decision asked of this person: another human's decision in the thread leaves the root's.
+          for (const part of threadMap.partsInThread(threadTs, channel)) {
+            if (part.conversationId === root?.conversationId) continue;
+            const item = opts.queueRepo.getById(part.conversationId);
+            if (item && item.humanIntent !== "update" && hasLiveHumanGate(item) && askedHumanOf(item.qitemId) === who.source) return part;
+          }
+          return null;
+        },
+        isHumanStarted: (conversationId) => {
+          const item = opts.queueRepo.getById(conversationId);
+          const root = threadMap.resolveByConversation(conversationId);
+          // A human's own message the seat later parked on that human is a real question: it correlates.
+          return !!item && !!root && entityOf(item.sourceSession) === entityOf(root.human) && !hasLiveHumanGate(item);
+        } }),
+      resolveHumanReply: opts.resolveHumanReply && (async (input) => {
+        // Only the human the item waits on may resolve it (its park's blocked_on, or a direct request's destination).
+        if (askedHumanOf(input.qitemId) !== input.actorSession) return "not-applicable";
+        return opts.resolveHumanReply!(input);
+      }),
+      explicitAnswersOnly: cfg.explicitAnswersOnly,
+      hasQuestions: (qitemId) => (opts.queueRepo.getById(qitemId)?.humanQuestions?.length ?? 0) > 0,
       // #193 — a button click records its answer on the decision the clicked root belongs to;
       // a failed hand-back is retried with the event dead-letters, and each click is confirmed
       // in the decision's thread (a bot post, so inbound never ingests it).
       recordHumanAnswer: (input) => opts.queueRepo.recordHumanAnswer(input),
+      reactionTarget: makeReactionTarget(opts.queueRepo, threadMap, cfg.explicitAnswersOnly, askedHumanOf),
+      postedQitem: (messageTs) => opts.queueRepo.postedQitemForMessage(messageTs),
+      markConfirmWon: (offerQitemId) => {
+        opts.queueRepo.update({ qitemId: offerQitemId, actorSession: "daemon@kernel", transitionNote: CONFIRM_WON_NOTE });
+      },
+      isAddressed: async (ev) => {
+        // In a channel with more than one human only an @mention addresses the app, in its threads too.
+        if (!ev.channel || ((await humansIn(ev.channel)) ?? 0) <= 1) return true;
+        const me = await appUserId();
+        return !me || String(ev.text ?? "").includes(`<@${me}>`);
+      },
+      onMembershipChanged: (channel) => { humanCounts.delete(channel); void recount(channel); },
+      ...(bot ? {
+        retireQuestionButtons: async ({ channel, messageTs, qitemId }: { channel: string; messageTs: string; qitemId: string }) => {
+          const decision = opts.queueRepo.getById(qitemId);
+          if (!decision?.humanQuestions?.length) return;
+          // Every answered question shows its pick; while some are open their buttons stay.
+          const complete = unansweredQuestions(decision.humanQuestions, decision.humanAnswers ?? {}).length === 0;
+          const message = buildOutboundMessage(decision, { ...repostInputs(decision), answered: complete });
+          const r = await updateChatMessage(bot, { channel, ts: messageTs, ...message }, opts.fetchImpl);
+          if (!r.ok) log(`question buttons not replaced qitem=${qitemId}: ${r.error}`);
+        },
+        retireConfirmOffer: async ({ channel, messageTs, offerQitemId, outcome }: { channel: string; messageTs: string; offerQitemId: string; outcome: import("./message.js").ConfirmOutcome }) => {
+          const offer = opts.queueRepo.getById(offerQitemId);
+          if (!offer) return;
+          const message = buildOutboundMessage(offer, { ...repostInputs(offer), confirmOutcome: outcome });
+          const r = await updateChatMessage(bot, { channel, ts: messageTs, ...message }, opts.fetchImpl);
+          if (!r.ok) log(`confirm button not replaced offer=${offerQitemId}: ${r.error}`);
+        },
+      } : {}),
+      cancelRequest: async ({ conversationId, actorSession, reason }) => {
+        const root = threadMap.resolveByConversation(conversationId);
+        if (!root || root.state !== "open" || !opts.queueRepo.getById(conversationId)) return "not-applicable";
+        if (!isRequestHuman(root, actorSession)) return "not-authorized";
+        await closeRequest(lifecycle, root, reason ? `canceled-by-human: ${reason}` : "canceled-by-human", actorSession, true);
+        return "closed";
+      },
+      confirmOffer: ({ offerQitemId, actorSession }) => {
+        const offer = opts.queueRepo.getById(offerQitemId);
+        const defaultConfirm = cfg.explicitAnswersOnly && !offer?.humanConfirm && offer?.humanIntent !== "update" && !offer?.humanQuestions?.length;
+        const reading = offer?.humanConfirm ?? (defaultConfirm ? DEFAULT_CONFIRM_DECISION : null);
+        if (!offer || !reading) return { ok: false, reason: "not-a-confirm-offer" };
+        const decisionQitemId = offer.humanIntent !== "update" ? offer.qitemId : offer.replyTo;
+        if (!decisionQitemId) return { ok: false, reason: "not-a-confirm-offer" };
+        // The decision's own addressed human answers it, whoever started the thread it sits in.
+        if (askedHumanOf(decisionQitemId) !== actorSession) return { ok: false, reason: "not-the-asked-human" };
+        if (offer.humanIntent === "update" && offer.tsCreated < gateOpenedAt(opts.queueRepo, decisionQitemId)) return { ok: false, reason: "offer-from-an-earlier-gate" };
+        const won = opts.queueRepo.transitionLog.listForQitem(offer.qitemId).some((t) => t.transitionNote === CONFIRM_WON_NOTE && t.actorSession === "daemon@kernel" && t.identityProvenance === null);
+        return { ok: true, decisionQitemId, reading, decided: currentGateResolved(opts.queueRepo, decisionQitemId), won };
+      },
       actionDeadLetter: (deadActions = new DeadLetterStore<SlackBlockActions>(path.join(stateDir(opts.home), "slack-inbound-action-deadletter.jsonl"))),
       ...(bot ? {
         // A stopped run posts nothing, and its rate-limit wait ends with the run: after a restart the click's
@@ -734,16 +1088,37 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       } : {}),
       log,
     });
-    recovery = new ChannelRecovery({ channel: cfg.channel, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl });
+    let unsubscribe: (() => void) | undefined;
     starts.push(() => {
-      recovery!.initialize(); // persist the once-only floor before any live events
+      void appUserId();
+      for (const c of channels) void humansIn(c.id);
+    });
+    starts.push(() => {
+      unsubscribe = opts.queueRepo.events.subscribe((event) => {
+        if (event.type === "queue.updated" || event.type === "queue.handed_off") void syncRootDone(event.qitemId);
+      });
+    });
+    stops.push(() => unsubscribe?.());
+    const followedThreads = (channel: string) => () => threadMap.listOpenRootsInChannel(channel, new Date(Date.now() - 7 * 24 * 3600_000).toISOString());
+    const activeThreads = (channel: string) => () => threadMap.listActiveRootsInChannel(channel, new Date(Date.now() - 6 * 3600_000).toISOString());
+    recovery = new ChannelRecovery({ channel: cfg.channel, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl, threadRoots: cfg.channel ? followedThreads(cfg.channel) : undefined, hotRoots: cfg.channel ? activeThreads(cfg.channel) : undefined });
+    extraRecoveries = channels.filter((c) => c.id !== cfg.channel).map((c) => new ChannelRecovery({ channel: c.id, token: bot, stateDir: stateDir(opts.home), router, fetchImpl: opts.fetchImpl, threadRoots: followedThreads(c.id), hotRoots: activeThreads(c.id) }));
+    const recoveries = [recovery, ...extraRecoveries];
+    let fastTimer: ReturnType<typeof setInterval> | undefined;
+    starts.push(() => {
+      fastTimer = setInterval(() => { for (const r of recoveries) void r.runFast(); }, opts.fastRecoveryIntervalMs ?? 45_000);
+      fastTimer.unref?.();
+    });
+    stops.push(() => clearInterval(fastTimer));
+    starts.push(() => {
+      for (const r of recoveries) r.initialize(); // persist the once-only floor before any live events
       inboundHandle = startSocketInbound(app!, router, {
         fetchImpl: opts.fetchImpl,
         wsFactory: opts.wsFactory,
         retryIntervalMs: opts.inboundRetryIntervalMs,
         inboundMaxConnects: opts.inboundMaxConnects,
         receipts,
-        recovery,
+        recovery: { run: async () => { await Promise.all(recoveries.map((r) => r.run())); }, stop: () => { for (const r of recoveries) r.stop(); } },
         log,
       });
       log("slack socket-mode inbound started (subsystem path)");
@@ -772,6 +1147,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       outboundReady,
       inboundReady,
       recovery: recovery?.status() ?? { state: "unavailable", reason: "inbound-not-configured" },
+      ...(extraRecoveries.length ? { extraRecoveries: extraRecoveries.map((r) => r.status()) } : {}),
       inbound: inboundHandle?.status() ?? { state: inboundReady ? "not-started" : "not-configured", generation: 0, reconnects: 0 },
       // The retry pass's durable custody, counted from both dead-letter files:
       // inbound events plus click answers. Records, not distinct messages — a

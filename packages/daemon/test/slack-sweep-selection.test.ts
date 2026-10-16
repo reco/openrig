@@ -66,7 +66,7 @@ describe("Slack sweep selection", () => {
     expect(selected.map(q => q.qitemId)).toEqual(["resolved", "blocked", "alias", "direct"]);
     expect(selected.find(q => q.qitemId === "direct")).toEqual({ qitemId: "direct", destinationSession: "human-owner@external",
       sourceSession: "author@rig", tags: [], state: "pending", tier: null, humanIntent: null, humanDetail: "full detail",
-      replyTo: "prior", humanQuestions: questions, summary: "summary direct", body: "full body direct", evidenceRef: null,
+      replyTo: "prior", humanQuestions: questions, humanConfirm: null, summary: "summary direct", body: "full body direct", evidenceRef: null,
       notificationKey: direct, ownerNotificationKind: "human-required", ownerNotificationLevel: "ALERT" });
     expect(selected.slice(0, 2).map(q => q.sourceSession)).toEqual(["worker@rig", "worker@rig"]);
     expect((await ports().listHumanAlerts({ minimumLevel: "ALERT" })).map(q => q.qitemId)).toEqual(["blocked", "direct"]);
@@ -134,6 +134,17 @@ describe("Slack sweep selection", () => {
     expect(dispatch.mock.calls[0]?.[2]).toMatchObject({ notificationKey: second });
     expect(seen.load().has(first)).toBe(true); expect(seen.load().has(second)).toBe(false);
     expect((await driver.sweepOnce()).dispatched).toEqual([]);
+  });
+
+  it("a sweep asked for while one runs is run again after it, not dropped", async () => {
+    const seen = new SeenStore(join(home, "seen"));
+    const dispatch = vi.fn((..._args: unknown[]) => ({ ok: true as const, decisionId: "d" }));
+    const driver = new SlackOutboundDriver({ home, queue: ports(), seen, filter: {}, dispatch });
+    const running = driver.sweepOnce();
+    row("late"); notify("late");
+    await driver.sweepOnce();
+    await running;
+    await vi.waitFor(() => expect(dispatch.mock.calls.map((c) => (c[2] as { qitemId: string }).qitemId)).toContain("late"));
   });
 
   it("dispatch refusal retries, while pending-buffer reconstruction suppresses a duplicate dispatch", async () => {
