@@ -30,9 +30,10 @@ export interface SubsystemSlackDeliveryOpts {
   botToken: string;
   /** The default channel: every post goes here unless resolveChannel names another. */
   channel: string;
-  /** #192: the channel for this payload (the channel map). Absent = `channel` for every post.
-   *  Post, reconcile scan and upload all use the one resolved channel. */
-  resolveChannel?: (payload: OutboundPostPayload) => string;
+  /** #192: the channel for this payload (the channel map, else the fork's seat/tag channel); given a thread,
+   *  that thread's channel. Absent = `channel` for every post. Post, reconcile scan and upload all use the
+   *  one resolved channel. */
+  resolveChannel?: (payload: OutboundPostPayload, threadTs?: string) => string;
   /** #192: decide a post's channel ONCE, at its first attempt, and record it in `attempted`;
    *  every retry or replay of that post reuses it, so the channel/thread pair always names one
    *  conversation and reconciliation scans where the first attempt went. A recorded channel is
@@ -47,6 +48,10 @@ export interface SubsystemSlackDeliveryOpts {
   machine?: () => string | null;
   machineFallback?: string;
   bodyExcerpt?: number;
+  /** Phase 1: decisions tell their human that only an `answer:` reply decides. */
+  answerHint?: boolean;
+  /** Whether the post waits on a human; only then does explicit-answers mode add its default Confirm. */
+  asksHuman?: (q: OutboundPostPayload) => boolean;
   fetchImpl?: FetchImpl;
   /** The owning gateway run's stop signal. When the wire stops (restart, disable,
    *  shutdown) a rate-limit wait inside postChatMessage rejects instead of sleeping
@@ -248,9 +253,11 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
     }
     const q = (decision.payload ?? {}) as DeliveryPart;
     // #192: the channel first, from this post's record when it has one, so the thread below is
-    // chosen inside the channel the post actually goes to (and went to, on a retry).
+    // chosen inside the channel the post actually goes to (and went to, on a retry). Without a
+    // record the thread is chosen first and the post follows it into its channel.
     const pinned = firstAttemptChannel(opts, opts.attempted.load(), decision.decisionId);
-    const channel = pinned ?? opts.resolveChannel?.(q) ?? opts.channel;
+    const threadTs = opts.resolveThreadTs?.(q, pinned ?? opts.resolveChannel?.(q) ?? opts.channel);
+    const channel = pinned ?? opts.resolveChannel?.(q, threadTs) ?? opts.channel;
     if (!pinned && opts.pinChannel) {
       try {
         opts.attempted.mark(`${decision.decisionId}${CHANNEL_DECIDED_PREFIX}${channel}`, "channel-decided");
@@ -262,7 +269,6 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
         log(`channel record FAILED for ${q.qitemId ?? decision.decisionId}: ${(e as Error).message} — posting once, marked as a possible repeat`);
       }
     }
-    const threadTs = opts.resolveThreadTs?.(q, channel);
 
     // A failed HTTP outcome whose row-receipt write failed is held in the
     // existing restart-surviving attempted store. Repair that authoritative
@@ -304,6 +310,8 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
           summary: q.summary,
           body: q.body,
           humanQuestions: q.humanQuestions,
+          humanIntent: q.humanIntent,
+          humanConfirm: q.humanConfirm,
           sharedChannel: q.sharedChannel,
           destinationSession: q.destinationSession ?? decision.entityBindingRef,
           // #1013 — a gate parked on a human seat renders the question, not the agent packet.
@@ -314,6 +322,7 @@ function deliverSinglePart(opts: SubsystemSlackDeliveryOpts, markEpisode = true)
         },
         {
           sourceLabel: opts.sourceLabel,
+          answerHint: opts.answerHint && q.ownerNotificationKind !== "human-decision-resolved" && (opts.asksHuman?.(q) ?? true),
           bodyExcerpt: opts.bodyExcerpt,
           mediaRefs,
           evidenceLink,
@@ -591,8 +600,10 @@ async function firstMessageMayHaveLanded(
   // #192: look where the first message went: its first attempt's channel, with the same precedence
   // a supplemental part uses (recorded, else this ask's channel, else the default), and that
   // channel's thread. With no map this is the default channel, as before.
-  const channel = firstAttemptChannel(opts, attempted, firstId) ?? opts.resolveChannel?.(q) ?? opts.channel;
-  const scan = await fetchRecentMessageTexts(opts.botToken, channel, opts.resolveThreadTs?.(q, channel), opts.fetchImpl, undefined, undefined, marker);
+  const pinned = firstAttemptChannel(opts, attempted, firstId);
+  const threadTs = opts.resolveThreadTs?.(q, pinned ?? opts.resolveChannel?.(q) ?? opts.channel);
+  const channel = pinned ?? opts.resolveChannel?.(q, threadTs) ?? opts.channel;
+  const scan = await fetchRecentMessageTexts(opts.botToken, channel, threadTs, opts.fetchImpl, undefined, undefined, marker);
   if (scan.messages.some((m) => m.text.includes(marker))) return "found";
   return !scan.ok || scan.incomplete ? "maybe" : "absent";
 }
@@ -616,6 +627,7 @@ function renderPart(opts: SubsystemSlackDeliveryOpts, q: DeliveryPart, part: Del
   const partEvidence = evidenceAttachment(part.media, part.evidenceRef, part.summary);
   return buildOutboundMessage(part, {
     sourceLabel: opts.sourceLabel,
+    answerHint: opts.answerHint && q.ownerNotificationKind !== "human-decision-resolved" && (opts.asksHuman?.(q) ?? true),
     attribution: attributionFromSession(part.sourceSession),
     machine: opts.machine?.() ?? undefined,
     machineFallback: opts.machineFallback,
@@ -630,7 +642,7 @@ function renderPart(opts: SubsystemSlackDeliveryOpts, q: DeliveryPart, part: Del
  *  subject, the start of the brief, any options and the evidence; the rest follows as
  *  numbered replies in its thread, each sized to its own message limits. */
 function splitIntoParts(opts: SubsystemSlackDeliveryOpts, q: DeliveryPart, decisionId: string, recorded?: DeliveryPlan): { parts: DeliveryPart[]; plan: DeliveryPlan } {
-  const reply = (summary: string): DeliveryPart => ({ ...q, humanDetail: undefined, humanQuestions: undefined, summary, media: [], evidenceRef: null });
+  const reply = (summary: string): DeliveryPart => ({ ...q, humanDetail: undefined, humanQuestions: undefined, humanConfirm: undefined, summary, media: [], evidenceRef: null });
   const widest = `${MAX_HUMAN_MESSAGE_PARTS} of ${MAX_HUMAN_MESSAGE_PARTS}`;
   // A part's room is what its subject, options, evidence, sender and marker leave of both limits.
   const roomFor = (part: DeliveryPart, index: number, reserve = 0): number => {
@@ -710,7 +722,7 @@ export function subsystemSlackDeliver(opts: SubsystemSlackDeliveryOpts): Subsyst
           { ...q, humanDetail: undefined, body: `${q.body ?? ""}\n\n${DETAIL_NOTE}` },
           // #1013 — the supplemental part carries the gate's own human detail; the parked-gate
           // state must not ride it, or the gate check would eat this body the way it eats the packet.
-          { ...q, humanDetail: undefined, humanQuestions: undefined, summary: `Supplemental detail: ${q.summary ?? ""}`, body: q.humanDetail, media: [], evidenceRef: null, state: null },
+          { ...q, humanDetail: undefined, humanQuestions: undefined, humanConfirm: undefined, summary: `Supplemental detail: ${q.summary ?? ""}`, body: q.humanDetail, media: [], evidenceRef: null, state: null },
         ]
       : [q];
     // #897 — the first attempt decides the shape from the real render and records it; a retry renders
@@ -814,7 +826,7 @@ export function subsystemSlackDeliver(opts: SubsystemSlackDeliveryOpts): Subsyst
         // channel re-resolved after a remap; without a record, resolution as before.
         resolveChannel: index === 0
           ? opts.resolveChannel
-          : (part) => firstAttemptChannel(opts, opts.attempted.load(), partId(0)) ?? opts.resolveChannel?.(part) ?? opts.channel,
+          : (part, threadTs) => firstAttemptChannel(opts, opts.attempted.load(), partId(0)) ?? opts.resolveChannel?.(part, threadTs) ?? opts.channel,
         // #2234: a later part has the primary's thread, so this fires only when Slack posted it top-level because that root was
         // deleted between parts. It then opens a root of its own for the same conversation, as a single part does.
         onPostedRoot: opts.onPostedRoot,

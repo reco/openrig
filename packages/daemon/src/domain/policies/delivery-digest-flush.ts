@@ -28,7 +28,7 @@ interface RegistrySurfaceLike {
   loadHumanRegistry: (home: string) => {
     ok: boolean;
     noHumans?: true;
-    entities?: Array<{ entityId: string; address: string }>;
+    entities?: Array<{ entityId: string; address: string; role?: string }>;
   };
 }
 
@@ -55,7 +55,7 @@ export async function runDeliveryDigestFlush(input: RunDeliveryDigestFlushInput)
   if (!reg.ok || !reg.entities) return { dispatched: 0, members: 0, idleReason: "the human registry can't be read" };
   if (reg.entities.length === 0) return { dispatched: 0, members: 0, idleReason: "no person is registered" };
   // Asks and updates below go to their own recipients; the digest of notices goes to the default person.
-  const defaultPerson = resolveDefaultPerson(reg.entities, input.home);
+  const defaultPerson = resolveDefaultPerson(reg.entities.filter((e) => e.role !== "requester"), input.home);
   const human = defaultPerson.person;
 
   const ports = makeQueuePorts(input.queueRepo, {

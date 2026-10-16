@@ -18,14 +18,22 @@ const EXPIRING_SOON_MS = 6 * 60 * 60 * 1000;
 /** `askState`: the state of the queue row the thread's root belongs to; null when that row is gone. */
 export interface TrackedThread { channel: string; threadTs: string; state?: string; closedAt?: string | null; askState?: string | null }
 
-/** The channels this machine recovers: its default channel and its channel map's, except a channel
- *  its configuration relays to the machine that owns it (that machine recovers it). */
-export function ownedRecoveryChannels(cfg: { channel: string | null; channelMap?: Array<{ channel: string }>; forwardChannels?: unknown }): string[] {
+/** The channels this machine recovers: its default channel, its extra channels, its notifications
+ *  channel and its channel map's, except a channel its configuration relays to the machine that
+ *  owns it (that machine recovers it). */
+export function ownedRecoveryChannels(cfg: {
+  channel: string | null;
+  extraChannels?: Array<{ id: string }>;
+  notificationsChannel?: string | null;
+  channelMap?: Array<{ channel: string }>;
+  forwardChannels?: unknown;
+}): string[] {
   const relayed = new Set(Array.isArray(cfg.forwardChannels)
     ? cfg.forwardChannels.flatMap((f) => (f && typeof f.channel === "string" ? [f.channel] : []))
     : []);
   const out: string[] = [];
-  for (const channel of [cfg.channel, ...(cfg.channelMap ?? []).map((e) => e.channel)]) {
+  const configured = [cfg.channel, ...(cfg.extraChannels ?? []).map((c) => c.id), cfg.notificationsChannel, ...(cfg.channelMap ?? []).map((e) => e.channel)];
+  for (const channel of configured) {
     if (channel && !relayed.has(channel) && !out.includes(channel)) out.push(channel);
   }
   return out;

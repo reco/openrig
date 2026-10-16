@@ -235,7 +235,7 @@ export function makeOperatorDeliveryEngine(deps: {
       if (!reg.ok) return { decision: reg.noHumans ? "undeliverable:no-registered-human" : "unavailable:human-registry", resolved: false, dispatched: false };
       // The escalation goes to the default person, never simply the first file: with several people and none chosen,
       // it's undeliverable and says so.
-      const human = resolveDefaultPerson(reg.entities, deps.home).person;
+      const human = resolveDefaultPerson(reg.entities.filter((e) => e.role !== "requester"), deps.home).person;
       if (!human) {
         return { decision: reg.entities.length ? "undeliverable:no-default-person" : "undeliverable:no-registered-human", resolved: false, dispatched: false };
       }

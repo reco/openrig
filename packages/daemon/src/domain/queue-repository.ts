@@ -111,7 +111,7 @@ import { WatchdogJobsRepository } from "./watchdog-jobs-repository.js";
 import { NOTED_ON_QUEUED_ROW, QUEUED_AS_ROW, isQueueOnlyDeliveryCode } from "./watchdog-history-log.js";
 import { parkedRowNotePrefix, queuedAsRowNote } from "./park-wake-text.js";
 import { armQueueWait, backOffQueueWait, refreshQueueWaits, evaluateQueueWait, retargetQueueWait, isQueueWait } from "./queue-wait-backoff.js";
-import { parseHumanQuestions, unansweredQuestions, describeTypedReplyPlacement, formatHumanAnswers, humanAnswerText, type HumanQuestion, type HumanAnswers, type TypedHumanReply, type RecordHumanAnswerResult } from "./human-questions.js";
+import { MAX_OPTION_LABEL, parseHumanQuestions, unansweredQuestions, describeTypedReplyPlacement, formatHumanAnswers, humanAnswerText, type HumanQuestion, type HumanAnswers, type TypedHumanReply, type RecordHumanAnswerResult } from "./human-questions.js";
 import { slackMicros } from "./gateway/slack/state-store.js";
 import { askBackRoute, RUNNER_CLOSE_WAITS, terminalAnswerMeaning } from "./receiver-context.js";
 import { runSyncSite, runSyncSiteWhenSlow } from "./sync-site-wrap.js";
@@ -163,6 +163,17 @@ export function isBlockerLive(state: string): boolean {
  *  active human-destined decision, or a row blocked on any human-class seat right now. A
  *  resolved park returns to in-progress; blocked_on alone (which the resolve verb documents
  *  keeping as provenance) is never a live gate. */
+export const MAX_HUMAN_CONFIRM = 2000;
+
+/** Phase 1 — what a human request's outcome is linked to: a PR, an issue, or queue work. */
+export interface RequestLink { kind: "pr" | "issue" | "qitem"; ref: string }
+export const REQUEST_LINK_PREFIX = "request-link";
+
+export function parseRequestLinkNote(note: string): RequestLink | null {
+  const m = /^request-link kind=(pr|issue|qitem) ref=(\S+)$/.exec(note);
+  return m ? { kind: m[1] as RequestLink["kind"], ref: m[2]! } : null;
+}
+
 export function hasLiveHumanGate(item: {
   humanIntent?: string | null;
   state: string;
@@ -310,6 +321,9 @@ export interface QueueItem {
   humanAnswers?: HumanAnswers | null;
   /** A decision made on the person's behalf inside their mode's decision room; never their own answer. */
   delegatedDecision?: DelegatedDecision | null;
+  /** Phase 1 — the reading this update offers its human to confirm; a click resolves the
+   *  decision it replies to with exactly this text. */
+  humanConfirm?: string | null;
   /** Short human-readable subject; null for callers that omit it. */
   summary: string | null;
   /** OPR.0.4.4.19 FR-5 — pointer to the durable artifact a human judges
@@ -376,6 +390,7 @@ interface QueueItemRow {
   human_questions?: string | null;
   human_answers?: string | null;
   delegated_decision?: string | null;
+  human_confirm?: string | null;
   summary: string | null;
   evidence_ref: string | null;
   content_erased_at?: string | null;
@@ -479,6 +494,9 @@ export interface QueueCreateInput {
   gatewayInbound?: boolean;
   /** #193 — 1–4 structured questions; accepted only with humanIntent "decision". */
   humanQuestions?: HumanQuestion[] | null;
+  /** Phase 1 — on a decision, the approve button's call to action ("Build it"); on an update
+   *  replying to a decision, the seat's reading to confirm. A click resolves with this text. */
+  humanConfirm?: string | null;
   summary?: string | null;
   /** OPR.0.4.4.19 FR-5 — optional durable-artifact pointer. Persisted when
    *  present; required at the domain layer only for human-routed items. */
@@ -1177,6 +1195,7 @@ export class QueueRepository {
   private readonly hasReturnRouteColumn: boolean;
   private readonly hasHumanQuestionsColumn: boolean;
   private readonly hasDelegatedDecisionColumn: boolean;
+  private readonly hasHumanConfirmColumn: boolean;
   private readonly hasEvidenceRefColumn: boolean;
   private readonly hasMintingGenColumn: boolean;
   private readonly hasClaimedGenColumn: boolean;
@@ -1288,6 +1307,7 @@ export class QueueRepository {
     this.hasReturnRouteColumn = detectQueueColumn(db, "return_route");
     this.hasHumanQuestionsColumn = detectQueueColumn(db, "human_questions");
     this.hasDelegatedDecisionColumn = detectQueueColumn(db, "delegated_decision");
+    this.hasHumanConfirmColumn = detectQueueColumn(db, "human_confirm");
     this.hasEvidenceRefColumn = detectQueueColumn(db, "evidence_ref");
     this.hasQueueTransitionsTable = detectTable(db, "queue_transitions");
     this.hasErasedIdsTable = detectTable(db, "queue_erased_ids");
@@ -2353,6 +2373,7 @@ export class QueueRepository {
       || ask.humanIntent === "update" || !this.isPersonAddress(ask.destinationSession)) return null;
     const row = this.db.prepare(`SELECT qitem_id FROM queue_items
       WHERE reply_to = ? AND source_session = ? AND destination_session = ?
+        AND NOT EXISTS (SELECT 1 FROM json_each(queue_items.tags) WHERE value = 'conversation')
         AND (EXISTS (SELECT 1 FROM json_each(queue_items.tags) WHERE value = 'human-answer')
           OR (qitem_id LIKE 'qitem-slack-inbound-%' AND COALESCE(summary, '') NOT LIKE '[Recovered after gap] %'))
       ORDER BY ts_created, rowid LIMIT 1`).get(qitemId, actorSession, ask.sourceSession) as { qitem_id: string } | undefined;
@@ -2613,7 +2634,7 @@ export class QueueRepository {
       }
       if (!this.hasHumanIntentColumn) throw new QueueRepositoryError("invalid_human_notification", "Human notification fields require the current queue schema; they were not saved.");
     }
-    if (input.replyTo != null) this.validateReplyTo(input.replyTo, input.humanIntent);
+    if (input.replyTo != null) this.validateReplyTo(input.replyTo, input);
     let humanQuestions: HumanQuestion[] | null = null;
     if (input.humanQuestions != null) {
       if (!isHumanSeatSessionRef(input.destinationSession)) {
@@ -2629,6 +2650,7 @@ export class QueueRepository {
       humanQuestions = parsed.questions;
     }
     this.assertHumanAlert(input.humanAlert, input.destinationSession, input.humanIntent);
+    if (input.humanConfirm != null) this.validateHumanConfirm(input.humanConfirm, input);
     const id = input.qitemId ?? newQitemId();
     // A row queue erasure deleted keeps only its id: a create that reuses it would bring erased work back.
     if (input.qitemId && this.hasErasedIdsTable
@@ -2682,6 +2704,9 @@ export class QueueRepository {
     const replaced = input.returnRoute == null && handedOffFrom ? this.getById(handedOffFrom) : null;
     this.persistReturnRoute(id, input.returnRoute ?? replaced?.returnRoute ?? null,
       input.returnRoute ? input.returnRouteBasis ?? null : replaced?.returnRouteBasis ?? null);
+    if (input.humanConfirm != null) {
+      this.db.prepare("UPDATE queue_items SET human_confirm = ? WHERE qitem_id = ?").run(input.humanConfirm, id);
+    }
     this.persistMintingGeneration(id, input.sourceSession);
     const notification = this.classifyOwnerNotification({
       action: "create",
@@ -2801,9 +2826,28 @@ export class QueueRepository {
     return asked && actor && actor !== asked ? asked : null;
   }
 
-  private validateReplyTo(replyTo: string, humanIntent: QueueCreateInput["humanIntent"]): void {
-    if (humanIntent !== "update") {
-      throw new QueueRepositoryError("reply_to_requires_update", "replyTo is accepted only with humanIntent update; a decision keeps its own thread so its reply stays unambiguous.");
+  private validateHumanConfirm(reading: unknown, input: QueueCreateInput): void {
+    const fail = (message: string) => new QueueRepositoryError("invalid_human_confirm", message);
+    if (typeof reading !== "string" || !reading.trim()) throw fail("humanConfirm must be the nonempty reading the human confirms.");
+    if (reading.length > MAX_HUMAN_CONFIRM) throw fail(`humanConfirm is over ${MAX_HUMAN_CONFIRM} characters.`);
+    if (input.humanIntent !== "update") {
+      if (!isHumanSeatSessionRef(input.destinationSession)) throw fail("humanConfirm requires a human destination: only a human can click it.");
+      if (input.humanQuestions != null) throw fail("an approve button and structured questions cannot share one decision; use an option instead.");
+      if (reading.length > MAX_OPTION_LABEL) throw fail(`an approve button label is at most ${MAX_OPTION_LABEL} characters (Slack's button limit).`);
+    } else {
+      if (input.replyTo == null) throw fail("humanConfirm on an update needs replyTo naming the decision it reads.");
+      const target = this.getById(input.replyTo);
+      if (!target || target.humanIntent === "update") throw fail(`humanConfirm needs replyTo to name a decision; ${input.replyTo} is not one.`);
+    }
+    if (!this.hasHumanConfirmColumn) throw fail("humanConfirm requires the current queue schema; it was not saved.");
+  }
+
+  private validateReplyTo(replyTo: string, input: QueueCreateInput): void {
+    // A decision may join another item's thread only with buttons of its own: a click names the
+    // decision it belongs to, while a typed reply in that thread belongs to the thread's item.
+    const ownButtons = input.humanConfirm != null || input.humanQuestions != null;
+    if (input.humanIntent !== "update" && !ownButtons) {
+      throw new QueueRepositoryError("reply_to_requires_update", "replyTo is accepted on an update, or on a decision with its own buttons (humanConfirm or humanQuestions); a plain decision keeps its own thread so its reply stays unambiguous.");
     }
     if (!this.hasReplyToColumn) throw new QueueRepositoryError("invalid_human_notification", "replyTo requires the current queue schema; it was not saved.");
     if (!this.getById(replyTo)) throw new QueueRepositoryError("reply_to_not_found", `replyTo names no qitem on this host: ${replyTo}.`);
@@ -5104,6 +5148,11 @@ export class QueueRepository {
     return rows.map((row) => this.rowToItem(row));
   }
 
+  /** The bus queue changes are published on (read-only subscribers such as the Slack gateway). */
+  get events(): EventBus {
+    return this.eventBus;
+  }
+
   /** opts.waiting: false skips the row's waiting view (the stuck sweep's own reads); the default builds it. Per call:
    *  it never changes what another read returns. */
   getById(qitemId: string, opts?: { waiting?: boolean }): QueueItem | null {
@@ -5179,6 +5228,83 @@ export class QueueRepository {
       `SELECT DISTINCT qitem_id FROM queue_transitions WHERE transition_note = ? AND actor_session = ?${provenance}`,
     ).all(formatReplyToChoice({ kind: "thread", threadTs }), REPLY_TO_CHOICE_ACTOR) as Array<{ qitem_id: string }>;
     return rows.map((r) => r.qitem_id);
+  }
+
+  /** Phase 1 — link a request to its outcome. Each `kind:ref` is validated, then recorded as
+   *  one typed transition; the request closes once every linked outcome is finished. */
+  addRequestLinks(input: { qitemId: string; actorSession: string; links: string[]; identityProvenance?: QueueUpdateInput["identityProvenance"] }): RequestLink[] {
+    if (!this.getById(input.qitemId)) throw new QueueRepositoryError("invalid_request_link", `qitem ${input.qitemId} not found.`);
+    const links = this.validateRequestLinks(input.links);
+    for (const link of links) {
+      this.update({
+        qitemId: input.qitemId,
+        actorSession: input.actorSession,
+        transitionNote: `${REQUEST_LINK_PREFIX} kind=${link.kind} ref=${link.ref}`,
+        ...(input.identityProvenance ? { identityProvenance: input.identityProvenance } : {}),
+      });
+    }
+    return links;
+  }
+
+  validateRequestLinks(raws: string[]): RequestLink[] {
+    const fail = (message: string) => new QueueRepositoryError("invalid_request_link", message);
+    return raws.map((raw) => {
+      const m = /^(pr|issue|qitem):(\S+)$/.exec(raw.trim());
+      if (!m) throw fail(`link "${raw}" must be pr:<url>, issue:<url> or qitem:<id>.`);
+      const link: RequestLink = { kind: m[1] as RequestLink["kind"], ref: m[2]! };
+      if (link.kind === "qitem" && !this.getById(link.ref)) throw fail(`linked qitem ${link.ref} not found.`);
+      if (link.kind !== "qitem" && !/^https:\/\/\S+$/.test(link.ref)) throw fail(`${link.kind} link "${link.ref}" must be an https URL.`);
+      return link;
+    });
+  }
+
+  requestLinks(qitemId: string): RequestLink[] {
+    const links = this.transitionLog.listForQitem(qitemId).flatMap((t) => {
+      const link = parseRequestLinkNote(t.transitionNote ?? "");
+      return link ? [link] : [];
+    });
+    return links.filter((link, i) => links.findIndex((l) => l.kind === link.kind && l.ref === link.ref) === i);
+  }
+
+  /** Phase 1 — the latest activity on a request: its own transitions, and rows created in
+   *  its thread (human replies tagged reply-to, seat updates replying to it). */
+  requestActivityAt(qitemId: string): string | null {
+    const row = this.db.prepare(
+      `SELECT MAX(ts) AS at FROM (
+         SELECT ts FROM queue_transitions WHERE qitem_id = ?
+         UNION ALL SELECT ts_created AS ts FROM queue_items WHERE tags LIKE ?${this.hasReplyToColumn ? " OR reply_to = ?" : ""}
+       )`,
+    ).get(...[qitemId, `%"reply-to:${qitemId}"%`, ...(this.hasReplyToColumn ? [qitemId] : [])]) as { at: string | null } | undefined;
+    return row?.at ?? null;
+  }
+
+  /** The qitem whose Slack post has this message ts, from the daemon's own posted receipts. */
+  postedQitemForMessage(messageTs: string): string | null {
+    if (!this.hasQueueTransitionsTable) return null;
+    const provenance = this.hasTransitionProvenanceColumn ? " AND identity_provenance IS NULL" : "";
+    const row = this.db.prepare(
+      `SELECT qitem_id FROM queue_transitions WHERE transition_note LIKE 'slack-owner-notification-posted %' AND (' ' || transition_note || ' ') LIKE ? AND actor_session = 'daemon@kernel'${provenance} LIMIT 1`,
+    ).get(`% message_ts=${messageTs} %`) as { qitem_id: string } | undefined;
+    return row?.qitem_id ?? null;
+  }
+
+  /** The thread root this qitem's own Slack post went into, from the daemon's posted receipt. */
+  postedThreadForQitem(qitemId: string): string | null {
+    const note = this.transitionLog.listForQitem(qitemId)
+      .find((t) => t.actorSession === "daemon@kernel" && t.transitionNote?.startsWith("slack-owner-notification-posted "))?.transitionNote;
+    return note?.split(/\s+/).find((f) => f.startsWith("thread_ts="))?.slice("thread_ts=".length) ?? null;
+  }
+
+  /** The thread root a message we posted went into (its own ts for a root post). */
+  postedThreadForMessage(messageTs: string): string | null {
+    const qitemId = this.postedQitemForMessage(messageTs);
+    if (!qitemId) return null;
+    for (const t of this.transitionLog.listForQitem(qitemId)) {
+      const fields = (t.transitionNote ?? "").split(/\s+/);
+      if (!fields.includes(`message_ts=${messageTs}`)) continue;
+      return fields.find((f) => f.startsWith("thread_ts="))?.slice("thread_ts=".length) ?? null;
+    }
+    return null;
   }
 
   private replyToFallbackFor(qitemId: string): string | null {
@@ -6521,6 +6647,7 @@ export class QueueRepository {
       humanQuestions: row.human_questions ? (JSON.parse(row.human_questions) as HumanQuestion[]) : null,
       humanAnswers: row.human_answers ? (JSON.parse(row.human_answers) as HumanAnswers) : null,
       delegatedDecision: row.delegated_decision ? (JSON.parse(row.delegated_decision) as DelegatedDecision) : null,
+      humanConfirm: row.human_confirm ?? null,
       closureReason: row.closure_reason as ClosureReason | null,
       closureTarget: row.closure_target,
       closureRequiredAt: row.closure_required_at,

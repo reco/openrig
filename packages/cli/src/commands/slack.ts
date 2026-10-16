@@ -198,6 +198,10 @@ export function slackCommand(deps: SlackDeps = {}): Command {
     .description("Configure the connector (first-class config; secrets stay in the env file, never here)")
     .option("--channel <id>", "Slack channel id the connector app must be a member of")
     .option("--inbound-destination <session>", "where a person's unrouted message lands: a seat's session, or default-receiver (the default) for the host's default receiving agent (agents.operator_session, else the kernel operator)")
+    .option("--approval-seat <session>", "a seat whose permission prompts go to its human in Slack as Approve / Deny (repeatable; replaces the list)", (v: string, acc: string[] = []) => { acc.push(v); return acc; })
+    .option("--extra-channel <id=session>", "another channel and the seat its new messages land on (repeatable; replaces the list)", (v: string, acc: string[] = []) => { acc.push(v); return acc; })
+    .option("--notifications-channel <id>", "channel for pure FYI posts (updates with no buttons, not thread replies); 'none' clears it")
+    .option("--merge-smoke-destination <session>", "seat that gets a smoke-check row after a merge from Slack; 'none' clears it")
     .option("--minimum-level-that-posts <level>", "minimum OWNER level posted to Slack: RECORD|NOTICE|ALERT")
     .option("--minimum-level-that-interrupts <level>", "minimum OWNER level that mentions/interrupts: RECORD|NOTICE|ALERT")
     .option("--source-label <label>", "label shown in the posted message footer (where the queue lives)")
@@ -214,6 +218,12 @@ export function slackCommand(deps: SlackDeps = {}): Command {
         ...cur,
         channel: opts.channel ?? cur.channel,
         inboundDestination: opts.inboundDestination ?? cur.inboundDestination,
+        approvalSeats: opts.approvalSeat ?? cur.approvalSeats ?? [],
+        ...(opts.notificationsChannel ? { notificationsChannel: opts.notificationsChannel === "none" ? null : opts.notificationsChannel } : {}),
+        ...(opts.mergeSmokeDestination ? { mergeSmokeDestination: opts.mergeSmokeDestination === "none" ? null : opts.mergeSmokeDestination } : {}),
+        extraChannels: opts.extraChannel
+          ? (opts.extraChannel as string[]).map((spec) => { const [id = "", inboundDestination = ""] = spec.split("="); return { id, inboundDestination }; })
+          : cur.extraChannels,
         minimumLevelThatPosts: opts.minimumLevelThatPosts ?? cur.minimumLevelThatPosts,
         minimumLevelThatInterrupts: opts.minimumLevelThatInterrupts ?? cur.minimumLevelThatInterrupts,
         sourceLabel: opts.sourceLabel ?? cur.sourceLabel,
@@ -230,6 +240,9 @@ export function slackCommand(deps: SlackDeps = {}): Command {
           effect: channelStateDigest(cur) === channelStateDigest(next) ? "no-op" : "applied" }),
       }, deps.home);
       log(`wrote ${result.value}; receipt ${result.receipt.id} (${result.receipt.effect})`);
+      if (cur.enabled && JSON.stringify(cur) !== JSON.stringify(next)) {
+        log("The running connector keeps the config it loaded: run `rig slack disable && rig slack enable` to apply this change.");
+      }
       log(`Next: if you have no Slack app yet, start with ${MANIFEST_FIRST_STEP}. Then put SLACK_BOT_TOKEN / SLACK_APP_TOKEN in ${next.secretsEnvFile ?? "<--secrets-env-file> (0600)"}, then \`rig slack verify\`, then \`rig slack enable\`.`);
     });
 
@@ -388,9 +401,21 @@ export function slackCommand(deps: SlackDeps = {}): Command {
         return;
       }
       const scope = await surface.verifyScopes(s.bot, cfg.requiredScopes, deps.fetchImpl);
-      // #192: membership in every channel the connector uses — the default and each mapped one.
+      // #192: membership in every channel the connector uses — the default, each mapped one, each
+      // extra channel with its own inbound seat, and the notifications channel.
+      const used = surface.mappedChannels(cfg);
+      for (const extra of cfg.extraChannels ?? []) {
+        const known = used.find((c) => c.channel === extra.id);
+        if (known) known.matches.push(`inbound ${extra.inboundDestination}`);
+        else used.push({ channel: extra.id, isDefault: false, matches: [`inbound ${extra.inboundDestination}`] });
+      }
+      if (cfg.notificationsChannel) {
+        const known = used.find((c) => c.channel === cfg.notificationsChannel);
+        if (known) known.matches.push("notifications");
+        else used.push({ channel: cfg.notificationsChannel, isDefault: false, matches: ["notifications"] });
+      }
       const channels = [];
-      for (const c of surface.mappedChannels(cfg)) {
+      for (const c of used) {
         const membership = await surface.verifyChannelMembership(s.bot, c.channel, deps.fetchImpl);
         const isPrivate = typeof membership.isPrivate === "boolean" ? membership.isPrivate : null;
         channels.push({
@@ -405,7 +430,7 @@ export function slackCommand(deps: SlackDeps = {}): Command {
       const missingFeatures = scope.error || scope.granted.length === 0 ? null
         : surface.FEATURE_SCOPES.filter((feature) => !scope.granted.includes(feature.scope));
       if (opts.json) {
-        log(JSON.stringify({ scope, member, ...(cfg.channelMap?.length ? { channels } : {}), ready, missingFeatures }));
+        log(JSON.stringify({ scope, member, ...(channels.length > 1 ? { channels } : {}), ready, missingFeatures }));
       } else {
         log(`granted scopes: ${scope.granted.join(", ") || "(none)"}`);
         if (!scope.ok) log(`✗ MISSING scopes (configured != granted — reinstall the app): ${scope.missing.join(", ")}${scope.error ? ` [${scope.error}]` : ""}`);

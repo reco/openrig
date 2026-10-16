@@ -1000,6 +1000,8 @@ export interface BodyPreview {
 // emits a partial/invalid UTF-8 sequence. `bodyTruncated` is CODE-POINT-count
 // based (codePointCount > N). `bodyBytes` is the honest TRUE total UTF-8 byte
 // length of the FULL body (never the truncated size).
+const collectLink = (value: string, previous: string[]): string[] => [...previous, value];
+
 export function previewBody(
   body: string,
   maxCodePoints = SHOW_BODY_PREVIEW_MAX_CODEPOINTS
@@ -1321,11 +1323,14 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--id <qitemId>", "Retry identity: reuse for the same create after an unknown outcome; otherwise generated and printed before sending")
     .option("--target-repo <name>", "PL-007: typed repo scope (must match a repo in the source rig's RigSpec.workspace.repos[])")
     .option("--summary <text>", "Short human-readable subject of the row, shown on every surface that lists it (RECENT, the story, the needs-you view). Say what the work is and why it needs this seat. For a human destination, --body-file is the complete decision brief or update; keep technical continuation in the owning agent row and evidence.")
-    .option("--human-intent <intent>", "decision (default) or update: a quiet informational delivery, never an approval request")
+    .option("--human-intent <intent>", "decision (default; shows buttons, a Confirm button if none are given) or update (status, answers, information: no buttons and no acknowledgement; silence means read)")
     .option("--alert", "For an ask to a person that's urgent: something only they can do, or an approval whose wait costs now. It stands out in Slack (an interrupt with a mention). Without it the ask still posts to Slack for a person on the default Slack subscription (every-ask), and waits on Steering and the TUI for one on urgent-only")
     .option("--human-detail-file <path>", "One explicitly authored supplemental thread reply; keep the complete action/options in --body-file")
-    .option("--reply-to <qitemId>", "Post this update into an earlier qitem's Slack thread (requires --human-intent update; posts as a new top-level message instead if that thread can't be used, e.g. it is missing or still has an open human decision; --verify reports why)")
+    .option("--reply-to <qitemId>", "Post this update, or a decision with its own buttons (--confirm or --human-questions-file), into an earlier qitem's Slack thread (an update needs --human-intent update; posts as a new top-level message instead if that thread can't be used, e.g. it is missing, or it still has an open human decision while slack explicitAnswersOnly is off; --verify reports why)")
+    .option("--link <kind:ref>", "Link this request to its outcome, kind:ref with kind pr|issue|qitem (repeatable). The request's Slack thread closes once every linked outcome is finished (PR merged or closed, issue closed, qitem done or canceled)", collectLink, [] as string[])
+    .option("--confirm <reading>", "A one-click answer that resolves with exactly this text. On a decision: the approve button's call to action, at most 75 characters (e.g. \"Build it\", \"Write the issue\"). On an update with --reply-to <decision>: your reading of their answer, shown with a Confirm button")
     .option("--human-questions-file <path>", "#193: JSON array of 1-4 questions for a decision, each {id, question, options: [{id, label, recommended?}]} with 2-4 options; Slack shows them as buttons")
+    .option("--human-merge <ref>", "owner/repo#<number>@<head sha>: the daemon builds a Merge / Not now card for this pull request from GitHub; on Merge it re-checks the gates and merges exactly that head. No --body needed.")
     .option("--evidence-ref <path>", "OPR.0.4.4.19 FR-5: pointer to the durable artifact a human judges (e.g. a PROOF.md path). Required by the daemon when the item is human-routed; optional otherwise.")
     .option("--host <id>", QUEUE_HOST_OPTION_HELP)
     .option("--return-route <route>", "For work a person answers from their own conversation: auto (OpenRig issues this conversation an address and prints it; use it from then on), self (this session's own address, for a session that joined), or an address you were given. The work carries it through handoffs, and a seat's prompt that isn't a choice dialog, and stuck steps, are sent to that address as tasks, ahead of the person's Slack connection, for this work only. Choice prompts and a route on another host keep their usual path; the conversation sees a task on its next turn. Without it, nothing changes")
@@ -1353,6 +1358,9 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       humanDetailFile?: string;
       replyTo?: string;
       humanQuestionsFile?: string;
+      confirm?: string;
+      humanMerge?: string;
+      link?: string[];
       summary?: string;
       evidenceRef?: string;
       host?: string;
@@ -1381,7 +1389,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       // OPR.0.3.2.21.FR-4(a) — resolve a LOCAL body BEFORE contacting the daemon
       // so a missing/ambiguous body fails fast and locally.
       let resolvedBody = "";
-      if (opts.bodyContext === undefined) {
+      if (opts.bodyContext === undefined && opts.humanMerge === undefined) {
         try {
           resolvedBody = await resolveQueueBody({ body: opts.body, bodyFile: opts.bodyFile });
         } catch (err) {
@@ -1389,10 +1397,17 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
           return;
         }
       }
+      if (opts.humanIntent === "ack") {
+        const message = "human_intent_ack_removed: --human-intent ack was removed. Information needs no acknowledgement (reading it counts; disagreement arrives as a thread reply). Use --human-intent update.";
+        if (opts.json) console.error(JSON.stringify({ error: "human_intent_ack_removed", message }));
+        else console.error(message);
+        process.exitCode = 1;
+        return;
+      }
       // #96: a thread root routes replies to the item that opened it, so only an update
       // (which never takes a reply) may join another item's thread. Fail before the daemon.
-      if (opts.replyTo !== undefined && opts.humanIntent !== "update") {
-        const message = "reply_to_requires_update: --reply-to is accepted only with --human-intent update; a decision keeps its own thread so its reply stays unambiguous.";
+      if (opts.replyTo !== undefined && opts.humanIntent !== "update" && opts.confirm === undefined && opts.humanQuestionsFile === undefined) {
+        const message = "reply_to_requires_update: --reply-to is accepted with --human-intent update, or on a decision with its own buttons (--confirm or --human-questions-file); a plain decision keeps its own thread so its reply stays unambiguous.";
         if (opts.json) console.error(JSON.stringify({ error: "reply_to_requires_update", message }));
         else console.error(message);
         process.exitCode = 1;
@@ -1486,6 +1501,9 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
         const receipt = writeReceipt(opts.full, {
           verb: "create", nudgeSuppressed: opts.nudge === false, idGiven: opts.id !== undefined, remoteHost: remoteHostOf(hostResolved.hostId),
         });
+        if (isHumanSeatSessionRef(hostResolved.destination) && opts.humanIntent === undefined && opts.confirm === undefined && humanQuestions === undefined && opts.humanMerge === undefined) {
+          console.error("Warning: no --human-intent, so this posts as a decision with a Confirm button. For information, status or an answer use --human-intent update (no buttons, no acknowledgement needed).");
+        }
         const res: DaemonResponse<Record<string, unknown>> | Error = await client.post<Record<string, unknown>>("/api/queue/create", {
           ...(managedSource === undefined ? { sourceSession: source } : {}),
           qitemId,
@@ -1496,6 +1514,9 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
           humanDetail: opts.humanDetailFile ? await resolveQueueBody({ bodyFile: opts.humanDetailFile }) : undefined,
           replyTo: opts.replyTo,
           humanQuestions,
+          humanConfirm: opts.confirm,
+          ...(opts.humanMerge !== undefined ? { humanMerge: opts.humanMerge } : {}),
+          ...(opts.link?.length ? { links: opts.link } : {}),
           summary: opts.summary,
           evidenceRef: opts.evidenceRef,
           priority: opts.priority,
@@ -1693,6 +1714,7 @@ For a new cross-host transfer, prefer rig queue handoff --host <registered-host>
     .option("--source <name@external>", "Outside a managed seat: the external routine that appends the --note, recorded as an external actor (claimed:v1), never a seat; note only, on this host's daemon (a --host that resolves to another host is refused). A managed seat stays the actor. Like any note, it resets the item's stall and notification timing (and its recovery and operator episodes) and advances a claimed item's last activity, but never resets how long an unclaimed item has waited")
     .option("--host <id>", QUEUE_HOST_ROW_OPTION_HELP)
     .option("--full", "Print the whole response row(s) as today, even when output.compact is on (the receipt's waiting keeps only blocker and nextBackstop)")
+    .option("--link <kind:ref>", "Link this request to its outcome, kind:ref with kind pr|issue|qitem (repeatable). The request's Slack thread closes once every linked outcome is finished (PR merged or closed, issue closed, qitem done or canceled)", collectLink, [] as string[])
     .option("--json", "JSON output for agents")
     .action(async (qitemId: string, opts: {
       actor?: string;
@@ -1710,6 +1732,7 @@ For a new cross-host transfer, prefer rig queue handoff --host <registered-host>
       evidenceRef?: string;
       note?: string;
       host?: string;
+      link?: string[];
       json?: boolean;
       full?: boolean;
     }) => {
@@ -1760,6 +1783,7 @@ For a new cross-host transfer, prefer rig queue handoff --host <registered-host>
           evidenceRef: opts.evidenceRef,
           transitionNote: opts.note,
           ...actor,
+          ...(opts.link?.length ? { links: opts.link } : {}),
         };
         let transitionFloor: number | undefined;
         let floorUnknown: string | undefined;

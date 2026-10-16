@@ -133,12 +133,38 @@ export class ThreadSeatMap {
     return rows.map((r) => r.channel);
   }
 
+  /** Every root a conversation opened, open or closed. */
+  listRootsByConversation(conversationId: string): ThreadMapping[] {
+    return (this.db.prepare(`SELECT * FROM thread_seat_map WHERE conversation_id = ?`).all(conversationId) as Record<string, unknown>[]).map(project);
+  }
+
+  /** Phase 1 — the open requests: one row per conversation with an open root, its newest root. */
+  listOpenConversations(): ThreadMapping[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM thread_seat_map WHERE state = 'open' ORDER BY ${NEWEST_ROOT_FIRST}`)
+      .all() as Record<string, unknown>[];
+    const seen = new Set<string>();
+    return rows.map(project).filter((m) => !seen.has(m.conversationId) && seen.add(m.conversationId));
+  }
+
+  closeConversation(conversationId: string): void {
+    this.db
+      .prepare(`UPDATE thread_seat_map SET state = 'closed', closed_at = ? WHERE conversation_id = ? AND state = 'open'`)
+      .run(this.now().toISOString(), conversationId);
+  }
+
   /** #899 — record a message OpenRig posted into a thread for an ask, with that ask and its seat (idempotent). */
   recordPart(m: { messageTs: string; channel: string; threadTs: string; seat: string; conversationId: string }): void {
     this.db
       .prepare(`INSERT INTO thread_part_map (message_ts, channel, thread_ts, seat, conversation_id) VALUES (?, ?, ?, ?, ?)
          ON CONFLICT(channel, message_ts) DO NOTHING`)
       .run(m.messageTs, m.channel, m.threadTs, m.seat, m.conversationId);
+  }
+
+  /** What OpenRig posted into a thread (its replies, not the root), newest first: each part's ask and seat. */
+  partsInThread(threadTs: string, channel: string): Array<{ seat: string; conversationId: string }> {
+    return (this.db.prepare(`SELECT seat, conversation_id FROM thread_part_map WHERE thread_ts = ? AND channel = ? AND message_ts != thread_ts ORDER BY CAST(message_ts AS REAL) DESC`)
+      .all(threadTs, channel) as Array<{ seat: string; conversation_id: string }>).map((r) => ({ seat: r.seat, conversationId: r.conversation_id }));
   }
 
   /** #899 — the ask and seat of a message OpenRig posted into a thread in this channel; null for any other message. */

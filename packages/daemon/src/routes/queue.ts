@@ -359,6 +359,8 @@ export function queueRoutes(): Hono {
         : err.code === "reply_to_requires_update" ? 400
         : err.code === "reply_to_not_found" ? 400
         : err.code === "invalid_human_questions" ? 400
+        : err.code === "invalid_human_confirm" ? 400
+        : err.code === "invalid_request_link" ? 400
         // OPR.0.4.6.WF3 FR-6: the frontier close-path guard — operator
         // misuse of a queue verb on a live workflow packet; structured
         // 400 with the what/why/fix message, never a 500.
@@ -725,6 +727,10 @@ export function queueRoutes(): Hono {
       humanDetail?: string | null;
       replyTo?: string | null;
       humanQuestions?: HumanQuestion[] | null; // shape validated by the repository (invalid_human_questions)
+      humanConfirm?: string | null;
+      /** owner/repo#123@<40-hex head>: the daemon builds a Merge / Not now card from GitHub. */
+      humanMerge?: string | null;
+      links?: string[];
       summary?: string | null;
       evidenceRef?: string | null;
       nudge?: boolean;
@@ -786,6 +792,27 @@ export function queueRoutes(): Hono {
     // passes-through when it doesn't know the source rig, so a post-forward
     // check cannot recover it. Local ordering is unchanged (the cross-host
     // branch is a no-op without hostId).
+    // A merge card's text, options and tags come from GitHub via the daemon, never from the asking seat.
+    let mergeRef: import("../domain/human-merge.js").MergeRef | null = null;
+    if (body.humanMerge != null) {
+      const merge = await import("../domain/human-merge.js");
+      mergeRef = merge.parseMergeRef(String(body.humanMerge));
+      if (!mergeRef) return c.json({ error: "human_merge must be owner/repo#<number>@<40-character head sha>", code: "invalid_human_merge" }, 400);
+      if (body.humanQuestions?.length || body.humanConfirm || body.humanIntent === "update" || body.replyTo) {
+        return c.json({ error: "human_merge builds its own card: no questions, confirm, update intent or reply-to", code: "invalid_human_merge" }, 400);
+      }
+      if (typeof body.hostId === "string" && !resolvesToLocalHost(body.hostId, getSelfHostId())) {
+        return c.json({ error: "human_merge runs on the local daemon only (its gh merges); create it without --host", code: "invalid_human_merge" }, 400);
+      }
+      let card: Awaited<ReturnType<typeof merge.buildMergeCard>>;
+      try {
+        card = await merge.buildMergeCard((c.get("gh" as never) as import("../domain/human-merge.js").Gh | undefined) ?? merge.defaultGh, mergeRef);
+      } catch (e) {
+        return c.json({ error: `could not read ${mergeRef.repo}#${mergeRef.number} from GitHub: ${(e as Error).message}`, code: "human_merge_unreadable" }, 502);
+      }
+      Object.assign(body, { humanIntent: "decision", humanQuestions: [merge.MERGE_QUESTION], body: card.body, summary: card.summary, evidenceRef: card.evidenceRef, humanDetail: null,
+        tags: [...(body.tags ?? []).filter((t) => !t.startsWith("human-merge")), ...card.tags] });
+    }
     const refusal = createInputRefusal(c, sourceSession, body);
     if (refusal) return refusal;
 
@@ -834,6 +861,7 @@ export function queueRoutes(): Hono {
     try {
       const fence = classificationRefusal(c, sourceSession, body.classificationBinding);
       if (fence) return fence;
+      if (body.links?.length) getRepo(c).validateRequestLinks(body.links);
       const item = await getRepo(c).create({
         qitemId: createId,
         sourceSession,
@@ -850,12 +878,24 @@ export function queueRoutes(): Hono {
         humanDetail: body.humanDetail,
         replyTo: body.replyTo,
         humanQuestions: body.humanQuestions,
+        humanConfirm: body.humanConfirm,
         summary: body.summary,
         evidenceRef: body.evidenceRef,
         nudge: (body as { nudge?: boolean }).nudge,
         ...resolveRecordedIdentity(c, identity), // P21 §4 era-stamp, plus the MCP adapter's caller on a direct attributed request (principal:v1)
         ...(route ? { returnRoute: route.address, returnRouteBasis: route.basis } : {}),
       });
+      if (body.links?.length) getRepo(c).addRequestLinks({ qitemId: item.qitemId, actorSession: item.sourceSession, links: body.links, identityProvenance: resolveRecordedProvenance(c, identity) });
+      if (mergeRef) {
+        const { CARD_NOTE, formatMergeRef } = await import("../domain/human-merge.js");
+        // An id reused for a row the seat wrote itself returns that row: it never becomes a merge card.
+        const built = item.body === body.body && item.summary === body.summary && !item.humanDetail && JSON.stringify(item.humanQuestions) === JSON.stringify(body.humanQuestions)
+          && JSON.stringify([...(item.tags ?? [])].sort()) === JSON.stringify([...body.tags!].sort()) && item.destinationSession === body.destinationSession;
+        if (!built) return c.json({ error: `qitem id ${item.qitemId} already names a different row`, code: "invalid_human_merge" }, 409);
+        if (!getRepo(c).transitionLog.listForQitem(item.qitemId).some((t) => t.transitionNote?.startsWith(CARD_NOTE) && t.identityProvenance === null)) {
+          getRepo(c).update({ qitemId: item.qitemId, actorSession: "daemon@kernel", transitionNote: `${CARD_NOTE}${formatMergeRef(mergeRef)}` });
+        }
+      }
       const scopeAdvisory = !(body.tags ?? []).includes(CROSS_HOST_TAG) ? createScopeAdvisory(c, item.tags) : null;
       const advisories = [destinationAdvisory(c, item.destinationSession), sharedChannelAskAdvisory(item.destinationSession, body.humanIntent), scopeAdvisory,
         // A same-id retry returns the stored row unchanged: say the route wasn't kept only when that row has none.
@@ -1047,6 +1087,7 @@ export function queueRoutes(): Hono {
       wakeAfterSeconds?: number;
       summary?: string | null;
       evidenceRef?: string | null;
+      links?: string[];
     }>().catch(() => ({} as never));
     // P21 I3 — the actor is the transport-derived sender (X-OpenRig-Session), NEVER a body claim.
     // P18 deliver-and-label: absent header + a body actor → claimed:v1; absent + no body → 400
@@ -1060,6 +1101,15 @@ export function queueRoutes(): Hono {
     try {
       const fence = classificationRefusal(c, actorSession, body.classificationBinding);
       if (fence) return fence;
+      const links = body.links ?? [];
+      if (links.length > 0) getRepo(c).validateRequestLinks(links);
+      const { links: _links, actorSession: _actor, ...mutation } = body;
+      const onlyLinks = links.length > 0 && Object.values(mutation).every((v) => v === undefined);
+      const recordLinks = () => links.length > 0 && getRepo(c).addRequestLinks({ qitemId, actorSession, links, identityProvenance: resolveRecordedProvenance(c, identity) });
+      if (onlyLinks) {
+        recordLinks();
+        return c.json(getRepo(c).getById(qitemId));
+      }
       const item = getRepo(c).update({
         qitemId,
         actorSession,
@@ -1080,6 +1130,7 @@ export function queueRoutes(): Hono {
         evidenceRef: body.evidenceRef,
         ...resolveRecordedIdentity(c, identity), // P21 §4 era-stamp, plus the MCP adapter's caller on a direct attributed request (principal:v1)
       });
+      recordLinks();
       const advisories = [body.state === "blocked" ? parkWithoutWakeAdvisory(item) : null, ...unstoredAdvisories(body, item)]
         .filter((advisory) => advisory !== null);
       return c.json({ ...item, ...(advisories.length > 0 ? { advisories } : {}) });

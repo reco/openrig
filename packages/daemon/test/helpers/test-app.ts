@@ -58,6 +58,7 @@ import { providerAccountReadingsSchema } from "../../src/db/migrations/117_provi
 import { humanQuietWindowsSchema } from "../../src/db/migrations/118_human_quiet_windows.js";
 import { modePostureCoexistSchema } from "../../src/db/migrations/109_mode_posture_coexist.js";
 import { rigNonInterruptiveSchema } from "../../src/db/migrations/095_rig_non_interruptive.js";
+import { humanConfirmSchema } from "../../src/db/migrations/096_human_confirm.js";
 import { mockShellCommand } from "./shell-command-mock.js";
 import { vi } from "vitest";
 import type Database from "better-sqlite3";

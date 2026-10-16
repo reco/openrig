@@ -181,6 +181,8 @@ export function gatewayCommand(deps: GatewayCommandDeps = {}): Command {
     )
     .requiredOption("--delivery-class <A|B|C|D>", "Notification loudness class (the notifications register selection)")
     .option("--away", "Set the AWAY preset")
+    .option("--channel <id>", "Slack channel this human may write in (repeatable; absent = any configured channel)", (v: string, acc: string[] = []) => { acc.push(v); return acc; })
+    .option("--role <approver|requester>", "approver (default) resolves gates; a requester only talks to seats, never resolves a gate")
     .option("--replace", "Explicitly replace an existing human (no silent overwrite)")
     .option("--reason <reason>", "Reason recorded with connector binding changes", "register human delivery")
     .option("--actor <actor>", "Named operator when outside a managed seat")
@@ -189,7 +191,7 @@ export function gatewayCommand(deps: GatewayCommandDeps = {}): Command {
     .option("--policy <text>", "Readable policy for agents working with this person (text, not enforced)")
     .option("--policy-file <path>", "Read the policy text from a file")
     .option("--default", "Make this person the default: the one escalations, the notice digest and other unaddressed needs go to")
-    .action(async (entityId: string, opts: { displayName: string; binding?: string[]; deliveryClass: string; away?: boolean; replace?: boolean; reason: string; actor?: string; organization?: string; group?: string[]; policy?: string; policyFile?: string; default?: boolean }) => {
+    .action(async (entityId: string, opts: { displayName: string; binding?: string[]; deliveryClass: string; away?: boolean; replace?: boolean; reason: string; actor?: string; role?: string; channel?: string[]; organization?: string; group?: string[]; policy?: string; policyFile?: string; default?: boolean }) => {
       // LAZY import the narrow daemon surface at invocation (dep rail 2).
       const registry = await import("@openrig/daemon/gateway-human-registry");
       const { addHumanFragment, parseBindingSpec } = registry as unknown as {
@@ -222,6 +224,8 @@ export function gatewayCommand(deps: GatewayCommandDeps = {}): Command {
         address: `${entityId}@external`,
         connectorBindings: bindings,
         prefs: { deliveryClass: opts.deliveryClass, ...(opts.away ? { away: true } : {}) },
+        ...(opts.role ? { role: opts.role } : {}),
+        ...(opts.channel ? { channels: opts.channel } : {}),
       };
       const before = registry.showHuman(entityId);
       try {
@@ -279,7 +283,7 @@ Examples:
 
   human
     .command("list")
-    .description("List the registered people, with delivery readiness and quiet hours (rig gateway participants adds organizations, groups, policy and shared channels)")
+    .description("List the registered people and their roles, with delivery readiness and quiet hours (rig gateway participants adds organizations, groups, policy and shared channels)")
     .option("--json", "Complete record(s) as JSON")
     .action(async (opts: { json?: boolean }) => {
       const { listHumans, NO_HUMAN_CONFIGURED } = await import("@openrig/daemon/gateway-human-registry");
@@ -295,7 +299,7 @@ Examples:
       for (const h of humans) {
         const inbound = h.bindings.inboundResolvable || !h.bindings.primary ? "" : "  [outbound-only]";
         const primary = h.bindings.primary ? `primary ${h.bindings.primary.kind}:${h.bindings.primary.connectorRef}` : "no connector: Feed and Steering only";
-        console.log(`${h.entityId}  "${h.displayName}"  class=${h.deliveryClass}  ${h.availability}  bindings=${h.bindings.count} (${primary})  delivery=${h.deliveryReadiness.state}${inbound}`);
+        console.log(`${h.entityId}  "${h.displayName}"  role=${h.role}  class=${h.deliveryClass}  ${h.availability}  bindings=${h.bindings.count} (${primary})  delivery=${h.deliveryReadiness.state}${inbound}`);
         if (!h.deliveryReadiness.ready) console.log(`  delivery: ${h.deliveryReadiness.reason}${h.deliveryReadiness.nextAction ? `; next: ${h.deliveryReadiness.nextAction}` : ""}`);
         console.log(`  ${"unknown" in h.quiet ? `quiet: unknown (${h.quiet.unknown})` : describeQuiet(h.quiet)}`);
       }

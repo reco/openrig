@@ -111,6 +111,7 @@ describe("gateway human lifecycle (S12, amended A1: single-human surface): list 
     expect(ana.away).toBe(true);
     expect(ana.bindings.count).toBe(2);
     expect(ana.bindings.inboundResolvable).toBe(true);
+    expect(ana.role).toBe("approver");
     expect(res).not.toHaveProperty("advisory");
   });
 

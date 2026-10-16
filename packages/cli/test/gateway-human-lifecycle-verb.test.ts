@@ -194,9 +194,10 @@ describe("rig gateway human lifecycle verbs (S12)", () => {
     const p = program();
     p.exitOverride();
     await p.parseAsync(["node", "rig", "gateway", "human", "list", "--json"]);
-    const out = JSON.parse(logSpy.mock.calls.at(-1)![0] as string) as { ok: boolean; humans: unknown[]; advisory?: string };
+    const out = JSON.parse(logSpy.mock.calls.at(-1)![0] as string) as { ok: boolean; humans: Array<{ role: string }>; advisory?: string };
     expect(out.ok).toBe(true);
     expect(out.humans).toHaveLength(2);
+    expect(out.humans.map((h) => h.role)).toEqual(["approver", "approver"]);
     expect(out).not.toHaveProperty("advisory");
   });
 
@@ -377,6 +378,23 @@ describe("rig gateway human lifecycle verbs (S12)", () => {
     expect(process.exitCode).toBe(1);
     expect(errSpy.mock.calls.map((c) => String(c[0])).join("\n")).toContain('no organization "nope"');
     expect(readdirSync(humansDir(home)).sort()).toEqual(dirBefore);
+  });
+
+  it("adds a second human as a requester", async () => {
+    const p = program();
+    p.exitOverride();
+    await p.parseAsync([
+      "node", "rig", "gateway", "human", "add", "lee",
+      "--display-name", "Lee",
+      "--binding", "slack:main:vault://slack/lee:primary:handle=ULEE",
+      "--delivery-class", "B",
+      "--role", "requester",
+      "--channel", "C0PSA",
+    ]);
+    expect(process.exitCode ?? 0).toBe(0);
+    expect(readFileSync(join(humansDir(home), "lee.yaml"), "utf8")).toContain("role: requester");
+    expect(readFileSync(join(humansDir(home), "lee.yaml"), "utf8")).toMatch(/channels:\n\s+- C0PSA/);
+    expect(readFileSync(join(humansDir(home), "mike.yaml"), "utf8")).not.toContain("role: requester");
   });
 
   it("F1 companion: re-add of the SAME human with --replace stays allowed (boundary blocks distinct humans only)", async () => {

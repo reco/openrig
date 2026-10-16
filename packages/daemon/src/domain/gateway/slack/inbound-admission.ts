@@ -14,7 +14,7 @@
 import type { InboundSenderResolution, SharedChannelContext } from "./inbound.js";
 // S10 re-home: this module now lives IN the daemon, so the registry surface types resolve
 // relatively (the lazy-import dep rail was a CLI concern; the injectable surface stays for tests).
-import { registeredPeople, type HumanFragment, type loadHumanRegistry as LoadFn, type resolveSlackHandle as ResolveFn } from "../human-registry.js";
+import { isRequesterAddress, registeredPeople, type HumanFragment, type loadHumanRegistry as LoadFn, type resolveSlackHandle as ResolveFn } from "../human-registry.js";
 import { effectivePolicy, readParticipantsFile, type ParticipantsFile, type SharedChannelEntry } from "../participants.js";
 
 export interface RegistrySurface {
@@ -37,7 +37,15 @@ export function makeInboundSenderResolver(reg: RegistrySurface, home?: string): 
     // else is told to register a person, as before.
     const r = loaded.ok ? reg.resolveSlackHandle(slackUserId, people) : { kind: "unregistered" as const, error: loaded.error };
     if (r.kind === "registered") {
-      return { admitted: true, source: r.address, entityId: r.entityId, ...(shared ? { sharedChannel: channelContext(shared, slackUserId, r.address) } : {}) };
+      const allowed = people.find((e) => e.address === r.address)?.channels;
+      if (allowed && !(channel && allowed.includes(channel))) {
+        return { admitted: false, teaching: `${r.address} may write only in ${allowed.join(", ")}; channel ${channel ?? "(unknown)"} refused` };
+      }
+      return {
+        admitted: true, source: r.address, entityId: r.entityId,
+        ...(isRequesterAddress(r.address, people) ? { requester: true } : {}),
+        ...(shared ? { sharedChannel: channelContext(shared, slackUserId, r.address) } : {}),
+      };
     }
     if (shared) return { admitted: true, source: `${shared.id}@external`, sharedChannel: channelContext(shared, slackUserId, null) };
     return { admitted: false, teaching: r.error };

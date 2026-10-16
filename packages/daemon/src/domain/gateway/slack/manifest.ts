@@ -4,19 +4,12 @@
 //
 // Scopes and events are DERIVED from the connector's canonical sources, never listed here:
 //   bot scopes  = BASELINE_REQUIRED_SCOPES + FEATURE_SCOPES (capabilities.ts)
-//   bot events  = ADMITTED_EVENT_TYPES via EVENT_SUBSCRIPTIONS (capabilities.ts).
+//   bot events  = ADMITTED_EVENT_TYPES + REACTION_EVENT_TYPES via EVENT_SUBSCRIPTIONS (capabilities.ts).
 // A Slack subscription name is not always the payload type (subscribing to `message.channels`
 // delivers payloads of type `message`), so the mapping is explicit and checked.
 // The constructor imports no configuration: it cannot load files or read the environment.
 import { stringify } from "yaml";
-import {
-  ADMITTED_EVENT_TYPES,
-  BASELINE_REQUIRED_SCOPES,
-  EVENT_SUBSCRIPTIONS,
-  FEATURE_SCOPES,
-  PRIVATE_CHANNEL_MESSAGE_SUBSCRIPTION,
-  PRIVATE_CHANNEL_SCOPES,
-} from "./capabilities.js";
+import { ADMITTED_EVENT_TYPES, BASELINE_REQUIRED_SCOPES, EVENT_SUBSCRIPTIONS, FEATURE_SCOPES, MEMBER_EVENT_TYPES, PRIVATE_CHANNEL_MESSAGE_SUBSCRIPTION, REACTION_EVENT_TYPES } from "./capabilities.js";
 
 export const MANIFEST_DISPLAY_NAME = "OpenRig";
 export const SLACK_CREATE_APP_URL = "https://api.slack.com/apps?new_app=1&manifest_yaml=";
@@ -48,7 +41,7 @@ export interface ManifestSources {
   requiredScopes: readonly string[];
   featureScopes: readonly string[];
   admittedEventTypes: readonly string[];
-  eventSubscriptions: Readonly<Record<string, { subscription: string; scope: string }>>;
+  eventSubscriptions: Readonly<Record<string, ReadonlyArray<{ subscription: string; scope: string }>>>;
 }
 
 export interface SlackManifestOptions {
@@ -59,7 +52,7 @@ export interface SlackManifestOptions {
 export const CANONICAL_MANIFEST_SOURCES: ManifestSources = {
   requiredScopes: BASELINE_REQUIRED_SCOPES,
   featureScopes: FEATURE_SCOPES.map((f) => f.scope),
-  admittedEventTypes: ADMITTED_EVENT_TYPES,
+  admittedEventTypes: [...ADMITTED_EVENT_TYPES, ...REACTION_EVENT_TYPES, ...MEMBER_EVENT_TYPES],
   eventSubscriptions: EVENT_SUBSCRIPTIONS,
 };
 
@@ -75,11 +68,13 @@ export function buildSlackAppManifest(
   const events: string[] = [];
   for (const type of sources.admittedEventTypes) {
     const mapped = sources.eventSubscriptions[type];
-    if (!mapped) throw new Error(`slack manifest: admitted event type "${type}" has no subscription mapping`);
-    if (!scopes.includes(mapped.scope)) {
-      throw new Error(`slack manifest: event "${mapped.subscription}" needs scope "${mapped.scope}", which is not requested`);
+    if (!mapped?.length) throw new Error(`slack manifest: admitted event type "${type}" has no subscription mapping`);
+    for (const m of mapped) {
+      if (!scopes.includes(m.scope)) {
+        throw new Error(`slack manifest: event "${m.subscription}" needs scope "${m.scope}", which is not requested`);
+      }
+      events.push(m.subscription);
     }
-    events.push(mapped.subscription);
   }
   if (options.privateChannel && sources.admittedEventTypes.includes("message")) {
     const mapped = PRIVATE_CHANNEL_MESSAGE_SUBSCRIPTION;

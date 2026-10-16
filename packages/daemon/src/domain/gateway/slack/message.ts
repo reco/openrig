@@ -5,7 +5,7 @@
 // https://docs.slack.dev/reference/block-kit/blocks/section-block/ (3,000)
 // https://docs.slack.dev/reference/block-kit/blocks/ (50 blocks)
 import { createHash } from "node:crypto";
-import { MAX_OPTION_LABEL, type HumanQuestion } from "../../human-questions.js";
+import { MAX_OPTION_LABEL, formatHumanAnswers, type HumanAnswers, type HumanQuestion } from "../../human-questions.js";
 
 export const SLACK_TEXT_CAP = 3900; // Our conservative complete-fallback budget, not Slack’s hard limit.
 export const SLACK_SECTION_CAP = 3000;
@@ -31,6 +31,10 @@ export interface QitemLike {
   evidenceRef?: string | null;
   /** The code fence an earlier part of a split brief left open; this body starts inside it. */
   bodyOpenFence?: string | null;
+  humanAnswers?: HumanAnswers | null;
+  humanIntent?: "decision" | "update" | null;
+  /** Phase 1 — a reading the human confirms with one click (an update replying to a decision). */
+  humanConfirm?: string | null;
 }
 
 /** #1013 — a workflow gate row parked on a human seat (the projector parks it
@@ -88,6 +92,16 @@ export interface OutboundMessageOpts {
   stateUnconfirmed?: boolean;
   /** A post made although the person's quiet hours couldn't be read says so in the same line, left out the same way. */
   quietUnreadable?: boolean;
+  /** Phase 1 (explicitAnswersOnly): decisions always carry buttons and no typed-reply hint; a
+   *  decision without its own buttons gets an Agree button. */
+  answerHint?: boolean;
+  /** Phase 1: the offer's button is replaced by its outcome: confirmed, or not used because the
+   *  decision was made another way. */
+  confirmOutcome?: ConfirmOutcome;
+  /** Phase 1: every question is answered; the button rows are replaced by the answers. */
+  answered?: boolean;
+  /** The request is closed (expired, canceled, finished): no buttons; any answers stay, and this line says why. */
+  closedNote?: string;
 }
 
 const POSSIBLE_REPEAT_NOTE = "Delivery may repeat after an earlier unconfirmed attempt.";
@@ -144,6 +158,14 @@ export const OPTION_ACTION_PREFIX = "or-opt:";
 export const TYPED_REPLY_HINT = "Or reply in this thread with your own answer. A typed reply submits your answer without waiting for every question to be answered.";
 export const CHANNEL_REPLY_HINT = "Reply in this thread with your answer.";
 export const HUMAN_REQUIRED_REPLY_HINT = "Reply in this thread after this question to answer it. Earlier and extra messages still reach the agent as conversation.";
+export const CONFIRM_BLOCK_PREFIX = "or-confirm:";
+export const CONFIRM_ACTION_ID = "or-confirm";
+export type ConfirmOutcome = "confirmed" | "not-used";
+/** Phase 1: a decision that brings no buttons of its own gets this one. */
+export const DEFAULT_CONFIRM_LABEL = "Confirm";
+/** Alerts the daemon closes itself (a wake escalation, a stuck-sweep finding): nothing for the human to confirm. */
+const SELF_CLOSING_ALERT_TAGS = new Set(["wake-escalation", "stuck-sweep-finding"]);
+export const DEFAULT_CONFIRM_DECISION = "confirmed";
 
 /** Parse a clicked button back into its question and option ids; null if it is not ours. */
 export function parseQuestionAction(blockId: unknown, actionId: unknown): { questionId: string; optionId: string } | null {
@@ -158,22 +180,79 @@ export function recommendationLabel(label: string, recommended = false): string 
   return recommended && !/\(recommended\)/i.test(label) ? `${label} (recommended)` : label;
 }
 
+/** The offer qitem a clicked Confirm button names; null if the click is not a Confirm. */
+export function parseConfirmAction(blockId: unknown, actionId: unknown): string | null {
+  if (actionId !== CONFIRM_ACTION_ID || typeof blockId !== "string" || !blockId.startsWith(CONFIRM_BLOCK_PREFIX)) return null;
+  return blockId.slice(CONFIRM_BLOCK_PREFIX.length) || null;
+}
+
+function buildConfirmBlocks(qitemId: string, reading: string, outcome: ConfirmOutcome | undefined, approve: boolean): { blocks: unknown[]; text: string } {
+  if (outcome === "not-used") {
+    const text = bounded(`Not used: the decision was already made another way. (${approve ? "Button" : "Reading"}: ${inert(reading)})`, SLACK_SECTION_CAP, "unused offer");
+    return { text, blocks: [{ type: "context", elements: [{ type: "mrkdwn", text }] }] };
+  }
+  const confirmed = outcome === "confirmed";
+  if (confirmed && approve) {
+    const text = bounded(`Decided: *${inert(reading)}*`, SLACK_SECTION_CAP, "approved call to action");
+    return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
+  }
+  if (approve) {
+    const label = bounded(inert(reading), MAX_OPTION_LABEL, "approve button label");
+    return {
+      text: `Click "${label}" to decide.`,
+      blocks: [{ type: "actions", block_id: `${CONFIRM_BLOCK_PREFIX}${qitemId}`, elements: [{ type: "button", action_id: CONFIRM_ACTION_ID, style: "primary", text: { type: "plain_text", text: label } }] }],
+    };
+  }
+  if (confirmed) {
+    const text = bounded(`Confirmed: ${inert(reading)}`, SLACK_SECTION_CAP, "confirmed reading");
+    return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
+  }
+  const text = bounded(`*My reading:* ${inert(reading)}`, SLACK_SECTION_CAP, "confirm reading");
+  return {
+    text,
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text } },
+      { type: "actions", block_id: `${CONFIRM_BLOCK_PREFIX}${qitemId}`, elements: [{ type: "button", action_id: CONFIRM_ACTION_ID, style: "primary", text: { type: "plain_text", text: "Confirm" } }] },
+    ],
+  };
+}
+
+function buildAnsweredBlocks(questions: readonly HumanQuestion[], answers: HumanAnswers): { blocks: unknown[]; text: string } {
+  const lines = formatHumanAnswers(questions, answers).map((line) => bounded(`Answered: ${inert(line)}`, SLACK_SECTION_CAP, "answer"));
+  return { text: lines.join("\n"), blocks: lines.map((text) => ({ type: "section", text: { type: "mrkdwn", text } })) };
+}
+
 /** #193 — the questions as blocks (a section, then a button row, per question) plus the
  *  complete text they must also appear as in the accessible fallback. Without buttons (a shared channel, where a click
  *  records nothing), each question's options are a list and the reader is asked to reply in the thread. */
-function buildQuestionBlocks(questions: readonly HumanQuestion[], buttons = true, resolved = false): { blocks: unknown[]; text: string } {
+function buildQuestionBlocks(questions: readonly HumanQuestion[], hint: string | null, answers: HumanAnswers = {}, buttons = true, resolved = false): { blocks: unknown[]; text: string } {
   const blocks: unknown[] = [];
   const lines: string[] = [];
   for (const q of questions) {
     const question = bounded(`*${inert(q.question)}*`, SLACK_SECTION_CAP, "question");
     const options = q.options.map((o) => `• ${recommendationLabel(inert(o.label), o.recommended)}`);
     blocks.push({ type: "section", text: { type: "mrkdwn", text: question } });
-    lines.push(question, ...options);
-    // A resolved decision keeps its questions as history: options as text, no live buttons, no reply hint.
+    // An answered question shows its pick and loses its buttons; the others stay answerable.
+    const picked = Object.hasOwn(answers, q.id) ? q.options.find((o) => o.id === answers[q.id]) : undefined;
+    if (picked) {
+      const done = bounded(`✓ ${inert(picked.label)}`, SLACK_SECTION_CAP, "answer");
+      blocks.push({ type: "section", text: { type: "mrkdwn", text: done } });
+      lines.push(question, done);
+      continue;
+    }
+    // A resolved decision keeps its questions as history: options as text, no live buttons.
     if (!buttons || resolved) {
+      lines.push(question, ...options);
       blocks.push({ type: "section", text: { type: "mrkdwn", text: bounded(options.join("\n"), SLACK_SECTION_CAP, "options") } });
       continue;
     }
+    // A recommendation is said in words: a green button reads as already selected.
+    const label = (o: HumanQuestion["options"][number]) => {
+      const suffix = o.recommended ? " (recommended)" : "";
+      const text = inert(o.label);
+      // The suffix fits within Slack's button limit by shortening the label, never by dropping it.
+      return text.length + suffix.length <= MAX_OPTION_LABEL ? `${text}${suffix}` : `${text.slice(0, MAX_OPTION_LABEL - suffix.length - 1)}…${suffix}`;
+    };
     blocks.push({
       type: "actions",
       block_id: `${QUESTION_BLOCK_PREFIX}${q.id}`,
@@ -181,15 +260,15 @@ function buildQuestionBlocks(questions: readonly HumanQuestion[], buttons = true
         type: "button",
         action_id: `${OPTION_ACTION_PREFIX}${o.id}`,
         value: o.id,
-        ...(o.recommended ? { style: "primary" } : {}),
-        text: { type: "plain_text", text: bounded(inert(o.label), MAX_OPTION_LABEL, "option label") },
+        text: { type: "plain_text", text: bounded(label(o), MAX_OPTION_LABEL, "option label") },
       })),
     });
+    lines.push(question, ...q.options.map((o) => `• ${label(o)}`));
   }
-  if (resolved) return { blocks, text: lines.join("\n") };
-  const hint = buttons ? TYPED_REPLY_HINT : CHANNEL_REPLY_HINT;
-  blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: hint }] });
-  lines.push(hint);
+  if (hint) {
+    blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: hint }] });
+    lines.push(hint);
+  }
   return { blocks, text: lines.join("\n") };
 }
 
@@ -572,7 +651,6 @@ export function buildGateContextLine(tags: readonly string[], instanceOnly = fal
  * Where many agents post to one channel, who is asking comes before the ask, in the
  * blocks and in the fallback text a notification shows. */
 export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): SlackMessagePayload {
-  const summary = inert(String(q.summary || "(no summary)"));
   // #1013 — a gate parked on a human renders from the structured fields: the headline IS
   // the ask (gate.summary) and the evidenceRef rides the evidence link/media path. When
   // that path won't carry it (a local path, not an https ref), the body falls to a single
@@ -597,19 +675,33 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
       : bounded(`Evidence: ${inert(gateEvidence)}`, SLACK_SECTION_CAP, "body"))
     : bounded(markdownToSlackMrkdwn(String(q.body || ""), q.bodyOpenFence ?? ""), SLACK_SECTION_CAP, "body");
   const mention = opts.mentionUserId ? `<@${opts.mentionUserId}> :rotating_light: ` : "";
-  const headline = bounded(`${mention}*${summary}*`, SLACK_SECTION_CAP, "subject");
   const sender = `From ${inert(opts.attribution?.session || opts.sourceLabel)}`;
   const machineSeg = (value: string | undefined) =>
     opts.attribution && !opts.attribution.host && value ? ` on ${inert(value)}` : "";
+  // No summary, no headline: the body starts the message (a mention still leads it).
+  const headline = q.summary?.trim()
+    ? bounded(`${mention}*${summary}*`, SLACK_SECTION_CAP, "subject")
+    : mention.trim() || null;
   const imageBlocks = buildImageBlocks(opts.mediaRefs);
   const attachmentText = imageBlocks.map((b) => `Image: ${(b as { alt_text: string }).alt_text}`).join("\n");
   const evidence = buildEvidenceLink(opts.evidenceLink);
   const resolvedDecision = q.ownerNotificationKind === "human-decision-resolved";
-  const questionParts = q.humanQuestions?.length ? buildQuestionBlocks(q.humanQuestions, !q.sharedChannel, resolvedDecision) : null;
+  const explicit = opts.answerHint === true;
+  const closed = opts.closedNote ? bounded(inert(opts.closedNote), SLACK_SECTION_CAP, "closed note") : null;
+  const answeredAny = Object.keys(q.humanAnswers ?? {}).length > 0;
+  const questionHint = q.sharedChannel ? CHANNEL_REPLY_HINT : explicit ? null : TYPED_REPLY_HINT;
+  const questionParts = !q.humanQuestions?.length ? null
+    : closed ? (answeredAny ? buildAnsweredBlocks(q.humanQuestions, q.humanAnswers ?? {}) : null)
+    : opts.answered ? buildAnsweredBlocks(q.humanQuestions, q.humanAnswers ?? {})
+    : buildQuestionBlocks(q.humanQuestions, resolvedDecision ? null : questionHint, q.humanAnswers ?? {}, !q.sharedChannel, resolvedDecision);
+  const selfClosingAlert = q.tags?.some((t) => SELF_CLOSING_ALERT_TAGS.has(t)) ?? false;
+  const confirmText = q.humanConfirm ?? (explicit && q.humanIntent !== "update" && !q.humanQuestions?.length && !selfClosingAlert ? DEFAULT_CONFIRM_LABEL : null);
+  // A closed card keeps a Confirm that decided it (no button left), and drops one that did not.
+  const confirmParts = confirmText && (!closed || opts.confirmOutcome === "confirmed") ? buildConfirmBlocks(q.qitemId, confirmText, opts.confirmOutcome, q.humanIntent !== "update") : null;
   if (opts.extraBlocks?.length) {
     throw new HumanMessageShapeError("Extra blocks have no complete accessible fallback. Use mediaRefs for images or author supplemental human detail.");
   }
-  const replyHint = q.ownerNotificationKind === "human-required"
+  const replyHint = q.ownerNotificationKind === "human-required" && !explicit && !closed
     ? HUMAN_REQUIRED_REPLY_HINT : null;
   // The tail is computed per machine label: the sender line, the supplementary
   // context/repeat decisions that depend on it, and the complete fallback. A
@@ -621,7 +713,7 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
     let machine = machineSeg(machineValue);
     if (sender.length + machine.length > 2000 && machine && opts.machineFallback) machine = machineSeg(opts.machineFallback);
     const attrFor = bounded(`${sender}${machine}`, 2000, "sender");
-    const fallback = (context: string | null, repeat: string | null = null) => [attrFor, headline, repeat, context, body, questionParts?.text, replyHint, evidence ? evidence.text : null, attachmentText, opts.reconcileMarker].filter(Boolean).join("\n");
+    const fallback = (context: string | null, repeat: string | null = null) => [attrFor, headline, repeat, context, body, questionParts?.text, confirmParts?.text, closed ? `*${closed}*` : null, replyHint, evidence ? evidence.text : null, attachmentText, opts.reconcileMarker].filter(Boolean).join("\n");
     // The gate context line is supplementary: when it alone would push the complete fallback over
     // budget, the instance part alone is tried, and the line is left out only when even that
     // doesn't fit, rather than refusing the gate.
@@ -644,7 +736,7 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
   if (tail.text.length > SLACK_TEXT_CAP && opts.machineFallback) tail = computeTail(opts.machineFallback);
   const { attr, shownContext, shownRepeat } = tail;
   const text = bounded(tail.text, SLACK_TEXT_CAP, "complete fallback");
-  const blocks: unknown[] = [{ type: "context", elements: [{ type: "mrkdwn", text: attr }] }, { type: "section", text: { type: "mrkdwn", text: headline } }];
+  const blocks: unknown[] = [{ type: "context", elements: [{ type: "mrkdwn", text: attr }] }, ...(headline ? [{ type: "section", text: { type: "mrkdwn", text: headline } }] : [])];
   const repeatBlock = shownRepeat ? { type: "context", elements: [{ type: "mrkdwn", text: shownRepeat }] } : null;
   if (repeatBlock) blocks.push(repeatBlock);
   if (shownContext) blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: shownContext }] });
@@ -653,6 +745,8 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
   const bodyAt = blocks.length;
   blocks.push(...bodyBlocks);
   if (questionParts) blocks.push(...questionParts.blocks);
+  if (confirmParts) blocks.push(...confirmParts.blocks);
+  if (closed) blocks.push({ type: "section", text: { type: "mrkdwn", text: `*${closed}*` } });
   if (replyHint) blocks.push({ type: "context", elements: [{ type: "mrkdwn", text: replyHint }] });
   blocks.push(...imageBlocks);
   if (evidence) blocks.push(evidence.block);
@@ -661,4 +755,10 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
   if (repeatBlock && blocks.length > 50) blocks.splice(blocks.indexOf(repeatBlock), 1);
   if (blocks.length > 50) throw new HumanMessageShapeError("Message exceeds 50 Slack blocks. Reduce attachments before sending.");
   return { text, blocks };
+}
+
+/** A closed card reduced to one bold line; what it was and how it ended live in its thread. */
+export function buildCompactClosedMessage(line: string): SlackMessagePayload {
+  const text = bounded(inert(line), SLACK_SECTION_CAP - 2, "closed line");
+  return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text: `*${text}*` } }] };
 }

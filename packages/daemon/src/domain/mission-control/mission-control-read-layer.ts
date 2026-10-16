@@ -139,7 +139,7 @@ export class MissionControlReadLayer {
     if (this.defaultOperatorSession) return this.defaultOperatorSession;
     // The configured operator wins above; otherwise the default person (chosen, or the only one), never the first of several.
     const registry = loadHumanRegistry();
-    return registry.ok ? resolveDefaultPerson(registry.entities).person?.address ?? "" : "";
+    return registry.ok ? resolveDefaultPerson(registry.entities.filter((e) => e.role !== "requester")).person?.address ?? "" : "";
   }
 
   async readView(
