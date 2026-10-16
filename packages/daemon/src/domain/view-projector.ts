@@ -216,6 +216,7 @@ export class ViewProjector {
           activity: activity?.activity, needsInput: activity?.needsInput.count, needsInputReason: activity?.needsInput.reason,
           backgroundWork: activity?.backgroundWork ?? null,
           compactionOwedSince: this.executionDeps ? compactionOwedSinceOf(this.executionDeps, String(r.destination_session)) : null,
+          promptCardDelivered: r.state === "in-progress" && !!this.executionDeps?.deliveredPromptCard?.(String(r.destination_session)),
           state: String(r.state),
           claimedAt: (r.claimed_at as string | null) ?? null,
           lastHeartbeat: (r.last_heartbeat as string | null) ?? null,

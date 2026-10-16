@@ -83,6 +83,8 @@ export interface ExecutionViewDeps {
   };
   /** #2661 (c): since when (ISO) a seat's managed post-compaction restore is owed, or null (the pickup's grace). */
   compactionOwedSince?: (sessionName: string) => string | null;
+  /** The seat's open prompt card delivered to its human (QueueRepository.deliveredPromptCard). */
+  deliveredPromptCard?: (session: string) => string | null;
   now?: () => Date;
   buildInfo?: BuildInfo;
   /** Injectable for tests; synchronous fakes are also accepted. */
@@ -908,10 +910,10 @@ export async function buildExecutionView(deps: ExecutionViewDeps, opts?: { missi
     const arbitrated = deps.seatActivity?.getSeatStateBySession(r.destination_session) ?? null;
     const pickup = derivePickup({
       state: r.state,
-      // A blocked row's pickup is parked before it reads its history, so that history is not read at all.
       lastMeaningfulAt: r.state === "blocked" ? undefined : lastMeaningfulTransition(deps.db, r.qitem_id)?.at,
       activity: arbitrated?.activity, needsInput: arbitrated?.needsInput.count, needsInputReason: arbitrated?.needsInput.reason,
       backgroundWork: arbitrated?.backgroundWork ?? null, compactionOwedSince: compactionOwedSinceOf(deps, r.destination_session),
+      promptCardDelivered: r.state === "in-progress" && !!deps.deliveredPromptCard?.(r.destination_session),
       claimedAt: r.claimed_at,
       lastHeartbeat: r.last_heartbeat,
       postClaimMotionCount: Number(r.post_claim_motion ?? 0),
@@ -1269,10 +1271,10 @@ export async function buildExecutionView(deps: ExecutionViewDeps, opts?: { missi
     .map((r) => {
       const activity = deps.seatActivity?.getSeatStateBySession(r.destination_session);
       const pickup = derivePickup({
-        // As in Q1: a blocked row is parked before its history is read; its armed wake is still looked up below.
         lastMeaningfulAt: r.state === "blocked" ? undefined : lastMeaningfulTransition(deps.db, r.qitem_id)?.at,
         activity: activity?.activity, needsInput: activity?.needsInput.count, needsInputReason: activity?.needsInput.reason,
         backgroundWork: activity?.backgroundWork ?? null, compactionOwedSince: compactionOwedSinceOf(deps, r.destination_session),
+        promptCardDelivered: r.state === "in-progress" && !!deps.deliveredPromptCard?.(r.destination_session),
         state: r.state,
         claimedAt: r.claimed_at,
         lastHeartbeat: r.last_heartbeat,

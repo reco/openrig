@@ -76,11 +76,18 @@ export interface PickupFacts {
   backgroundWork?: { observedAt: string } | null;
   /** #2661 (c): the daemon owes the owner its managed post-compaction stages since this time (ISO). */
   compactionOwedSince?: string | null;
+  /** The owner seat has an open prompt card whose delivery to its human is confirmed. */
+  promptCardDelivered?: boolean;
   now?: Date;
   thresholdMinutes?: number;
   backgroundShellGraceMinutes?: number;
   compactionRestoreGraceMinutes?: number;
 }
+
+/** Claude's PermissionRequest hook fires before every permission check, also the ones the
+ *  approval hook answers with no dialog shown, so on its own it is telemetry, not a person's
+ *  prompt. A dialog actually shown arrives as its own permission_prompt notification. */
+export const PERMISSION_REQUEST_TELEMETRY = "permission_request";
 
 /** The ONE derivation rule — every projection surface (rowToItem, the pickup view lens, the
  *  S02 finding input) calls this same function, so the rule cannot drift between surfaces. */
@@ -108,7 +115,12 @@ function deriveClaimPickup(facts: PickupFacts): PickupReceipt {
   // it is the first honest row-scoped writer, and wiring reopens only in that slice.
   const heartbeatAfterClaim =
     !!facts.lastHeartbeat && Date.parse(facts.lastHeartbeat) > claimedMs;
-  if (facts.activity === "working" && !facts.needsInput) return { state: "working" };
+  // A delivered prompt card holds the wait with the human; an unknown owner stays visible.
+  if (facts.promptCardDelivered && facts.activity !== undefined && facts.activity !== "unknown") {
+    return { state: "parked", evidence: "owner waits at a native prompt whose card was delivered to its human" };
+  }
+  const promptConfirmed = !!facts.needsInput && facts.needsInputReason !== PERMISSION_REQUEST_TELEMETRY;
+  if (facts.activity === "working" && !promptConfirmed) return { state: "working" };
   // Legacy callers without a timestamp retain their historical count contract.
   if (facts.lastMeaningfulAt === undefined && (facts.postClaimMotionCount > 0 || heartbeatAfterClaim)) return { state: "working" };
   const thresholdMs = (facts.thresholdMinutes ?? resolvePickupThresholdMinutes()) * 60_000;

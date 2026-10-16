@@ -2232,6 +2232,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         const since = deps.compactionEnforcer?.postCompactStageOwedSince(physicalSessionName(db, session));
         return since == null ? null : new Date(since).toISOString();
       },
+
+      deliveredPromptCard: (session) => queueRepoInstance.deliveredPromptCard(session),
     });
     const { SliceIndexer } = await import("./domain/slices/slice-indexer.js");
     const { SliceDetailProjector } = await import("./domain/slices/slice-detail-projector.js");

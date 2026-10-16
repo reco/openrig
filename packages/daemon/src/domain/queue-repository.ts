@@ -6502,6 +6502,16 @@ export class QueueRepository {
     return { meaningful: lastMeaningfulTransitionMany(this.db, ids), statements: new WaitingStatements(this.db), activity };
   }
 
+  /** The seat's open stuck-prompt card that reached its human (the prompt card's own delivery
+   *  ledger), or null: no card, or one not posted or failed, leaves the wait unowned. */
+  deliveredPromptCard(session: string): string | null {
+    if (!session) return null;
+    const cards = this.db.prepare(`SELECT qitem_id FROM queue_items WHERE state IN ('pending', 'in-progress', 'blocked')
+      AND tags LIKE '%"stuck-prompt-session:%' AND tags LIKE ? ORDER BY ts_created DESC`)
+      .all(`%"stuck-prompt-session:${session}"%`) as Array<{ qitem_id: string }>;
+    return cards.find((card) => this.humanNotificationPostedThisEpisode(card.qitem_id))?.qitem_id ?? null;
+  }
+
   /** listed: the row's owner notifications and ledger, when a listing read them for all its rows. */
   waitingView(qitemId: string, listed?: ListedLedger): WaitingView | null {
     // The row in hand, when the listing passed it: its later re-reads below are served by it too.
@@ -6611,6 +6621,7 @@ export class QueueRepository {
       needsInputReason: activity?.needsInput.reason,
       backgroundWork: activity?.backgroundWork ?? null,
       compactionOwedSince: this.compactionOwedSince(row.destination_session),
+      promptCardDelivered: row.state === "in-progress" && !!row.claimed_at && this.deliveredPromptCard(row.destination_session) !== null,
       claimedAt: row.claimed_at,
       lastHeartbeat: row.last_heartbeat,
       postClaimMotionCount: 0, // this reader supplies the current meaningful timestamp

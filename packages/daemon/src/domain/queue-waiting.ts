@@ -9,7 +9,8 @@ import { isQueueOnlyDeliveryCode } from "./watchdog-history-log.js";
 import type { WatchdogJob } from "./watchdog-jobs-repository.js";
 import { readWithCurrentParkBoundary } from "./current-park-arm.js";
 
-export type WaitingActivityReader = (session: string) => Pick<ArbitratedSeatState, "activity" | "needsInput" | "decidedBy" | "backgroundWork"> | null;
+export type WaitingActivityReader = (session: string) => (Pick<ArbitratedSeatState, "activity" | "needsInput" | "decidedBy" | "backgroundWork">
+  & Partial<Pick<ArbitratedSeatState, "lastSwap">>) | null;
 
 /** A blocked row's backstop when no live timer or watchdog is armed and its blocker isn't a row that can finish. */
 export const NO_TIMED_BACKSTOP = "UNVERIFIED: no timed backstop";
