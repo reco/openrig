@@ -2244,6 +2244,12 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
       // Enough for a long command's whole dialog, so two prompts differing only near the top differ.
       const STUCK_PROMPT_CAPTURE_LINES = 120;
       const { alwaysOffer, retireApprovalsAnsweredInTerminal, seatHasOpenApproval } = await import("./domain/approvals.js");
+      const { latestHookMovedOn } = await import("./domain/agent-activity-store.js");
+      const terminalAnswerEvidence = {
+        seen: new Set<string>(),
+        movedOn: (session: string, since: string) => latestHookMovedOn(agentActivityStore.getLatestForNode({ sessionName: session }), since,
+          agentActivityStore.resolveSession({ sessionName: session })?.runtime ?? null),
+      };
       deps.stuckPromptWatch = makeStuckPromptWatch({
         runningSessions: () => (db.prepare(`
           SELECT DISTINCT s.session_name AS session_name FROM sessions s
@@ -2254,7 +2260,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         capture: (session) => tmuxAdapter.capturePaneContent(session, STUCK_PROMPT_CAPTURE_LINES),
         retire: (running, shown, dialogs) => {
           retireStalePromptNotices(queueRepoInstance, running, shown);
-          for (const id of retireApprovalsAnsweredInTerminal(queueRepoInstance, dialogs)) console.log(`[approvals] ${id} answered in the terminal; its card is closed`);
+          for (const id of retireApprovalsAnsweredInTerminal(queueRepoInstance, dialogs, terminalAnswerEvidence)) console.log(`[approvals] ${id} answered in the terminal; its card is closed`);
         },
         heldByHook: (session, dialog) => seatHasOpenApproval(queueRepoInstance, session, dialog),
         rekey: (session, from, to) => { rekeyPromptNotices(queueRepoInstance, session, from, to); },

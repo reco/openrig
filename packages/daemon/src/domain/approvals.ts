@@ -143,15 +143,29 @@ export function seatHasOpenApproval(repo: QueueRepository, session: string, dial
   return openApprovals(repo).some((a) => a.session === session && (dialog === null || a.shows === null || flat(dialog).includes(a.shows)));
 }
 
+export interface TerminalAnswerEvidence {
+  /** Requests whose own dialog was on screen at some scan; filled by the retire check itself. */
+  seen: Set<string>;
+  /** The seat's hooks show it started work or ended its turn after `since` (an ISO time). */
+  movedOn: (session: string, since: string) => boolean;
+}
+
 /** The terminal dialog shows while the hook waits, and an answer typed there leaves the hook running.
- *  A request past its grace whose readable pane shows no prompt at all was answered in the terminal: it
- *  expires, so its card loses its buttons and the hook stops waiting. While some dialog is up nothing is
- *  retired: it may be this request's, cut short, or one queued behind it. */
-export function retireApprovalsAnsweredInTerminal(repo: QueueRepository, dialogs: Map<string, string | null>, now = Date.now()): string[] {
+ *  A request past its grace whose readable pane shows no prompt was answered in the terminal once its own
+ *  dialog was seen and is gone, or the seat moved on since it asked: it expires, so its card loses its
+ *  buttons and the hook stops waiting. A pane that shows no prompt but neither of those is not an answer
+ *  (a dialog not read yet), so the card stays. While some dialog is up nothing is retired: it may be this
+ *  request's, cut short, or one queued behind it. */
+export function retireApprovalsAnsweredInTerminal(repo: QueueRepository, dialogs: Map<string, string | null>, evidence: TerminalAnswerEvidence, now = Date.now()): string[] {
   const retired: string[] = [];
-  for (const a of openApprovals(repo)) {
-    if (!dialogs.has(a.session) || now - a.createdAt < APPROVAL_RETIRE_GRACE_MS) continue;
-    if (dialogs.get(a.session) !== null) continue;
+  const open = openApprovals(repo);
+  for (const id of evidence.seen) if (!open.some((a) => a.qitemId === id)) evidence.seen.delete(id);
+  for (const a of open) {
+    if (!dialogs.has(a.session)) continue;
+    const dialog = dialogs.get(a.session) ?? null;
+    if (dialog !== null && (a.shows === null || flat(dialog).includes(a.shows))) evidence.seen.add(a.qitemId);
+    if (dialog !== null || now - a.createdAt < APPROVAL_RETIRE_GRACE_MS) continue;
+    if (!evidence.seen.has(a.qitemId) && !evidence.movedOn(a.session, new Date(a.createdAt).toISOString())) continue;
     repo.update({ qitemId: a.qitemId, actorSession: "daemon@kernel", state: "canceled", transitionNote: `approval expired: ${ANSWERED_IN_TERMINAL}` });
     retired.push(a.qitemId);
   }

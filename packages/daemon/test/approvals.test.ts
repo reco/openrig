@@ -150,26 +150,41 @@ describe("Slack approvals", () => {
     expect(seatHasOpenApproval(repo, "psa-dev@psa", bashDialog("touch x"))).toBe(false);
   });
 
-  it("a request answered in the terminal expires once past its grace, without any earlier sighting", async () => {
+  const evidence = (movedOn = false) => ({ seen: new Set<string>(), movedOn: () => movedOn });
+
+  it("a request whose dialog was seen and is gone expires as answered in the terminal", async () => {
     const s = service();
     const id = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "touch x" } }))!;
     const later = Date.now() + 11_000;
-    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]))).toEqual([]);
-    expect(retireApprovalsAnsweredInTerminal(repo, new Map(), later)).toEqual([]);
-    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", bashDialog("touch x")]]), later)).toEqual([]);
-    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), later)).toEqual([id]);
+    const e = evidence();
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map(), e, later)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", bashDialog("touch x")]]), e, later)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), e)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), e, later)).toEqual([id]);
     expect(repo.getById(id)!.state).toBe("canceled");
     expect(await s.wait(id, "psa-dev@psa", 20)).toBe("expired");
   });
 
-  it("while any dialog is up nothing is retired (it may be cut short or queued); once none shows, all past grace expire", async () => {
+  it("a pane showing no prompt before the request's dialog was ever seen is not an answer: the card stays until the seat moves on", async () => {
+    const s = service();
+    const id = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "touch x" } }))!;
+    const later = Date.now() + 11_000;
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), evidence(false), later)).toEqual([]);
+    expect(repo.getById(id)!.state).toBe("pending");
+    expect(seatHasOpenApproval(repo, "psa-dev@psa", bashDialog("touch x"))).toBe(true);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), evidence(true), later)).toEqual([id]);
+  });
+
+  it("while any dialog is up nothing is retired (it may be cut short or queued); once none shows, all seen past grace expire", async () => {
     const s = service();
     const a = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "touch a.txt" } }))!;
     const b = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "touch b.txt" } }))!;
     const later = Date.now() + 11_000;
-    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", bashDialog("touch b.txt")]]), later)).toEqual([]);
-    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", "…cut mid heredoc\nDo you want to proceed?"]]), later)).toEqual([]);
-    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), later).sort()).toEqual([a, b].sort());
+    const e = evidence();
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", bashDialog("touch b.txt")]]), e, later)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", bashDialog("touch a.txt")]]), e, later)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", "…cut mid heredoc\nDo you want to proceed?"]]), e, later)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), e, later).sort()).toEqual([a, b].sort());
   });
 
   it("a WebFetch, WebSearch or Edit request holds the seat for its own dialog only; an unreadable or unknown input holds any", async () => {
@@ -189,7 +204,7 @@ describe("Slack approvals", () => {
     const s = service();
     const id = (await s.start({ sessionName: "psa-dev@psa", toolName: "Bash", toolInput: { command: "touch x" } }))!;
     click(id, "reco@external", "allow");
-    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), Date.now() + 11_000)).toEqual([]);
+    expect(retireApprovalsAnsweredInTerminal(repo, new Map([["psa-dev@psa", null]]), evidence(true), Date.now() + 11_000)).toEqual([]);
     expect(await s.wait(id, "psa-dev@psa", 20)).toBe("allow");
   });
 
