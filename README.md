@@ -472,3 +472,7 @@ OpenRig is open source and self-hosted, with Claude Code and Codex in the same t
 ## License
 
 Apache 2.0
+
+## This fork
+
+reco/openrig is upstream `mvschwarz/openrig` release `v0.6.10` plus four commits: the Slack gateway (human decisions and threads, channels and roles, inbound recovery, event-driven outbound, the Merge card), seat runtime fixes (runtime homes, managed blocks in `AGENTS.override.md`, Claude identity, the routed-work line, restore and hook durability), Slack approvals (a card for each permission prompt a runtime sends to a human, plus a stuck-prompt card where no hook card exists), and fewer false lead alerts. Each commit message says what it does, why the fork carries it and its upstream status. A sync rebases those commits onto the next upstream release tag, never onto upstream `main`.
