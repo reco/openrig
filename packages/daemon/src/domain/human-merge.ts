@@ -126,17 +126,38 @@ export interface MergeDeps {
 
 const UNKNOWN_RECHECK_MS = 3_000;
 const UNKNOWN_WAIT_MS = 30_000;
+const MERGE_POLL_MS = 5_000;
+const MERGE_WAIT_MS = 120_000;
+
+const sleepOf = (deps: MergeDeps) => deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
 
 /** The pull request once GitHub has settled its merge state: UNKNOWN (recomputing after its base moved, as
  *  right after another merge) is read again every 3 s for up to 30 s; any other state is final. */
 async function readSettledPr(deps: MergeDeps, ref: MergeRef): Promise<PrState> {
-  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const sleep = sleepOf(deps);
   let pr = await readPr(deps.gh, ref);
   for (let waited = 0; pr.mergeStateStatus === "UNKNOWN" && waited < UNKNOWN_WAIT_MS; waited += UNKNOWN_RECHECK_MS) {
     await sleep(UNKNOWN_RECHECK_MS);
     pr = await readPr(deps.gh, ref);
   }
   return pr;
+}
+
+interface AsyncMerge { status: "pending" | "merged" | "enqueued" | "failed"; details: { message?: string; uuid?: string; sha?: string } }
+
+const githubApi = async (gh: Gh, args: string[]) => JSON.parse(await gh(["api", "-H", "X-GitHub-Api-Version: 2026-03-10", ...args])) as AsyncMerge;
+
+/** GitHub's asynchronous merge (the only one that merges a stack), pinned to the card's head: a pending
+ *  request is read again every 5 s for up to 2 min. */
+async function mergeAsync(deps: MergeDeps, ref: MergeRef): Promise<AsyncMerge> {
+  const path = `repos/${ref.repo}/pulls/${ref.number}/merge-async`;
+  let result = await githubApi(deps.gh, ["-X", "PUT", path, "-f", `sha=${ref.sha}`, "-f", "merge_method=squash"]);
+  const uuid = result.details?.uuid;
+  for (let waited = 0; result.status === "pending" && uuid && waited < MERGE_WAIT_MS; waited += MERGE_POLL_MS) {
+    await sleepOf(deps)(MERGE_POLL_MS);
+    result = await githubApi(deps.gh, [`${path}/${uuid}`]);
+  }
+  return result;
 }
 
 /** Act once on each answered merge card the daemon built: Not now declines back to the asking seat;
@@ -172,10 +193,19 @@ export async function actOnMergeAnswers(repo: QueueRepository, deps: MergeDeps):
         if (failures.length) {
           outcome = { note: `refused ${failures.join("; ")}`, thread: `Not merged: ${failures.join("; ")}.`, seat: `Merge of ${name} refused at click time: ${failures.join("; ")}.` };
         } else {
-          await deps.gh(["pr", "merge", String(ref.number), "--repo", ref.repo, "--squash", "--match-head-commit", ref.sha]);
-          const merged = JSON.parse(await deps.gh(["pr", "view", String(ref.number), "--repo", ref.repo, "--json", "mergeCommit"])) as { mergeCommit?: { oid?: string } };
-          const sha = merged.mergeCommit?.oid ?? "unknown";
-          outcome = { note: `merged ${sha}`, thread: `Merged ${name} as \`${sha}\`.`, seat: `Merged ${name} (head ${ref.sha.slice(0, 12)}) as ${sha}.`, smoke: sha };
+          const result = await mergeAsync(deps, ref);
+          const message = (result.details?.message ?? "").trim().slice(0, 500);
+          if (result.status === "merged") {
+            const sha = result.details.sha ?? "unknown";
+            outcome = { note: `merged ${sha}`, thread: `Merged ${name} as \`${sha}\`.`, seat: `Merged ${name} (head ${ref.sha.slice(0, 12)}) as ${sha}.`, smoke: sha };
+          } else if (result.status === "enqueued") {
+            outcome = { note: "enqueued", thread: `Added ${name} to the merge queue; not merged yet.`, seat: `${name} (head ${ref.sha.slice(0, 12)}) is in the merge queue, not merged yet.` };
+          } else if (result.status === "pending") {
+            outcome = { note: `accepted ${result.details?.uuid ?? ""}`.trim(), thread: `GitHub accepted the merge of ${name} but had not finished it after 2 minutes; check the pull request before treating it as merged.`,
+              seat: `Merge of ${name} accepted by GitHub (request ${result.details?.uuid ?? "unknown"}), not confirmed after 2 minutes.` };
+          } else {
+            outcome = { note: `failed ${message}`, thread: `Not merged: GitHub failed the merge: ${message}`, seat: `Merge of ${name} failed: ${message}` };
+          }
         }
       } catch (e) {
         const detail = String((e as { stderr?: string }).stderr || (e as Error).message).trim().slice(0, 500);
