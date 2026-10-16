@@ -5,7 +5,7 @@ import { beforeEach, describe, it, expect, vi } from "vitest";
 import { CodexRuntimeAdapter, type CodexAdapterFsOps } from "../src/adapters/codex-runtime-adapter.js";
 import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { buildCodexResumeCore } from "../src/domain/native-resume-probe.js";
-import { codexDaemonSupportProbe, probeCodexDaemonSupport, type CodexDaemonSupport, type CodexDaemonSupportDetector } from "../src/domain/codex-daemon-support.js";
+import { codexDaemonSupportProbe, probeCodexDaemonSupport, sharedCodexDaemonRunning, type CodexDaemonSupport, type CodexDaemonSupportDetector } from "../src/domain/codex-daemon-support.js";
 import type { NodeBinding } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 
@@ -73,12 +73,12 @@ const sentCommands = (tmux: TmuxAdapter) =>
   (tmux.sendText as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[1]));
 
 type LaunchKind = "fresh" | "fork" | "resume";
-async function launch(kind: LaunchKind, support: CodexDaemonSupport | undefined) {
+async function launch(kind: LaunchKind, support: CodexDaemonSupport | undefined, sharedDaemonRunning?: () => boolean) {
   const tmux = mockTmux();
   const detectDaemonSupport = vi.fn<CodexDaemonSupportDetector>(async () => support!);
   const adapter = new CodexRuntimeAdapter({
     tmux, fsOps: mockFs(), listProcesses: () => [], sleep: async () => {},
-    ...(support ? { detectDaemonSupport } : {}),
+    ...(support ? { detectDaemonSupport } : {}), ...(sharedDaemonRunning ? { sharedDaemonRunning } : {}),
   });
   const opts = kind === "fork"
     ? { name: "dev-qa@test-rig", forkSource: { kind: "native_id" as const, value: "parent thread" } }
@@ -145,11 +145,24 @@ describe("#69 CodexRuntimeAdapter.launchHarness opts out of the shared daemon wh
   }
 });
 
+describe("CodexRuntimeAdapter refuses a Codex without --no-daemon while a shared daemon runs", () => {
+  for (const kind of ["fresh", "fork", "resume"] as const) {
+    it(`${kind}: refused with nothing sent; launches as before when no shared daemon runs`, async () => {
+      const refused = await launch(kind, legacy, () => true);
+      expect(refused.result.ok).toBe(false);
+      expect(!refused.result.ok && refused.result.error).toMatch(/no --no-daemon option/);
+      expect(refused.commands).toEqual([]);
+      expect((await launch(kind, legacy, () => false)).commands).toEqual((await launch(kind, legacy)).commands);
+      expect((await launch(kind, supported, () => true)).commands[0]).toMatch(/codex --no-daemon /);
+    });
+  }
+});
+
 describe("#69 CodexResumeAdapter (legacy restore path)", () => {
-  async function resume(support: CodexDaemonSupport | undefined) {
+  async function resume(support: CodexDaemonSupport | undefined, sharedDaemonRunning?: () => boolean) {
     const tmux = mockTmux();
     const detectDaemonSupport = vi.fn<CodexDaemonSupportDetector>(async () => support!);
-    const adapter = new CodexResumeAdapter(tmux, { sleep: async () => {}, maxWaitMs: 0, ...(support ? { detectDaemonSupport } : {}) });
+    const adapter = new CodexResumeAdapter(tmux, { sleep: async () => {}, maxWaitMs: 0, ...(support ? { detectDaemonSupport } : {}), ...(sharedDaemonRunning ? { sharedDaemonRunning } : {}) });
     const result = await adapter.resume("r01-qa", "codex_id", "sess 456", "/project", null, undefined, "gpt-5.5");
     return { result, commands: sentCommands(tmux), detectDaemonSupport };
   }
@@ -169,6 +182,27 @@ describe("#69 CodexResumeAdapter (legacy restore path)", () => {
     expect(!unknownRun.result.ok && unknownRun.result.message).toMatch(/--no-daemon/);
     expect(unknownRun.commands).toEqual([]);
   });
+
+  it("a legacy Codex is refused, nothing sent, while a shared daemon runs; without one it resumes as before", async () => {
+    const refused = await resume(legacy, () => true);
+    expect(refused.result).toMatchObject({ ok: false, code: "resume_failed" });
+    expect(!refused.result.ok && refused.result.message).toMatch(/no --no-daemon option.*shared Codex app-server daemon is running/s);
+    expect(refused.commands).toEqual([]);
+    expect((await resume(legacy, () => false)).commands).toEqual((await resume(undefined)).commands);
+    expect((await resume(supported, () => true)).commands[0]).toMatch(/^codex --no-daemon /);
+  });
+});
+
+describe("shared Codex daemon detection", () => {
+  it("reads app-server-daemon/daemon.pid and checks the process is alive", () => {
+    const files: Record<string, string> = { "/home/.codex/app-server-daemon/daemon.pid": '{"pid":56997,"processStartTime":"x"}' };
+    const read = (f: string) => { if (f in files) return files[f]!; throw new Error("ENOENT"); };
+    expect(sharedCodexDaemonRunning("/home/.codex", read, (pid) => pid === 56997)).toBe(true);
+    expect(sharedCodexDaemonRunning("/home/.codex", read, () => false)).toBe(false);
+    expect(sharedCodexDaemonRunning("/other", read, () => true)).toBe(false);
+    files["/home/.codex/app-server-daemon/daemon.pid"] = "not json";
+    expect(sharedCodexDaemonRunning("/home/.codex", read, () => true)).toBe(false);
+  });
 });
 
 describe("#69 buildCodexResumeCore", () => {
@@ -187,6 +221,8 @@ describe("#69 production wiring", () => {
     const runtimeLine = source.split("\n").find((line) => line.includes("new CodexRuntimeAdapter("))!;
     expect(resumeLine).toContain("detectDaemonSupport");
     expect(runtimeLine).toContain("detectDaemonSupport");
+    expect(resumeLine).toContain("sharedDaemonRunning: () => sharedCodexDaemonRunning(");
+    expect(runtimeLine).toContain("sharedDaemonRunning: () => sharedCodexDaemonRunning(");
   });
 });
 

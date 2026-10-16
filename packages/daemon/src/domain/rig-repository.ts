@@ -3,7 +3,8 @@ import { resolveActiveOccupantRow } from "./active-occupant.js";
 import { resolve } from "node:path";
 import { ulid } from "ulid";
 import { deriveComposeProjectName } from "./compose-project-name.js";
-import type { ClaudeManagedBlockFile } from "./managed-blocks.js";
+import type { ClaudeManagedBlockFile, CodexManagedBlockFile } from "./managed-blocks.js";
+import { homesFromColumns, type HomeColumns } from "./runtime-homes.js";
 import type {
   Rig,
   Node,
@@ -16,6 +17,7 @@ import type {
   Snapshot,
   SnapshotData,
   SessionSourceSpec,
+  RuntimeHomes,
 } from "./types.js";
 
 /**
@@ -125,6 +127,7 @@ interface NodeOptions {
   codexConfigProfile?: string;
   /** OPR.0.4.8.3 Seam B: per-seat permission_policy REF (builtin:<name> or spec-relative path). */
   permissionPolicy?: string;
+  runtimeHomes?: RuntimeHomes;
   cwd?: string;
   surfaceHint?: string;
   workspace?: string;
@@ -214,6 +217,21 @@ export class RigRepository {
     return row?.non_interruptive === 1;
   }
 
+  /** The rig-level runtime homes every new seat in this rig inherits (members override key by key). */
+  setRigRuntimeHomes(rigId: string, homes: RuntimeHomes): void {
+    if (!this.hasRigColumn("claude_config_dir")) return;
+    this.db.prepare("UPDATE rigs SET claude_config_dir = ?, updated_at = ? WHERE id = ?")
+      .run(homes.claude ?? null, new Date().toISOString(), rigId);
+    if (this.hasRigColumn("codex_home")) this.db.prepare("UPDATE rigs SET codex_home = ? WHERE id = ?").run(homes.codex ?? null, rigId);
+  }
+
+  getRigRuntimeHomes(rigId: string): RuntimeHomes {
+    if (!this.hasRigColumn("claude_config_dir")) return {};
+    const codex = this.hasRigColumn("codex_home") ? ", codex_home" : "";
+    const row = this.db.prepare(`SELECT claude_config_dir${codex} FROM rigs WHERE id = ?`).get(rigId) as HomeColumns | undefined;
+    return row ? homesFromColumns(row) : {};
+  }
+
   /** OPR.0.4.8.3 Seam B — persist a rig's attached permission_policy REF (builtin:<name> or a
    *  spec-relative custom path), or null to clear. Mirrors setRigWorkspace (migration 056). */
   setRigPermissionPolicy(rigId: string, permissionPolicy: string | null): void {
@@ -244,6 +262,20 @@ export class RigRepository {
     const row = this.db.prepare("SELECT claude_managed_block_file FROM rigs WHERE id = ?")
       .get(rigId) as { claude_managed_block_file: ClaudeManagedBlockFile | null } | undefined;
     return row?.claude_managed_block_file ?? null;
+  }
+
+  /** The rig's selected Codex managed-block file (migration 104), or null for the AGENTS.md default. */
+  setRigCodexManagedBlockFile(rigId: string, file: CodexManagedBlockFile | null): void {
+    if (!this.hasRigColumn("codex_managed_block_file")) return;
+    this.db.prepare("UPDATE rigs SET codex_managed_block_file = ?, updated_at = ? WHERE id = ?")
+      .run(file ?? null, new Date().toISOString(), rigId);
+  }
+
+  getRigCodexManagedBlockFile(rigId: string): CodexManagedBlockFile | null {
+    if (!this.hasRigColumn("codex_managed_block_file")) return null;
+    const row = this.db.prepare("SELECT codex_managed_block_file FROM rigs WHERE id = ?")
+      .get(rigId) as { codex_managed_block_file: CodexManagedBlockFile | null } | undefined;
+    return row?.codex_managed_block_file ?? null;
   }
 
   /** Seam B Guard-F1 — persist the RIG-level resolved attachment provenance (migration 058).
@@ -458,6 +490,14 @@ export class RigRepository {
     if (opts?.effort && this.hasNodeColumn("effort")) {
       this.db.prepare("UPDATE nodes SET effort = ? WHERE id = ?")
         .run(opts.effort, id);
+    }
+
+    if (opts?.runtimeHomes?.claude && this.hasNodeColumn("claude_config_dir")) {
+      this.db.prepare("UPDATE nodes SET claude_config_dir = ? WHERE id = ?").run(opts.runtimeHomes.claude, id);
+    }
+
+    if (opts?.runtimeHomes?.codex && this.hasNodeColumn("codex_home")) {
+      this.db.prepare("UPDATE nodes SET codex_home = ? WHERE id = ?").run(opts.runtimeHomes.codex, id);
     }
 
     return this.rowToNode(
@@ -735,6 +775,7 @@ export class RigRepository {
       effort: row.effort ?? null,
       codexConfigProfile: row.codex_config_profile ?? null,
       permissionPolicy: row.permission_policy ?? null,
+      runtimeHomes: homesFromColumns(row),
       cwd: row.cwd,
       surfaceHint: row.surface_hint ?? null,
       workspace: row.workspace ?? null,
@@ -824,6 +865,8 @@ interface NodeRow {
   effort?: string | null;
   codex_config_profile?: string | null;
   permission_policy?: string | null;
+  claude_config_dir?: string | null;
+  codex_home?: string | null;
   cwd: string | null;
   surface_hint: string | null;
   workspace: string | null;

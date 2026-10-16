@@ -13,7 +13,7 @@ import type {
 import { resolveConcreteHint } from "../domain/runtime-adapter.js";
 import type { ProjectionPlan, ProjectionEntry } from "../domain/projection-planner.js";
 import { assessNativeResumeProbe } from "../domain/native-resume-probe.js";
-import { observeClaudePaneProcess, type ClaudeLaunchedProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
+import { observeClaudePaneProcess, verifyClaudePaneProcess, type ClaudeLaunchedProcess, type NativeProcessLister } from "../domain/native-process-lineage.js";
 import { mergeManagedBlock, DEFAULT_CLAUDE_MANAGED_BLOCK_FILE, type ClaudeManagedBlockFile } from "../domain/managed-blocks.js";
 import { claudeResumeLaunchEnv, claudeResumeLaunchPrefix } from "./claude-resume-launch.js";
 import { shellQuote } from "./shell-quote.js";
@@ -41,6 +41,8 @@ export interface ClaudeAdapterFsOps {
 }
 
 const SHELL_COMMANDS = new Set(["bash", "fish", "nu", "sh", "tmux", "zsh"]);
+/** A resume whose exact process is alive but not yet drawn gets this many more 200 ms looks (30 s). */
+const SLOW_RESUME_POLLS = 150;
 
 // Real Claude Code binary needs 1-3s to write the new fork session-name
 // file under ~/.claude/sessions/. Poll instead of single-shot lookup.
@@ -313,7 +315,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       // token IMMEDIATELY after Enter, which always returned undefined
       // against a real binary. Poll on the
       // verifyResumeLaunch cadence (12 × 500ms = 6s ceiling).
-      const newToken = await this.pollForResumeToken(opts.name, FORK_POLL_ATTEMPTS, FORK_POLL_DELAY_MS, managed?.configDir);
+      const newToken = await this.pollForResumeToken(opts.name, FORK_POLL_ATTEMPTS, FORK_POLL_DELAY_MS, managed?.configDir ?? this.claudeManagedLaunch?.seatConfigDir(binding.nodeId));
       if (!newToken) {
         return {
           ok: false,
@@ -427,6 +429,15 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     } catch { return probe; }
   }
 
+  private async resumeProcessRunning(binding: NodeBinding): Promise<boolean> {
+    const launch = this.autoLaunches.get(binding.nodeId);
+    const target = binding.tmuxPane ?? binding.tmuxSession;
+    if (!launch || !target) return false;
+    const live = await verifyClaudePaneProcess({ target, tmux: this.tmux, listProcesses: this.listProcesses, expectedToken: launch.token, selectedExecutable: launch.executable })
+      .catch(() => null);
+    return live !== null;
+  }
+
   private async verifyResumeLaunch(binding: NodeBinding): Promise<HarnessLaunchResult> {
     const tmuxSession = binding.tmuxSession!;
     const attempts = 16;
@@ -492,6 +503,30 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     }
 
     if (finalCommand && SHELL_COMMANDS.has(finalCommand)) {
+      // The shell is the pane's foreground while the exact --resume process may still be starting
+      // beneath it (a slow login shell, many plugins): that is not a return to the shell.
+      let content = finalContent;
+      for (let wait = 0; wait <= SLOW_RESUME_POLLS && await this.resumeProcessRunning(binding); wait++) {
+        if (wait === SLOW_RESUME_POLLS) {
+          return {
+            ok: false,
+            error: "Claude resume still starting: the exact --resume process is running in the pane; launch retained",
+            recovery: "attention_required",
+            evidence: content.split("\n").slice(-12).join("\n"),
+          };
+        }
+        await this.sleep(200);
+        const command = await this.tmux.getPaneCommand(tmuxSession);
+        content = (await this.tmux.capturePaneContent(tmuxSession, 40)) ?? "";
+        const probe = await this.assessManagedProbe(binding, command, content);
+        if (probe.status === "resumed") return { ok: true };
+        if (probe.code === "no_conversation_found") {
+          return { ok: false, error: "Claude resume failed: no conversation found for the requested session", recovery: "retry_fresh" };
+        }
+        if (probe.status === "attention_required") {
+          return { ok: false, error: probe.detail, recovery: "attention_required", evidence: content.split("\n").slice(-12).join("\n") };
+        }
+      }
       return {
         ok: false,
         error: "Claude resume failed: pane returned to shell instead of entering Claude",
@@ -716,7 +751,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     const statePaths: string[] = [];
     const failures: string[] = [];
     if (managed) {
-      if (cwd) statePaths.push(managed.configPaths(cwd).statePath);
+      if (cwd) statePaths.push(managed.configPaths(cwd, binding.nodeId).statePath);
     } else {
       if (home) statePaths.push(nodePath.join(home, ".claude.json"));
       // A classic seat types `claude` into its pane's shell, which inherits the tmux server's
@@ -726,7 +761,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
       // selected home untouched: a child that inherits the daemon's selection read neither.
       try {
         const selectedCwd = cwd ?? (binding.nodeId ? this.claudeManagedLaunch?.boundCwd(binding.nodeId) : undefined);
-        const selected = selectedCwd ? this.claudeManagedLaunch?.selectedStatePath(selectedCwd) : undefined;
+        const selected = selectedCwd ? this.claudeManagedLaunch?.selectedStatePath(selectedCwd, binding.nodeId) : undefined;
         if (selected && !statePaths.includes(selected)) statePaths.push(selected);
       } catch (err) {
         failures.push((err as Error).message);

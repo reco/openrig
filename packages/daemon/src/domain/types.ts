@@ -26,6 +26,11 @@ export interface ContinuityState {
   updatedAt: string;
 }
 
+export interface RuntimeHomes {
+  claude?: string;
+  codex?: string;
+}
+
 export interface Node {
   id: string;
   rigId: string;
@@ -38,6 +43,8 @@ export interface Node {
   /** OPR.0.4.8.3 Seam B: attached permission_policy REF (builtin:<name> or spec-relative custom
    *  path), or null when none is attached (= the floor). */
   permissionPolicy?: string | null;
+  /** Per-seat account homes: the Claude config dir and Codex home this seat launches with. */
+  runtimeHomes?: RuntimeHomes;
   cwd: string | null;
   surfaceHint: string | null;
   workspace: string | null;
@@ -1101,6 +1108,7 @@ export interface RigSpecPodMember {
   /** OPR.0.4.8.3 Seam B: optional per-seat permission_policy REF (builtin:<name> or a spec-relative
    *  custom path). Absent = the floor. Overrides the rig-level ref. */
   permissionPolicy?: string;
+  runtimeHomes?: RuntimeHomes;
   cwd: string;
   restorePolicy?: string;
   /** OPR.0.5.6.20 — per-member continuity override (most-specific-wins; canonical or
@@ -1191,8 +1199,10 @@ export interface RigSpec {
   /** OPR.0.4.8.3 Seam B: optional rig-level permission_policy REF (builtin:<name> or a
    *  spec-relative custom path). Absent = the floor. A per-member ref overrides this. */
   permissionPolicy?: string;
+  /** Account homes every seat launches with unless its member sets its own, key by key. */
+  runtimeHomes?: RuntimeHomes;
   /** #25: per-runtime managed-block destination. Absent = CLAUDE.md. */
-  managedBlocks?: { "claude-code"?: import("./managed-blocks.js").ClaudeManagedBlockFile };
+  managedBlocks?: { "claude-code"?: import("./managed-blocks.js").ClaudeManagedBlockFile; codex?: import("./managed-blocks.js").CodexManagedBlockFile };
   docs?: RigSpecDoc[];
   startup?: StartupBlock;
   services?: RigServicesSpec;
@@ -1376,6 +1386,8 @@ export interface ExpansionPodFragment {
      *  invalid shapes — so the ONE canonical RigSpec validator rejects present-invalid
      *  values; the normalizer must never erase presence into absence/floor. */
     permissionPolicy?: unknown;
+    /** Raw like permissionPolicy, so the canonical validator rejects a present-invalid value. */
+    runtimeHomes?: unknown;
     restorePolicy?: string;
     label?: string;
     /**

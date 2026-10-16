@@ -1,5 +1,7 @@
 import { nonInterruptiveNotice, nonInterruptiveSummary } from "../adapters/non-interruptive.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { builtInKernelVariant, currentActivityHookSelection, currentKernelActivityHookSelection, recordedRigSpecPath } from "./kernel-activity-hooks.js";
+import { CLAUDE_ACTIVITY_HOOKS_RESOURCE_TYPE } from "./claude-activity-hooks.js";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { NativePermissionStore } from "./native-permission-store.js";
@@ -165,6 +167,8 @@ interface RestoreOrchestratorDeps {
   transcriptStore?: TranscriptStore;
   serviceOrchestrator?: import("./service-orchestrator.js").ServiceOrchestrator;
   listProcesses?: () => Promise<Array<{ pid: number; ppid: number; command: string }>>;
+  /** The running install's shipped specs dir: the built-in kernel's current definition lives there. */
+  specsDir?: string;
 }
 
 export class RestoreOrchestrator {
@@ -184,6 +188,7 @@ export class RestoreOrchestrator {
   private transcriptStore: TranscriptStore | null;
   private serviceOrchestrator: import("./service-orchestrator.js").ServiceOrchestrator | null;
   private listProcesses: (() => Promise<Array<{ pid: number; ppid: number; command: string }>>) | undefined;
+  private specsDir: string | undefined;
   private appliedLaunchStore: AppliedLaunchObservationStore;
 
   constructor(deps: RestoreOrchestratorDeps) {
@@ -224,6 +229,7 @@ export class RestoreOrchestrator {
     this.transcriptStore = deps.transcriptStore ?? null;
     this.serviceOrchestrator = deps.serviceOrchestrator ?? null;
     this.listProcesses = deps.listProcesses;
+    this.specsDir = deps.specsDir;
     this.appliedLaunchStore = new AppliedLaunchObservationStore(deps.db);
   }
 
@@ -995,6 +1001,10 @@ export class RestoreOrchestrator {
    *  guidance file still lacks a managed block it should hold, the seat keeps its true status (a
    *  live resumed session is still running) and the gap is disclosed on the node and in the
    *  warnings, so the rig is reported partially_restored, not fully_restored. */
+  private managedBlockFiles(rigId: string): { claude: string | null; codex: string | null } {
+    return { claude: this.rigRepo.getRigClaudeManagedBlockFile(rigId), codex: this.rigRepo.getRigCodexManagedBlockFile(rigId) };
+  }
+
   private checkRestoredGuidance(
     result: RestoreNodeResult,
     node: SnapshotData["nodes"][number],
@@ -1007,7 +1017,7 @@ export class RestoreOrchestrator {
     let guidance: ReturnType<typeof seatGuidance>;
     try {
       guidance = seatGuidance(data.nodeStartupContext?.[node.id] ?? null, node.cwd,
-        this.rigRepo.getRigClaudeManagedBlockFile(rigId), existsSync, (path) => readFileSync(path, "utf-8"));
+        this.managedBlockFiles(rigId), existsSync, (path) => readFileSync(path, "utf-8"));
     } catch (err) {
       warnings?.push(`Restore: ${node.logicalId}: could not check its guidance: ${(err as Error).message}`);
       return { ...result, guidanceGaps: ["(guidance check failed)"] };
@@ -1098,8 +1108,7 @@ export class RestoreOrchestrator {
     // No current profile resolution, guidance, skills or startup replay belongs here.
     const activityAdapter = opts?.adapters?.["claude-code"];
     if (resumeRequested && resumeToken && launchResult && startupCtx?.runtime === "claude-code" && activityAdapter) {
-      const entries = startupCtx.projectionEntries.filter(e =>
-        e.category === "runtime_resource" && e.resourceType === "claude_activity_hooks");
+      const entries = this.activityHookEntries(rigId, node, startupCtx.projectionEntries, warnings);
       if (entries.length > 0) try {
         const result = await activityAdapter.project({
           runtime: "claude-code", cwd: node.cwd ?? ".",
@@ -1124,7 +1133,7 @@ export class RestoreOrchestrator {
     if (resumeRequested && resumeToken && launchResult) {
       let guidance: ReturnType<typeof seatGuidance> = null;
       try {
-        guidance = seatGuidance(startupCtx, node.cwd, this.rigRepo.getRigClaudeManagedBlockFile(rigId), existsSync, (path) => readFileSync(path, "utf-8"));
+        guidance = seatGuidance(startupCtx, node.cwd, this.managedBlockFiles(rigId), existsSync, (path) => readFileSync(path, "utf-8"));
       } catch (err) {
         // Guidance never blocks the exact resume; the post-launch check discloses the gap.
         warnings?.push(`Restore guidance: ${node.logicalId}: could not read its saved guidance selection: ${(err as Error).message}`);
@@ -1189,7 +1198,7 @@ export class RestoreOrchestrator {
           // a confirmed blank agent (precision guard trigger (i)). Roll back to
           // zero sessions; the stop-and-ask is realized as awaiting-decision.
           await this.rollbackToZeroSession(node.id, sessionName, launchResult?.session.id, priorState);
-          return { nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error: `Original session unresumable: resume attempted but failed. The blank session was rolled back; no session is running. Re-run with --fresh ${node.logicalId} for a deliberate fresh-primed seat, or check the harness state manually.` };
+          return { nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error: `Original session unresumable: resume attempted but failed${resumeOutcome.kind === "failed" && resumeOutcome.message ? ` (${resumeOutcome.message})` : ""}. The blank session was rolled back; no session is running. Re-run with --fresh ${node.logicalId} for a deliberate fresh-primed seat, or check the harness state manually.` };
         }
       }
     } else if (resumeRequested && isPodAware) {
@@ -1459,6 +1468,29 @@ export class RestoreOrchestrator {
       return this.finishJoinedResume(node, sessionName, resumeToken, launchResult?.session.id);
     }
     return { nodeId: node.id, logicalId: node.logicalId, status: baseStatus };
+  }
+
+  /** The saved activity-hook selection, reconciled with the seat's current definition (the built-in
+   *  kernel's shipped spec, else the rig spec its rig up recorded): a seat whose saved context predates
+   *  the resource gets it when its current agent spec selects it. Every other saved resource is
+   *  untouched; nothing is removed. */
+  private activityHookEntries(rigId: string, node: SnapshotData["nodes"][number], saved: import("./types.js").PersistedProjectionEntry[], warnings?: string[]): import("./types.js").PersistedProjectionEntry[] {
+    const entries = saved.filter(e => e.category === "runtime_resource" && e.resourceType === CLAUDE_ACTIVITY_HOOKS_RESOURCE_TYPE);
+    if (entries.length > 0) return entries;
+    const variant = this.specsDir ? builtInKernelVariant(this.db, rigId, this.specsDir) : null;
+    const specPath = variant ? null : recordedRigSpecPath(this.db, rigId);
+    if (!variant && !specPath) {
+      if (node.agentRef?.startsWith("local:")) warnings?.push(`Restore activity hooks: ${node.logicalId}'s current spec could not be resolved (no rig root); its saved selection, without activity hooks, was kept.`);
+      return entries;
+    }
+    const seat = { logicalId: node.logicalId, agentRef: node.agentRef ?? null, profile: node.profile ?? null, runtime: node.runtime ?? null,
+      fsOps: { readFile: (p: string) => readFileSync(p, "utf-8"), exists: (p: string) => existsSync(p) } };
+    const selection = variant ? currentKernelActivityHookSelection({ ...seat, specsDir: this.specsDir!, variant }) : currentActivityHookSelection({ ...seat, specPath: specPath! });
+    if (selection === "selected") {
+      return [{ category: "runtime_resource", effectiveId: "claude-activity-hooks", resourceType: CLAUDE_ACTIVITY_HOOKS_RESOURCE_TYPE, absolutePath: "", sourceSpec: "kernel", sourcePath: "", resourcePath: "" }];
+    }
+    if (selection !== "not-selected") warnings?.push(`Restore activity hooks: ${node.logicalId}'s current definition could not be read (${selection.unresolved}); its saved selection was kept.`);
+    return entries;
   }
 
   /** A native resume is only a full success after the restored terminal is

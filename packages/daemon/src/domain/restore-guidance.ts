@@ -17,6 +17,9 @@ import {
   MANAGED_BLOCK_START,
   MANAGED_BLOCK_END,
   DEFAULT_CLAUDE_MANAGED_BLOCK_FILE,
+  DEFAULT_CODEX_MANAGED_BLOCK_FILE,
+  CODEX_REPOSITORY_COPY_BLOCK,
+  codexRepositoryCopy,
   mergeManagedBlock,
   stripManagedBlocks,
   type ManagedBlockMergeFsOps,
@@ -38,6 +41,8 @@ export interface GuidanceItem {
   /** An older "auto" startup file whose source can't be read, so it can't be classified. If its
    *  block isn't in the file, that's reported as a gap; nothing is written for it. */
   unresolved?: boolean;
+  /** The AGENTS.md copy an AGENTS.override.md target carries: written without AGENTS.md's own managed blocks. */
+  repositoryCopy?: boolean;
 }
 
 export interface SeatGuidance {
@@ -49,16 +54,19 @@ export interface SeatGuidance {
 export function seatGuidance(
   startupCtx: NodeStartupSnapshot | null,
   cwd: string | null | undefined,
-  claudeManagedBlockFile: string | null | undefined,
+  managedBlockFiles: { claude?: string | null; codex?: string | null },
   exists: (path: string) => boolean,
   readFile: (path: string) => string,
 ): SeatGuidance | null {
   if (!startupCtx || !cwd) return null;
   const fileName = startupCtx.runtime === "claude-code"
-    ? (claudeManagedBlockFile ?? DEFAULT_CLAUDE_MANAGED_BLOCK_FILE)
-    : startupCtx.runtime === "codex" ? "AGENTS.md" : null;
+    ? (managedBlockFiles.claude ?? DEFAULT_CLAUDE_MANAGED_BLOCK_FILE)
+    : startupCtx.runtime === "codex" ? (managedBlockFiles.codex ?? DEFAULT_CODEX_MANAGED_BLOCK_FILE) : null;
   if (!fileName) return null;
   const items = new Map<string, GuidanceItem>();
+  if (startupCtx.runtime === "codex" && codexRepositoryCopy({ exists, readFile }, cwd, fileName) !== null) {
+    items.set(CODEX_REPOSITORY_COPY_BLOCK, { blockId: CODEX_REPOSITORY_COPY_BLOCK, sourcePath: nodePath.join(cwd, DEFAULT_CODEX_MANAGED_BLOCK_FILE), repositoryCopy: true });
+  }
   for (const saved of startupCtx.projectionEntries) {
     if (saved.category !== "guidance" || saved.mergeStrategy !== "managed_block") continue;
     const e = reanchorShippedProjectionEntry(saved, undefined, exists);
@@ -167,7 +175,8 @@ export function restoreMissingGuidance(guidance: SeatGuidance, fs: ManagedBlockM
         repair.gaps.push(`${item.blockId}: its source ${item.sourcePath} no longer exists`);
         continue;
       }
-      toWrite.push({ blockId: item.blockId, content: fs.readFile(item.sourcePath) });
+      const source = fs.readFile(item.sourcePath);
+      toWrite.push({ blockId: item.blockId, content: item.repositoryCopy ? stripManagedBlocks(source) : source });
     } catch (err) {
       repair.gaps.push(`${item.blockId}: ${(err as Error).message}`);
     }

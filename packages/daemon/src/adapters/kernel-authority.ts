@@ -1,6 +1,8 @@
 import type { NodeBinding } from "../domain/runtime-adapter.js";
 import { nonInterruptiveArgs } from "./non-interruptive.js";
 import { shellQuote } from "./shell-quote.js";
+import { durableLaunchAsset } from "./durable-launch-asset.js";
+import { getOpenRigHome } from "../openrig-compat.js";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 
@@ -42,8 +44,9 @@ type LaunchChoice = Pick<NodeBinding, "kernelAuthority" | "teamPermissionDefault
 
 function claudeCommandSettings(allow: string[], ask: string[] = []): string[] {
   const permissions = { allow, ...(ask.length ? { ask } : {}) };
-  const hook = fileURLToPath(new URL("../../assets/claude-team-permissions.cjs", import.meta.url));
-  if (!existsSync(hook)) return ["--settings", JSON.stringify({ permissions })];
+  const packaged = fileURLToPath(new URL("../../assets/claude-team-permissions.cjs", import.meta.url));
+  if (!existsSync(packaged)) return ["--settings", JSON.stringify({ permissions })];
+  const hook = durableLaunchAsset(packaged, getOpenRigHome());
   const policy = Buffer.from(JSON.stringify({ allow, ask })).toString("base64");
   const command = [process.execPath, hook, policy].map(shellQuote).join(" ");
   return ["--settings", JSON.stringify({

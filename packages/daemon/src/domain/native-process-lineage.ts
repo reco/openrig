@@ -132,7 +132,7 @@ function commandUsesExpectedToken(command: string, runtime: NativeRuntime, expec
 function codexResumeToken(args: string[]): string | null | undefined {
   const topLevelOptionsWithValues = new Set([
     "-a", "--ask-for-approval", "-c", "--config", "-m", "--model",
-    "-p", "--profile", "-s", "--sandbox",
+    "-p", "--profile", "-s", "--sandbox", "--add-dir", "-C", "--cd",
   ]);
   let resumeIndex = -1;
   for (let index = 0; index < args.length; index += 1) {

@@ -1,3 +1,4 @@
+import { builtInKernelVariant, currentActivityHookSelection, currentKernelActivityHookSelection, recordedRigSpecPath } from "../domain/kernel-activity-hooks.js";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type Database from "better-sqlite3";
@@ -185,6 +186,17 @@ export function createRestoreCheckService(
     },
     getStartupContext: (nodeId: string) => {
       return getStartupContext(rigRepo.db, nodeId);
+    },
+    currentActivityHookSelection: (node) => {
+      const row = node.nodeId ? rigRepo.db.prepare("SELECT agent_ref, profile, runtime FROM nodes WHERE id = ?").get(node.nodeId) as { agent_ref: string | null; profile: string | null; runtime: string | null } | undefined : undefined;
+      const specsDir = resolve(import.meta.dirname, "../../specs");
+      const variant = builtInKernelVariant(rigRepo.db, node.rigId, specsDir);
+      const specPath = variant ? null : recordedRigSpecPath(rigRepo.db, node.rigId);
+      if (row && (variant || specPath)) {
+        const seat = { logicalId: node.logicalId, agentRef: row.agent_ref, profile: row.profile, runtime: row.runtime, fsOps: { exists: existsSync, readFile: (path: string) => readFileSync(path, "utf-8") } };
+        return variant ? currentKernelActivityHookSelection({ ...seat, specsDir, variant }) : currentActivityHookSelection({ ...seat, specPath: specPath! });
+      }
+      return row?.agent_ref?.startsWith("local:") ? "unknown" : null;
     },
     hasSnapshot: (rigId: string) => {
       return snapshotRepo.listSnapshots(rigId).length > 0;

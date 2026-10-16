@@ -35,6 +35,14 @@ describe("joined native Codex identity", () => {
     expect((await check(list))?.process.pid).toBe(13);
     expect(await check(list, { expectedToken: "different" })).toBeNull();
   });
+  it("proves a resume whose writable roots and options come before the resume subcommand (the managed same-conversation launch)", async () => {
+    const live = `--no-daemon -s workspace-write -a on-request -c sandbox_workspace_write.network_access=true --add-dir /Users/me/.openrig/workspace --add-dir /Users/me/dev/wt -C /Users/me/dev -c check_for_update_on_startup=false -m gpt-6.1-sol -c model_reasoning_effort="medium" resume ${token}`;
+    const list = () => rows().map(r => r.pid === 12 ? { ...r, command: `/usr/local/bin/node /usr/local/bin/codex ${live}` } : r.pid === 13 ? { ...r, command: `/opt/native/codex ${live}` } : r);
+    expect((await check(list))?.process.pid).toBe(13);
+    expect(await check(list, { expectedToken: "different" })).toBeNull();
+    const rootNamedResume = () => rows().map(r => r.pid === 12 ? { ...r, command: "node /opt/bin/codex" } : r.pid === 13 ? { ...r, command: `/opt/native/codex --add-dir resume ${token}` } : r);
+    expect(await check(rootNamedResume)).toBeNull();
+  });
   it("observes a fresh Codex launch into an apostrophe path", async () => {
     const list = () => rows().map(r => r.pid === 13
       ? { ...r, command: "/opt/native/codex -C /Users/me/code/Bob's-app" } : r);

@@ -5,12 +5,14 @@ import type { TmuxAdapter } from "./tmux.js";
 import type { SeatLaunchEnvironment } from "../domain/seat-launch-environment.js";
 import type { ResumeResult } from "./claude-resume.js";
 import { assessNativeResumeProbe, buildCodexResumeCore } from "../domain/native-resume-probe.js";
+import { codexPriorPolicyArgs, observeCodexPriorPolicy, priorPolicyRefusal, type CodexPriorPolicyReader } from "../domain/codex-prior-policy.js";
 import { runSyncSite } from "../domain/sync-site-wrap.js";
 import { shellQuote } from "./shell-quote.js";
 import { codexPostureArg } from "./yolo-mode.js";
 import { observeCodexSandbox } from "../domain/permission-drift.js";
-import { unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
+import { legacyCodexWithSharedDaemonMessage, unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
 import { codexNetworkDefaultArg, type CodexNetworkDefaultReader } from "../domain/codex-network-default.js";
+import type { CodexHomeServices } from "./codex-runtime-adapter.js";
 
 const CODEX_TYPES = new Set(["codex_id", "codex_last"]);
 const SHELL_COMMANDS = new Set(["bash", "fish", "nu", "sh", "tmux", "zsh"]);
@@ -28,8 +30,16 @@ interface CodexResumeOptions {
   exec?: (cmd: string) => Promise<string>;
   /** #69: whether the installed Codex supports --no-daemon; absent keeps the existing invocation. */
   detectDaemonSupport?: CodexDaemonSupportDetector;
+  /** A shared Codex app-server daemon is running (a Codex without --no-daemon may attach to it). */
+  sharedDaemonRunning?: () => boolean;
   /** #275: Codex's own answer on the plain floor's network default; absent keeps the existing invocation. */
   readNetworkDefault?: CodexNetworkDefaultReader;
+  /** The conversation's own prior sandbox/approval/effort; a same-conversation resume reproduces it or refuses. */
+  readPriorPolicy?: CodexPriorPolicyReader;
+  /** Brings the Codex home's OpenRig hooks up to date before a session starts (Codex reads them at start). */
+  prepareHome?: () => void;
+  /** The Codex home of the seat holding this session (runtime_homes.codex); absent keeps the options above. */
+  seatHomeServices?: (sessionName: string) => CodexHomeServices | undefined;
 }
 
 export class CodexResumeAdapter {
@@ -68,6 +78,7 @@ export class CodexResumeAdapter {
     if (!this.canResume(resumeType, resumeToken)) {
       return { ok: false, code: "no_resume", message: "Codex resume not available" };
     }
+    const home = this.options.seatHomeServices?.(tmuxSessionName) ?? this.options;
 
     if (codexConfigProfile?.trim()) {
       const { verifyCodexProfileLoads } = await import("../domain/codex-profile-preflight.js");
@@ -75,11 +86,11 @@ export class CodexResumeAdapter {
         const { execSync } = await import("node:child_process");
         return runSyncSite("codex.resume.profile_preflight", () =>
           execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000,
-            ...(this.options.codexHome ? { cwd, env: { ...process.env, CODEX_HOME: this.options.codexHome, ...(this.options.launchPath ? { PATH: this.options.launchPath } : {}) } } : {}),
+            ...(home.codexHome ? { cwd, env: { ...process.env, CODEX_HOME: home.codexHome, ...(this.options.launchPath ? { PATH: this.options.launchPath } : {}) } } : {}),
           })
         );
       });
-      const probeResult = await verifyCodexProfileLoads(codexConfigProfile, execFn, undefined, this.options.codexHome);
+      const probeResult = await verifyCodexProfileLoads(codexConfigProfile, execFn, undefined, home.codexHome);
       if (!probeResult.ok) {
         return {
           ok: false,
@@ -90,17 +101,24 @@ export class CodexResumeAdapter {
     }
 
     // #69: detect for the Codex the restored pane runs (its cwd, the launch PATH).
-    const daemonSupport = this.options.detectDaemonSupport ? await this.options.detectDaemonSupport(cwd) : undefined;
+    const daemonSupport = home.detectDaemonSupport ? await home.detectDaemonSupport(cwd) : undefined;
     if (daemonSupport?.kind === "unknown") {
       return { ok: false, code: "resume_failed", message: unknownDaemonSupportMessage(daemonSupport.detail) };
     }
+    if (daemonSupport?.kind === "legacy" && home.sharedDaemonRunning?.()) {
+      return { ok: false, code: "resume_failed", message: legacyCodexWithSharedDaemonMessage() };
+    }
 
+    const prior = home.readPriorPolicy && resumeType !== "codex_last" ? home.readPriorPolicy(resumeToken!) : null;
+    if (prior && !prior.ok) return { ok: false, code: "resume_failed", message: priorPolicyRefusal(resumeToken!, prior.reason) };
+    home.prepareHome?.();
+    if (prior) effort = effort?.trim() || prior.policy.effort;
     const profileArg = codexConfigProfile ? ` -p ${shellQuote(codexConfigProfile)}` : "";
-    const posture = codexPostureArg(profileArg, process.env, resolvedPosture);
-    const appliedLaunch = observeCodexSandbox(posture);
+    const posture = prior ? `${profileArg}${codexPriorPolicyArgs(prior.policy)}` : codexPostureArg(profileArg, process.env, resolvedPosture);
+    const appliedLaunch = prior ? observeCodexPriorPolicy(prior.policy) : observeCodexSandbox(posture);
     const postureArg = posture + operationalLaunchArg("codex", { kernelAuthority, teamPermissionDefault, nonInterruptive, launchPosture: resolvedPosture });
-    const networkArg = await codexNetworkDefaultArg(this.options.readNetworkDefault, appliedLaunch, cwd, tmuxSessionName);
-    const workspaceArg = teamPermissionDefault && !codexConfigProfile?.trim()
+    const networkArg = prior ? "" : await codexNetworkDefaultArg(home.readNetworkDefault, appliedLaunch, cwd, tmuxSessionName);
+    const workspaceArg = !prior && teamPermissionDefault && !codexConfigProfile?.trim()
       && appliedLaunch.state === "observed" && appliedLaunch.value === "workspace-write"
       ? codexTeamWorkspaceArg(this.options.prepareTeamWorkspace, tmuxSessionName) : "";
     const cmd = buildCodexResumeCore(
@@ -115,9 +133,9 @@ export class CodexResumeAdapter {
       effort,
     );
 
-    const launchEnv = [this.options.launchPath ? `PATH=${shellQuote(this.options.launchPath)}` : "", this.options.codexHome ? `CODEX_HOME=${shellQuote(this.options.codexHome)}` : ""].filter(Boolean);
+    const launchEnv = [this.options.launchPath ? `PATH=${shellQuote(this.options.launchPath)}` : "", home.codexHome ? `CODEX_HOME=${shellQuote(home.codexHome)}` : ""].filter(Boolean);
     const textResult = await this.tmux.sendShellCommand(tmuxSessionName, this.options.seatLaunchEnvironment
-      ? await this.options.seatLaunchEnvironment.command(tmuxSessionName, cmd, { codexCwd: cwd, runtime: "codex" })
+      ? await this.options.seatLaunchEnvironment.command(tmuxSessionName, cmd, { codexCwd: cwd, codexHome: home.codexHome, runtime: "codex" })
       : launchEnv.length ? `env ${launchEnv.join(" ")} ${cmd}` : cmd);
     if (!textResult.ok) {
       return { ok: false, code: "resume_failed", message: textResult.message };

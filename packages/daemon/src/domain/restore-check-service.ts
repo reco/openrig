@@ -199,6 +199,10 @@ export interface RestoreCheckDeps {
   getNodeInventory: (rigId: string) => NodeInventoryEntry[];
   /** Get persisted startup context for a node */
   getStartupContext: (nodeId: string) => StartupContextProbeResult;
+  /** Whether the seat's CURRENT definition selects Claude activity hooks when its saved context does not
+   *  (the built-in kernel's shipped spec, else the rig spec its rig up recorded); "unknown" for a local
+   *  agent_ref whose rig root is not known, null when the saved selection is the only source. */
+  currentActivityHookSelection?: (node: NodeInventoryEntry) => import("./kernel-activity-hooks.js").ActivityHookSelection | "unknown" | null;
   /** Check if a snapshot exists for a rig */
   hasSnapshot: (rigId: string) => boolean;
   /** Get the newest snapshot for exact restore planning when available */
@@ -1050,9 +1054,21 @@ export class RestoreCheckService {
     // delivered by ClaudeCodeAdapter: settings in the seat CWD, relay in instance state.
     // Do not require the retired internal control-plane shell hooks on public installs.
     const startup = node.nodeId ? this.deps.getStartupContext(node.nodeId) : null;
-    if (startup?.status === "ok" && !startup.projectionEntries.some((entry) => (
+    const savedSelects = startup?.status === "ok" && startup.projectionEntries.some((entry) => (
       entry.category === "runtime_resource" && entry.resourceType === "claude_activity_hooks"
-    ))) {
+    ));
+    const current = startup?.status === "ok" && !savedSelects ? this.deps.currentActivityHookSelection?.(node) ?? null : null;
+    if (current === "unknown" || (current !== null && typeof current === "object")) {
+      return {
+        check: `seat.${session}.hooks`, status: "yellow",
+        evidence: current === "unknown"
+          ? "The saved startup context selects no Claude activity hooks and the seat's current spec cannot be resolved (no rig root); whether it should have them is unknown"
+          : `The saved startup context selects no Claude activity hooks and the seat's current definition could not be read: ${current.unresolved}`,
+        remediation: "Confirm the seat's agent spec selection before trusting activity-hook readiness",
+        remediationSafe: false,
+      };
+    }
+    if (startup?.status === "ok" && !savedSelects && current !== "selected") {
       return {
         check: `seat.${session}.hooks`, status: "green",
         evidence: "Claude activity hooks are not selected for this seat; hook inspection is not applicable",

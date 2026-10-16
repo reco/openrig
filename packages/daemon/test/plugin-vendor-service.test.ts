@@ -88,8 +88,98 @@ describe("PluginVendorService — vendoring (HG-2.3)", () => {
 
     await svc.ensureVendored("openrig-core");
 
-    // Hash-match → no writes
-    expect(Object.values(writeCounts).reduce((a, b) => a + b, 0)).toBe(0);
+    // Hash-match → no plugin file is written; only the first manifest is recorded.
+    expect(Object.keys(writeCounts)).toEqual(["/home/test/.openrig/plugins/openrig-core/.openrig-vendor-manifest.json"]);
+    await svc.ensureVendored("openrig-core");
+    expect(writeCounts["/home/test/.openrig/plugins/openrig-core/.openrig-vendor-manifest.json"]).toBe(1);
+  });
+
+  describe("local edits survive an upgrade", () => {
+    const T = "/home/test/.openrig/plugins/openrig-core";
+    const installed010 = {
+      [`${T}/.claude-plugin/plugin.json`]: '{"name":"openrig-core","version":"0.1.0"}',
+      [`${T}/.codex-plugin/plugin.json`]: '{"name":"openrig-core","version":"0.1.0","description":"v"}',
+      [`${T}/skills/openrig-skills/SKILL.md`]: "# openrig-skills index",
+      [`${T}/skills/openrig-user/SKILL.md`]: "# my local edit of openrig-user",
+      [`${T}/hooks/claude.json`]: '{"hooks":{}}',
+    };
+    const bundled020 = {
+      "/asset-root/openrig-core/.claude-plugin/plugin.json": '{"name":"openrig-core","version":"0.2.0"}',
+      "/asset-root/openrig-core/.codex-plugin/plugin.json": '{"name":"openrig-core","version":"0.2.0","description":"v"}',
+      "/asset-root/openrig-core/skills/openrig-skills/SKILL.md": "# openrig-skills index 0.2.0",
+      "/asset-root/openrig-core/skills/openrig-user/SKILL.md": "# openrig-user 0.2.0",
+      "/asset-root/openrig-core/hooks/claude.json": '{"hooks":{"v":2}}',
+    };
+    const service = (fs: ReturnType<typeof mockFs>, logger = vi.fn()) => new PluginVendorService({ vendoredAssetsDir: "/asset-root", userPluginsDir: "/home/test/.openrig/plugins", fs, httpClient: vi.fn().mockResolvedValue({ ok: false, status: 404 }), logger });
+
+    it("a same-version start records only the files identical to the bundle; the next upgrade replaces those and keeps the edited one", async () => {
+      const fs = mockFs({ ...VENDORED_OPENRIG_CORE, ...installed010 });
+      await service(fs).ensureVendored("openrig-core");
+      const manifest = JSON.parse(fs._store[`${T}/.openrig-vendor-manifest.json`]!);
+      expect(Object.keys(manifest.files).sort()).toEqual([".claude-plugin/plugin.json", ".codex-plugin/plugin.json", "hooks/claude.json", "skills/openrig-skills/SKILL.md"]);
+
+      for (const k of Object.keys(VENDORED_OPENRIG_CORE)) delete fs._store[k];
+      Object.assign(fs._store, bundled020);
+      const logger = vi.fn();
+      await service(fs, logger).ensureVendored("openrig-core");
+      expect(fs._store[`${T}/skills/openrig-skills/SKILL.md`]).toBe("# openrig-skills index 0.2.0");
+      expect(fs._store[`${T}/hooks/claude.json`]).toBe('{"hooks":{"v":2}}');
+      expect(fs._store[`${T}/skills/openrig-user/SKILL.md`]).toBe("# my local edit of openrig-user");
+      expect(logger).toHaveBeenCalledWith(expect.stringContaining(`kept the locally edited ${T}/skills/openrig-user/SKILL.md`));
+      expect(JSON.parse(fs._store[`${T}/.openrig-vendor-manifest.json`]!).files["skills/openrig-user/SKILL.md"]).toBeUndefined();
+    });
+
+    it("a file edited after OpenRig installed it is kept at the next upgrade, and stays kept after", async () => {
+      const fs = mockFs({ ...bundled020 });
+      await service(fs).ensureVendored("openrig-core");
+      fs._store[`${T}/hooks/claude.json`] = '{"hooks":{"local":true}}';
+      Object.assign(fs._store, {
+        "/asset-root/openrig-core/.claude-plugin/plugin.json": '{"name":"openrig-core","version":"0.3.0"}',
+        "/asset-root/openrig-core/.codex-plugin/plugin.json": '{"name":"openrig-core","version":"0.3.0","description":"v"}',
+        "/asset-root/openrig-core/hooks/claude.json": '{"hooks":{"v":3}}',
+      });
+      await service(fs).ensureVendored("openrig-core");
+      expect(fs._store[`${T}/hooks/claude.json`]).toBe('{"hooks":{"local":true}}');
+      expect(fs._store[`${T}/.claude-plugin/plugin.json`]).toContain('"0.3.0"');
+    });
+
+    it("an install from before the manifest keeps the replaced bytes beside the file", async () => {
+      const fs = mockFs({ ...installed010, ...bundled020 });
+      await service(fs).ensureVendored("openrig-core");
+      expect(fs._store[`${T}/skills/openrig-user/SKILL.md`]).toBe("# openrig-user 0.2.0");
+      expect(fs._store[`${T}/skills/openrig-user/SKILL.md.pre-0.2.0`]).toBe("# my local edit of openrig-user");
+    });
+
+    it("a global skill copy from before the manifest records it at an equal version, so its edit survives the next upgrade", () => {
+      const G = "/home/test/.claude/skills/openrig-skills";
+      const plugin = (v: string, skill: string) => ({ [`${T}/.claude-plugin/plugin.json`]: `{"name":"openrig-core","version":"${v}"}`, [`${T}/.codex-plugin/plugin.json`]: `{"name":"openrig-core","version":"${v}","description":"v"}`, [`${T}/skills/openrig-skills/SKILL.md`]: skill, [`${T}/skills/openrig-skills/ref.md`]: `ref ${v}` });
+      const fs = mockFs({ ...plugin("0.2.0", "# skills 0.2.0"), [`${G}/SKILL.md`]: "# my global edit", [`${G}/ref.md`]: "ref 0.2.0", [`${G}/.openrig-vendor-version`]: "0.2.0\n" });
+      service(fs).ensureSkillGlobally("openrig-core", "openrig-skills", ["/home/test/.claude/skills"]);
+      expect(Object.keys(JSON.parse(fs._store[`${G}/.openrig-vendor-manifest.json`]!).files)).toEqual(["ref.md"]);
+      Object.assign(fs._store, plugin("0.3.0", "# skills 0.3.0"));
+      service(fs).ensureSkillGlobally("openrig-core", "openrig-skills", ["/home/test/.claude/skills"]);
+      expect(fs._store[`${G}/SKILL.md`]).toBe("# my global edit");
+      expect(fs._store[`${G}/ref.md`]).toBe("ref 0.3.0");
+      expect(fs._store[`${G}/SKILL.md.pre-0.3.0`]).toBeUndefined();
+    });
+
+    it("a manifest whose files are not a map counts as none", async () => {
+      const fs = mockFs({ ...installed010, ...bundled020, [`${T}/.openrig-vendor-manifest.json`]: '{"version":"0.1.0","files":null}' });
+      await service(fs).ensureVendored("openrig-core");
+      expect(fs._store[`${T}/skills/openrig-user/SKILL.md.pre-0.2.0`]).toBe("# my local edit of openrig-user");
+    });
+
+    it("a global skill copy edited in place is kept when the plugin version advances", () => {
+      const fs = mockFs({ ...bundled020, [`${T}/.claude-plugin/plugin.json`]: '{"name":"openrig-core","version":"0.2.0"}', [`${T}/.codex-plugin/plugin.json`]: '{"name":"openrig-core","version":"0.2.0","description":"v"}', [`${T}/skills/openrig-skills/SKILL.md`]: "# openrig-skills index 0.2.0" });
+      service(fs).ensureSkillGlobally("openrig-core", "openrig-skills", ["/home/test/.claude/skills"]);
+      fs._store["/home/test/.claude/skills/openrig-skills/SKILL.md"] = "# my global edit";
+      fs._store[`${T}/.claude-plugin/plugin.json`] = '{"name":"openrig-core","version":"0.3.0"}';
+      fs._store[`${T}/.codex-plugin/plugin.json`] = '{"name":"openrig-core","version":"0.3.0","description":"v"}';
+      fs._store[`${T}/skills/openrig-skills/SKILL.md`] = "# openrig-skills 0.3.0";
+      service(fs).ensureSkillGlobally("openrig-core", "openrig-skills", ["/home/test/.claude/skills"]);
+      expect(fs._store["/home/test/.claude/skills/openrig-skills/SKILL.md"]).toBe("# my global edit");
+      expect(fs._store["/home/test/.claude/skills/openrig-skills/.openrig-vendor-version"]).toBe("0.3.0\n");
+    });
   });
 
   it("does not let an older bundled plugin overwrite a newer installed plugin", async () => {

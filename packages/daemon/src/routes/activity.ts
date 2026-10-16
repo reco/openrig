@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { AgentActivityStore } from "../domain/agent-activity-store.js";
-import type { SessionRegistry } from "../domain/session-registry.js";
+import type { RecordedLaunchProcess, SessionRegistry } from "../domain/session-registry.js";
 import type { EventBus } from "../domain/event-bus.js";
 import { verifyStartupProof } from "../domain/startup-proof.js";
 import type { ActivityEvidence } from "../domain/activity-taxonomy.js";
@@ -241,10 +241,24 @@ activityRoutes.post("/hooks", async (c) => {
           listProcesses: c.get("listProcesses" as never) as NativeProcessLister | undefined });
       }
     }
+    // A later hook from the process the launch path recorded (its /clear or in-process /resume) names
+    // that process; a child Claude's hook has the child as its nearest Claude and names nothing.
+    let sameProcess: RecordedLaunchProcess | null = null;
+    let recorded: RecordedLaunchProcess | null = null;
+    try {
+      if (runtime === "claude-code" && currentGeneration && hookPid && tmux) recorded = sessionRegistry.recordedLaunchProcess(resolved.sessionId);
+    } catch { /* an unreadable record is no evidence */ }
+    if (recorded && validation.ok && validation.token !== recorded.token) {
+      const binding = sessionRegistry.getBindingForNode(resolved.nodeId);
+      const target = binding?.tmuxPane ?? binding?.tmuxSession;
+      const hooked = target ? await claudeHookFromLaunchedProcess({ target, tmux: tmux!, launchToken: recorded.token, hookPid: hookPid!,
+        listProcesses: c.get("listProcesses" as never) as NativeProcessLister | undefined }) : null;
+      if (hooked && hooked.pid === recorded.pid && hooked.startedAt === recorded.startedAt) sameProcess = recorded;
+    }
     const persistHook = (type: string, token: string): boolean => {
       if (runtime !== "claude-code") return sessionRegistry.updateResumeToken(resolved.sessionId, type, token, "hook");
       return sessionRegistry.recordHookSessionIdentity(resolved.sessionId, type, token,
-        { source, currentGeneration, resumeLaunch, launchedProcess });
+        { source, currentGeneration, resumeLaunch, launchedProcess, sameProcess });
     };
     const tokenPersisted = validation.ok
       && (persistHook(validation.resumeType, validation.token)

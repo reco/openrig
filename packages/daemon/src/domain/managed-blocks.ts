@@ -15,6 +15,13 @@ const LEGACY_BLOCK_START = (id: string) => `<!-- BEGIN RIGGED MANAGED BLOCK: ${i
 export const CLAUDE_MANAGED_BLOCK_FILES = ["CLAUDE.md", "CLAUDE.local.md"] as const;
 export type ClaudeManagedBlockFile = (typeof CLAUDE_MANAGED_BLOCK_FILES)[number];
 export const DEFAULT_CLAUDE_MANAGED_BLOCK_FILE: ClaudeManagedBlockFile = "CLAUDE.md";
+// The file a rig's Codex seats receive managed blocks in (`managed_blocks: { codex: <file> }`).
+// Codex reads one instruction file per directory and AGENTS.override.md wins over AGENTS.md, so
+// AGENTS.override.md also carries a copy of the directory's AGENTS.md (CODEX_REPOSITORY_COPY_BLOCK).
+export const CODEX_MANAGED_BLOCK_FILES = ["AGENTS.md", "AGENTS.override.md"] as const;
+export type CodexManagedBlockFile = (typeof CODEX_MANAGED_BLOCK_FILES)[number];
+export const DEFAULT_CODEX_MANAGED_BLOCK_FILE: CodexManagedBlockFile = "AGENTS.md";
+export const CODEX_REPOSITORY_COPY_BLOCK = "AGENTS.md (repository copy)";
 const LEGACY_BLOCK_END = (id: string) => `<!-- END RIGGED MANAGED BLOCK: ${id} -->`;
 
 export interface ManagedBlockMergeFsOps {
@@ -90,6 +97,15 @@ export function mergeManagedBlock(
   }
 
   fs.writeFile(targetPath, `${existing}\n\n${block}`);
+}
+
+/** The AGENTS.md text an AGENTS.override.md target must carry so Codex still reads it (its own
+ *  managed blocks left out), or null when the target is AGENTS.md or there is no AGENTS.md. */
+export function codexRepositoryCopy(fs: Pick<ManagedBlockMergeFsOps, "exists" | "readFile">, cwd: string, file: string | null | undefined): string | null {
+  if (file !== "AGENTS.override.md") return null;
+  const agentsMd = nodePath.join(cwd, DEFAULT_CODEX_MANAGED_BLOCK_FILE);
+  if (!fs.exists(agentsMd)) return null;
+  return stripManagedBlocks(fs.readFile(agentsMd)) || null;
 }
 
 export function removeManagedBlocksFromFile(fs: ManagedBlockCleanupFsOps, targetPath: string): boolean {

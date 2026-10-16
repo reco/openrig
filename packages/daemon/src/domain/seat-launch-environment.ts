@@ -3,6 +3,9 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { shellQuote } from "../adapters/shell-quote.js";
+import { homedir } from "node:os";
+import { runtimeHomeEnv } from "./runtime-homes.js";
+import type { RuntimeHomes } from "./types.js";
 
 // Explicit public launch metadata, not a prefix/denylist over credential names.
 // Provider keys and OPENRIG_ACTIVITY_HOOK_TOKEN keep their non-typed channel.
@@ -83,7 +86,8 @@ export class SeatLaunchEnvironment {
     private readonly sessionEnv: Readonly<Record<string, string | undefined>>,
     private readonly daemonCwd: string,
     private readonly cliPath?: string,
-    private readonly codexHome?: string) {}
+    private readonly codexHome?: string,
+    private readonly runtimeHomes: (nodeId: string) => RuntimeHomes = () => ({})) {}
 
   private rigBin(): string {
     const cli = realpathSync(this.cliPath ?? pairedCli());
@@ -100,12 +104,15 @@ export class SeatLaunchEnvironment {
     return bin;
   }
 
-  async command(session: string, command: string, target: { codexCwd?: string; nodeId?: string; generation?: string; runtime?: string } = {}): Promise<string> {
+  async command(session: string, command: string, target: { codexCwd?: string; codexHome?: string; nodeId?: string; generation?: string; runtime?: string } = {}): Promise<string> {
     const searchPath = this.sessionEnv.PATH;
+    const targetCodexHome = target.codexHome ?? (target.nodeId ? this.runtimeHomes(target.nodeId).codex : undefined) ?? this.codexHome;
     const codexEnv = target.codexCwd !== undefined
-      ? [searchPath ? `PATH=${shellQuote(searchPath)}` : "", this.codexHome ? `CODEX_HOME=${shellQuote(this.codexHome)}` : ""].filter(Boolean)
+      ? [searchPath ? `PATH=${shellQuote(searchPath)}` : "", targetCodexHome ? `CODEX_HOME=${shellQuote(targetCodexHome)}` : ""].filter(Boolean)
       : [];
-    const fallback = codexEnv.length ? `env ${codexEnv.join(" ")} ${command}` : command;
+    const fallbackHome = target.nodeId ? runtimeHomeEnv(this.runtimeHomes(target.nodeId), target.runtime) : {};
+    const fallbackPrefix = Object.entries(fallbackHome).map(([key, value]) => `${key}=${shellQuote(value)} `).join("");
+    const fallback = codexEnv.length ? `env ${codexEnv.join(" ")} ${command}` : `${fallbackPrefix}${command}`;
     try {
       // Nushell does not expand "$PATH". Keep its pre-existing literal command.
       const shell = path.basename(await this.tmux.getPaneCommand(session) ?? "").replace(/^-/, "");
@@ -137,6 +144,7 @@ export class SeatLaunchEnvironment {
       const binDir = this.rigBin();
       const env = publicSeatEnvironment({ OPENRIG_TRANSCRIPTS_LINES: "", OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS: "", ...this.sessionEnv, ...identity });
       if (target.codexCwd !== undefined && this.codexHome) env.CODEX_HOME = this.codexHome;
+      Object.assign(env, runtimeHomeEnv(this.runtimeHomes(identity.OPENRIG_NODE_ID), identity.OPENRIG_RUNTIME));
       // Classic Claude may be an rc alias or function, not a PATH executable.
       // Its caller sources the staged command in a pane-shell subshell. Leading
       // assignments preserve shell lookup; /usr/bin/env would bypass it.

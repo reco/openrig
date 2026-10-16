@@ -313,6 +313,7 @@ import { ProjectionManifestStore } from "./projection-manifest-store.js";
 import { StartupOrchestrator } from "./startup-orchestrator.js";
 import { PodRepository } from "./pod-repository.js";
 import type { RigSpec as PodRigSpec, RigSpecPod, RigSpecPodMember, StartupAction, StartupFile } from "./types.js";
+import { resolveRuntimeHomes } from "./runtime-homes.js";
 import type { RuntimeAdapter, NodeBinding, ResolvedStartupFile } from "./runtime-adapter.js";
 import { resolveConcreteHint } from "./runtime-adapter.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
@@ -659,6 +660,8 @@ export class PodRigInstantiator {
         if (rigSpec.managedBlocks?.["claude-code"]) {
           this.deps.rigRepo.setRigClaudeManagedBlockFile(materializedRigId, rigSpec.managedBlocks["claude-code"]);
         }
+        if (rigSpec.managedBlocks?.codex) this.deps.rigRepo.setRigCodexManagedBlockFile(materializedRigId, rigSpec.managedBlocks.codex);
+        if (rigSpec.runtimeHomes) this.deps.rigRepo.setRigRuntimeHomes(materializedRigId, resolveRuntimeHomes(rigSpec.runtimeHomes, undefined));
 
         // OPR.0.4.8.3 Seam B: persist the rig-level permission_policy REF (raw, like role) —
         // this is ONE of TWO rig-persist sites (materializeValidatedSpec + instantiate); missing
@@ -1353,6 +1356,8 @@ export class PodRigInstantiator {
       if (rigSpec.managedBlocks?.["claude-code"]) {
         this.deps.rigRepo.setRigClaudeManagedBlockFile(rigId, rigSpec.managedBlocks["claude-code"]);
       }
+      if (rigSpec.managedBlocks?.codex) this.deps.rigRepo.setRigCodexManagedBlockFile(rigId, rigSpec.managedBlocks.codex);
+      if (rigSpec.runtimeHomes) this.deps.rigRepo.setRigRuntimeHomes(rigId, resolveRuntimeHomes(rigSpec.runtimeHomes, undefined));
       // OPR.0.4.8.3 Seam B: the SECOND rig-persist site (bootstrap instantiate path) —
       // both sites must write or the rig ref silently drops on one instantiate path.
       // Guard-F1: resolved rig attachment persists here too (declaringDir = rigRoot).
@@ -1516,6 +1521,7 @@ export class PodRigInstantiator {
             // site (see the role wire note above) — same member-ref persistence as
             // createMemberNode or `rig up <spec>` seats lose their policy ref.
             permissionPolicy: member.permissionPolicy,
+            runtimeHomes: resolveRuntimeHomes(this.deps.rigRepo.getRigRuntimeHomes(rigId), member.runtimeHomes),
             sessionSource: member.sessionSource,
             cwd: configResult.config.cwd,
             restorePolicy: configResult.config.restorePolicy,
@@ -1872,6 +1878,7 @@ export class PodRigInstantiator {
       // OPR.0.4.8.3 Seam B: the member's OWN raw ref persists on the node (like role);
       // rig-level lives on the rig row; precedence applies at RESOLUTION, not storage.
       permissionPolicy: input.member.permissionPolicy,
+      runtimeHomes: resolveRuntimeHomes(this.deps.rigRepo.getRigRuntimeHomes(input.rigId), input.member.runtimeHomes),
       sessionSource: input.member.sessionSource,
       cwd: effectiveCwd,
       restorePolicy: input.member.restorePolicy,

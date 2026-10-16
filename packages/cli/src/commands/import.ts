@@ -25,11 +25,12 @@ export function importCommand(depsOverride?: ImportDeps): Command {
     .option("--instantiate", "Instantiate the rig after import")
     .option("--materialize-only", "Create rig topology without launching sessions")
     .option("--workspace-only", "Apply only the workspace declaration to an existing rig")
+    .option("--managed-blocks-only", "Apply only managed_blocks (which file each runtime's managed guidance goes to) to an existing rig")
     .option("--preflight", "Run preflight checks")
-    .option("--target-rig <rigId>", "Target existing rig for materialization or workspace apply")
+    .option("--target-rig <rigId>", "Target existing rig for materialization, workspace or managed-blocks apply")
     .option("--rig-root <root>", "Root directory for pod-aware resolution")
     .option("--cwd <path>", "Override launch/materialization working directory for all members")
-    .action(async (filePath: string, opts: { instantiate?: boolean; materializeOnly?: boolean; workspaceOnly?: boolean; preflight?: boolean; targetRig?: string; rigRoot?: string; cwd?: string }) => {
+    .action(async (filePath: string, opts: { instantiate?: boolean; materializeOnly?: boolean; workspaceOnly?: boolean; managedBlocksOnly?: boolean; preflight?: boolean; targetRig?: string; rigRoot?: string; cwd?: string }) => {
       const deps = getDeps();
 
       // Read local file first (before daemon check — fail fast on missing file)
@@ -64,8 +65,8 @@ export function importCommand(depsOverride?: ImportDeps): Command {
         process.exitCode = 1;
         return;
       }
-      if (opts.workspaceOnly && (opts.instantiate || opts.materializeOnly || opts.preflight)) {
-        console.error("--workspace-only cannot be combined with --instantiate, --materialize-only, or --preflight.");
+      if (opts.workspaceOnly && (opts.instantiate || opts.materializeOnly || opts.preflight || opts.managedBlocksOnly)) {
+        console.error("--workspace-only cannot be combined with --instantiate, --materialize-only, --managed-blocks-only, or --preflight.");
         process.exitCode = 1;
         return;
       }
@@ -91,6 +92,36 @@ export function importCommand(depsOverride?: ImportDeps): Command {
         console.log(data.changed
           ? `Workspace applied to rig ${data.rigId}`
           : `Workspace already matches rig ${data.rigId}`);
+        return;
+      }
+
+      if (opts.managedBlocksOnly) {
+        if (opts.instantiate || opts.materializeOnly || opts.preflight) {
+          console.error("--managed-blocks-only cannot be combined with --instantiate, --materialize-only, or --preflight.");
+          process.exitCode = 1;
+          return;
+        }
+        if (!opts.targetRig) {
+          console.error("--managed-blocks-only requires --target-rig <rigId>.");
+          process.exitCode = 1;
+          return;
+        }
+        type Selection = { "claude-code": string | null; codex: string | null };
+        const res = await client.postText<
+          { rigId: string; changed: boolean; before: Selection; managedBlocks: Selection }
+          | { ok: false; code: string; errors?: string[]; error?: string }
+        >("/api/rigs/import/managed-blocks", yaml, "text/yaml", { "X-Target-Rig-Id": opts.targetRig });
+        if (res.status >= 400) {
+          const data = res.data as { errors?: string[]; error?: string };
+          console.error(`Managed-blocks apply failed:\n  ${data.errors?.join("\n  ") ?? data.error ?? `status ${res.status}`}\nFix: update the RigSpec managed_blocks or target rig and retry.`);
+          process.exitCode = 1;
+          return;
+        }
+        const data = res.data as { rigId: string; changed: boolean; before: Selection; managedBlocks: Selection };
+        const show = (s: Selection) => `claude-code: ${s["claude-code"] ?? "CLAUDE.md (default)"}, codex: ${s.codex ?? "AGENTS.md (default)"}`;
+        console.log(data.changed
+          ? `Managed blocks applied to rig ${data.rigId}: ${show(data.managedBlocks)} (was ${show(data.before)}). Seats write the selected file at their next launch, restore or relaunch.`
+          : `Managed blocks already match rig ${data.rigId}: ${show(data.managedBlocks)}`);
         return;
       }
 

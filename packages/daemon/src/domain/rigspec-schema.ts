@@ -5,6 +5,7 @@ import type {
   RigSpec,
   RigSpecPod,
   RigServicesSpec,
+  RuntimeHomes,
   RigServicesWaitTarget,
   RigServicesSurface,
   RigServicesCheckpointHook,
@@ -14,10 +15,11 @@ import type {
 } from "./types.js";
 import { WORKSPACE_KINDS } from "./types.js";
 import { validateSafePath } from "./path-safety.js";
-import { CLAUDE_MANAGED_BLOCK_FILES } from "./managed-blocks.js";
+import { CLAUDE_MANAGED_BLOCK_FILES, CODEX_MANAGED_BLOCK_FILES } from "./managed-blocks.js";
 import { canonicalCompactionStrategy, canonicalContinuityMechanic } from "./agent-manifest.js";
 import { aliasModelPinAdvisory } from "./spec-validation-advisory.js";
 import { validatePermissionPolicyRef } from "./permission-policy/policy-ref.js";
+import { validateRuntimeHomes } from "./runtime-homes.js";
 import { validateStartupBlock, normalizeStartupBlock } from "./startup-validation.js";
 import { COMPOSE_PROJECT_NAME_PATTERN, deriveComposeProjectName } from "./compose-project-name.js";
 import * as path from "node:path";
@@ -46,12 +48,12 @@ const VALID_WORKSPACE_KINDS = new Set<string>(WORKSPACE_KINDS as readonly string
 
 const RIG_KEYS = new Set([
   "version", "name", "summary", "culture_file", "permission_policy", "managed_blocks", "docs",
-  "startup", "services", "workspace", "pods", "edges", "non_interruptive",
+  "startup", "services", "workspace", "pods", "edges", "non_interruptive", "runtime_homes",
 ]);
 const POD_KEYS = new Set(["id", "label", "summary", "continuity_policy", "startup", "members", "edges"]);
 const MEMBER_KEYS = new Set([
   "id", "label", "agent_ref", "profile", "runtime", "codex_config_profile",
-  "model", "effort", "role", "permission_policy", "cwd", "restore_policy",
+  "model", "effort", "role", "permission_policy", "runtime_homes", "cwd", "restore_policy",
   "compaction_strategy", "mechanic", "startup", "session_source", "starter_ref",
 ]);
 const EDGE_KEYS = new Set(["kind", "from", "to"]);
@@ -65,11 +67,13 @@ function validateManagedBlocks(raw: unknown): string[] {
     return ['managed_blocks: must be a mapping such as { claude-code: CLAUDE.local.md }'];
   }
   const errors: string[] = [];
+  const supported: Record<string, readonly string[]> = { "claude-code": CLAUDE_MANAGED_BLOCK_FILES, codex: CODEX_MANAGED_BLOCK_FILES };
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (key !== "claude-code") {
-      errors.push(`managed_blocks.${key}: unsupported runtime "${key}"; only "claude-code" is configurable`);
-    } else if (!(CLAUDE_MANAGED_BLOCK_FILES as readonly unknown[]).includes(value)) {
-      errors.push(`managed_blocks.claude-code: must be one of ${CLAUDE_MANAGED_BLOCK_FILES.join(", ")} (got ${JSON.stringify(value)})`);
+    const files = supported[key];
+    if (!files) {
+      errors.push(`managed_blocks.${key}: unsupported runtime "${key}"; only "claude-code" and "codex" are configurable`);
+    } else if (!(files as readonly unknown[]).includes(value)) {
+      errors.push(`managed_blocks.${key}: must be one of ${files.join(", ")} (got ${JSON.stringify(value)})`);
     }
   }
   return errors;
@@ -176,12 +180,13 @@ export class RigSpecSchema {
       if (refErr) errors.push(refErr);
     }
 
+    if (obj["runtime_homes"] !== undefined) errors.push(...validateRuntimeHomes(obj["runtime_homes"], "runtime_homes"));
+
     if (obj["non_interruptive"] !== undefined && typeof obj["non_interruptive"] !== "boolean") {
       errors.push("non_interruptive: must be a boolean");
     }
 
-    // #25: optional per-runtime managed-block destination. Only claude-code is
-    // configurable in this release; Codex stays on AGENTS.md.
+    // #25: optional per-runtime managed-block destination (claude-code, codex).
     if (obj["managed_blocks"] !== undefined) {
       errors.push(...validateManagedBlocks(obj["managed_blocks"]));
     }
@@ -255,6 +260,7 @@ export class RigSpecSchema {
       summary: raw["summary"] as string | undefined,
       cultureFile: raw["culture_file"] as string | undefined,
       permissionPolicy: raw["permission_policy"] as string | undefined,
+      runtimeHomes: raw["runtime_homes"] as RuntimeHomes | undefined,
       nonInterruptive: raw["non_interruptive"] as boolean | undefined,
       managedBlocks: raw["managed_blocks"] as RigSpec["managedBlocks"],
       docs,
@@ -264,6 +270,10 @@ export class RigSpecSchema {
       pods,
       edges,
     };
+  }
+
+  static validateManagedBlocks(raw: unknown): string[] {
+    return validateManagedBlocks(raw);
   }
 
   /** Validate only a RigSpec workspace block through the canonical schema. */
@@ -526,6 +536,8 @@ function validateMember(member: Record<string, unknown>, index: number, podPrefi
       errors.push(`${prefix}.permission_policy: not valid on terminal members (a terminal node is not an agent seat)`);
     }
   }
+
+  if (member["runtime_homes"] !== undefined) errors.push(...validateRuntimeHomes(member["runtime_homes"], `${prefix}.runtime_homes`));
 
   // Terminal sentinel validation: exact triple required
   const isTerminalRuntime = member["runtime"] === "terminal";
@@ -1147,6 +1159,7 @@ function normalizePod(raw: Record<string, unknown>): RigSpecPod {
     effort: typeof m["effort"] === "string" && m["effort"].trim() ? m["effort"].trim() : undefined,
     role: m["role"] as string | undefined,
     permissionPolicy: m["permission_policy"] as string | undefined,
+    runtimeHomes: m["runtime_homes"] as RuntimeHomes | undefined,
     cwd: m["cwd"] as string,
     restorePolicy: m["restore_policy"] as string | undefined,
     // OPR.0.5.6.20 A5 — aliases normalize at ingestion; absent stays undefined so the

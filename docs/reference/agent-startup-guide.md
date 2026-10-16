@@ -189,7 +189,7 @@ After the files, OpenRig sends a session-identity message (rig, pod, member, log
 | Delivery Hint | When | How | Use For |
 |---------------|------|-----|---------|
 | `auto` | Depends on the file | Resolved per file: a `SKILL.md` (or content starting `# SKILL`) is `skill_install`, any other `.md` is `guidance_merge`, and any other file is `send_text` | Default — let OpenRig decide |
-| `guidance_merge` | Before harness boot | Merged as a managed block into `AGENTS.md` (Codex, Pi) or `CLAUDE.md` (Claude; `CLAUDE.local.md` with the rig's `managed_blocks: { claude-code: CLAUDE.local.md }`) | Role guidance, culture, project context |
+| `guidance_merge` | Before harness boot | Merged as a managed block into `AGENTS.md` (Codex, Pi; Codex uses `AGENTS.override.md` with the rig's `managed_blocks: { codex: AGENTS.override.md }`) or `CLAUDE.md` (Claude; `CLAUDE.local.md` with the rig's `managed_blocks: { claude-code: CLAUDE.local.md }`) | Role guidance, culture, project context |
 | `skill_install` | Before harness boot | Copied to runtime's skill directory | Skills |
 | `send_text` | After harness is ready | Sent as text to agent's terminal via tmux | Boot-time grounding, identity hints, instructions to read skills |
 

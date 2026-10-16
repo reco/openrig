@@ -166,6 +166,7 @@ export class RigSpecExporter {
         // OPR.0.4.8.3 Seam B: the seat's RAW permission_policy ref round-trips
         // (export truth = the ref, never the resolved provenance).
         if (node.permissionPolicy) member.permissionPolicy = node.permissionPolicy;
+        if (node.runtimeHomes && Object.keys(node.runtimeHomes).length) member.runtimeHomes = { ...node.runtimeHomes };
         if (node.sessionSource) member.sessionSource = node.sessionSource;
         const rp = getRestorePolicy(node.id);
         if (rp) member.restorePolicy = rp;
@@ -218,13 +219,20 @@ export class RigSpecExporter {
     const workspace = this.rigRepo.getRigWorkspace(rigId);
     // #25: the selected Claude managed-block file is also a rig-row field.
     const claudeManagedBlockFile = this.rigRepo.getRigClaudeManagedBlockFile(rigId);
+    const codexManagedBlockFile = this.rigRepo.getRigCodexManagedBlockFile(rigId);
+    const managedBlocks = {
+      ...(claudeManagedBlockFile ? { "claude-code": claudeManagedBlockFile } : {}),
+      ...(codexManagedBlockFile ? { codex: codexManagedBlockFile } : {}),
+    };
+    const rigRuntimeHomes = this.rigRepo.getRigRuntimeHomes(rigId);
 
     return {
       version: "0.2",
       name: rig.rig.name,
       ...(rigPermissionPolicy ? { permissionPolicy: rigPermissionPolicy } : {}),
+      ...(Object.keys(rigRuntimeHomes).length ? { runtimeHomes: rigRuntimeHomes } : {}),
       ...(this.rigRepo.getRigNonInterruptive(rigId) ? { nonInterruptive: true } : {}),
-      ...(claudeManagedBlockFile ? { managedBlocks: { "claude-code": claudeManagedBlockFile } } : {}),
+      ...(Object.keys(managedBlocks).length ? { managedBlocks } : {}),
       ...(workspace ? { workspace } : {}),
       pods: podSpecs,
       edges: crossPodEdges,

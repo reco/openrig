@@ -16,6 +16,7 @@ import { SeatIdentityStore } from "./seat-identity-store.js";
 import type { OccupantKind } from "./session-registry.js";
 
 import type { Session, Binding } from "./types.js";
+import { runtimeHomeEnv } from "./runtime-homes.js";
 
 export type LaunchResult =
   | { ok: true; sessionName: string; session: Session; binding: Binding; warnings?: string[] }
@@ -145,6 +146,7 @@ export class NodeLauncher {
       OPENRIG_RUNTIME: node.runtime ?? undefined,
       ...this.sessionEnv,
       ...(node.runtime ? this.runtimeSessionEnv[node.runtime] : undefined),
+      ...runtimeHomeEnv(node.runtimeHomes ?? {}, node.runtime),
       OPENRIG_OCCUPANT_GENERATION: occupantGeneration ?? undefined,
     });
     const sessionCwd = opts?.cwd ?? node.cwd ?? undefined;

@@ -19,6 +19,8 @@ export interface ContextUsageStoreOpts {
   codexHomeDir?: string | null;
   /** Explicit CODEX_HOME. codexHomeDir above is the legacy OS-home input. */
   codexHome?: string;
+  /** Seats' own Codex homes (runtime_homes.codex); a thread id is looked up there after the daemon's. */
+  seatCodexHomes?: () => string[];
   // GHOST-STAGE (c-id): resolve the LIVE occupant's boot time (atom-B tenure) for a node, so a
   // reading sampled BEFORE the current occupant booted (a prior generation) is rejected instead of
   // driving the threshold. null = UNKNOWN → the gate is inert (note-2).
@@ -89,6 +91,7 @@ export class ContextUsageStore {
   private stateDir: string;
   private codexHomeDir: string | null;
   private codexHome?: string;
+  private seatCodexHomes: () => string[];
 
   private readonly resolveOccupantBootAt?: (nodeId: string) => string | null;
   constructor(db: Database.Database, opts: ContextUsageStoreOpts) {
@@ -96,6 +99,7 @@ export class ContextUsageStore {
     this.stateDir = opts.stateDir;
     this.codexHomeDir = opts.codexHomeDir ?? safeHomeDir();
     this.codexHome = opts.codexHome;
+    this.seatCodexHomes = opts.seatCodexHomes ?? (() => []);
     this.resolveOccupantBootAt = opts.resolveOccupantBootAt;
   }
 
@@ -457,7 +461,8 @@ export class ContextUsageStore {
   }
 
   private resolveCodexStateDbPaths(): string[] {
-    return this.codexHome || this.codexHomeDir ? resolveCodexDbPaths(this.codexHomeDir ?? "", "state", undefined, this.codexHome) : [];
+    const daemonPaths = this.codexHome || this.codexHomeDir ? resolveCodexDbPaths(this.codexHomeDir ?? "", "state", undefined, this.codexHome) : [];
+    return [...daemonPaths, ...this.seatCodexHomes().flatMap((home) => resolveCodexDbPaths("", "state", undefined, home))];
   }
 
   private readLatestCodexTokenCount(rolloutPath: string): CodexTokenCountEvent | null {

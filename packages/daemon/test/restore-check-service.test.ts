@@ -971,6 +971,24 @@ describe("RestoreCheckService", () => {
     expect(hook?.evidence).toContain(relayPath);
   });
 
+  it("a saved context without activity hooks: green only when the current definition is known not to select them", () => {
+    const cwd = path.join(os.tmpdir(), "restore-check-stale-context-seat");
+    const hookFor = (current: ReturnType<NonNullable<ConstructorParameters<typeof RestoreCheckService>[0]["currentActivityHookSelection"]>> | undefined) => new RestoreCheckService(mockDeps({
+      getNodeInventory: () => [claudeNode({ cwd })],
+      getStartupContext: () => startupContextProbe({ projectionEntries: [{ absolutePath: "/source/openrig-core", effectiveId: "shared:openrig-core", category: "plugin" }] }),
+      getClaudeActivityHookEvents: () => ["SessionStart"],
+      ...(current === undefined ? {} : { currentActivityHookSelection: () => current }),
+      exists: (candidate) => candidate.endsWith("host-infra.json"),
+      readFile: () => VALID_HOST_INFRA_DECLARATION,
+    })).check({}).checks.find((entry) => entry.check === "seat.dev-impl@test-rig.hooks");
+    expect(hookFor(undefined)?.status).toBe("green");
+    expect(hookFor(null)?.status).toBe("green");
+    expect(hookFor("not-selected")?.status).toBe("green");
+    expect(hookFor("unknown")).toMatchObject({ status: "yellow", evidence: expect.stringContaining("cannot be resolved (no rig root)") });
+    expect(hookFor({ unresolved: "the seat differs from the installed kernel definition" })).toMatchObject({ status: "yellow", evidence: expect.stringContaining("differs from the installed kernel definition") });
+    expect(hookFor("selected")).toMatchObject({ status: "yellow", evidence: expect.stringContaining("delivery is incomplete") });
+  });
+
   it.each(["disabled", "compact-only", "prompt-handler", "invalid-matcher", "substring-matcher"])("keeps %s selected activity hooks as a caveat", (kind) => {
     const cwd = path.join(os.tmpdir(), "restore-check-activity-seat-unusable");
     const settingsPath = path.join(cwd, ".claude", "settings.local.json");

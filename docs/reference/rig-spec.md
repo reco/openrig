@@ -179,7 +179,7 @@ edges:
 | `culture_file` | string | no | — | Relative path to a rig-wide culture/constitution file. Must be a safe relative path (no `..`, no absolute). |
 | `non_interruptive` | boolean | no | — | Pod-aware rig launch-warning default. With full-bypass Claude/Codex seats, true accepts or hides supported harness warnings using launch flags. Explicit CLI choices override this field; this field overrides the machine default. It does not grant permissions, change native settings files, or bypass login. |
 | `permission_policy` | string | no | — | Permission policy attached to the rig. Either a built-in (`builtin:locked`, `builtin:standard`, `builtin:open`, `builtin:yolo`, `builtin:auto`) or a safe relative path to a custom policy file (resolved from this spec's directory; no `..`, no absolute, no empty segments, each segment `[A-Za-z0-9][A-Za-z0-9._-]*`), or `none`, a recorded choice of the floor. Absent uses the default floor with the scoped team launch allowances described below. A bare built-in name such as `yolo` is refused ("use 'builtin:yolo'"), and so is an explicit `null`. A custom file that is missing, unreadable or invalid isn't a validation error: it resolves to the floor, and preflight warns. A member may set its own `permission_policy` (not on a terminal member), which takes precedence over the rig-level one; there is no pod level. See "Attaching a permission policy" below. |
-| `managed_blocks` | map | no | `CLAUDE.md` | File that receives OpenRig's managed instruction blocks for Claude Code members. Only the `claude-code` key is accepted, with `CLAUDE.md` or `CLAUDE.local.md`. Codex, Pi and OMP members use `AGENTS.md`. See "Choosing the Claude instruction file" below. |
+| `managed_blocks` | map | no | `CLAUDE.md`, `AGENTS.md` | File that receives OpenRig's managed instruction blocks, per runtime: `claude-code` (`CLAUDE.md` or `CLAUDE.local.md`) and `codex` (`AGENTS.md` or `AGENTS.override.md`). Pi and OMP members use `AGENTS.md`. See "Choosing the Claude instruction file" and "Choosing the Codex instruction file" below. |
 | `workspace` | object | no | — | The rig's workspace: `workspace_root` (required), `repos[]` of `{name, path, kind}` with `kind` one of `user`, `project`, `knowledge`, `lab` or `delivery` and unique names, an optional `default_repo` naming one of them, and an optional `knowledge_root`. Relative repo paths resolve against `workspace_root`. |
 | `docs` | Doc[] | no | — | Documentation files that should travel with the rig. Included in rig bundles. Each entry has a `path` field (safe relative path). The engine does not consume these — they are for humans and agents setting up the environment before launch. |
 | `startup` | StartupBlock | no | — | Rig-level startup files and actions. Applied to all members via the startup layering model. |
@@ -364,6 +364,45 @@ to the file, not only OpenRig's blocks. Running `rig down` on a rig that still u
 the default is not a substitute: it strips every OpenRig block from that
 directory's `CLAUDE.md`, including blocks written by other rigs.
 
+### Choosing the Codex instruction file
+
+Codex members get their blocks in `AGENTS.md` by default. If your repository
+tracks `AGENTS.md`, select `AGENTS.override.md`:
+
+```yaml
+managed_blocks:
+  codex: AGENTS.override.md
+```
+
+Codex reads one instruction file per directory, and `AGENTS.override.md` takes
+the place of `AGENTS.md`. So that Codex still sees the repository's rules,
+OpenRig also writes a copy of `AGENTS.md` (without any OpenRig blocks) into the
+override as a managed block named `AGENTS.md (repository copy)`. The copy is
+refreshed at every launch, restore and relaunch; an edit to `AGENTS.md` reaches a
+running Codex seat at its next launch. A new override is excluded from git
+through `.git/info/exclude`. Codex stops reading project instructions at
+`project_doc_max_bytes` (32 KiB by default), and the copy counts toward it.
+
+An `AGENTS.override.md` you wrote yourself keeps its text, but it also gets the
+copy, so it no longer replaces `AGENTS.md`.
+
+Accepted values are `AGENTS.md` and `AGENTS.override.md`. Everything else in the
+Claude section above applies the same way: `rig down` cleans only the selected
+file, and blocks already in `AGENTS.md` stay until you remove them.
+
+### Changing the selection on an existing rig
+
+`rig import <spec.yaml> --managed-blocks-only --target-rig <rigId>` sets the rig's
+`managed_blocks` from the spec and changes nothing else. A runtime left out of
+`managed_blocks` goes back to its default, so `managed_blocks: {}` undoes the
+change. Running seats and files are not touched: each seat writes the selected
+file at its next launch, restore or relaunch. The change is refused while a
+member's previously selected file still holds OpenRig blocks, because nothing
+would remove them later; the error names each file. Remove the blocks from those
+files first (keeping the rest), then apply again. Delete a file that is left
+empty: Codex treats even an empty `AGENTS.override.md` as the directory's
+instructions and skips `AGENTS.md`.
+
 ---
 
 ## Pod
@@ -531,7 +570,7 @@ Startup blocks can appear at three levels: rig, pod, and member. They are merged
 | Hint | Behavior |
 |------|----------|
 | `auto` | System chooses based on file type and context. |
-| `guidance_merge` | Merged as a managed block into the runtime's guidance file: for Claude, the `managed_blocks` file (`CLAUDE.md` or `CLAUDE.local.md`); for Codex, Pi and OMP, `AGENTS.md`. Delivered before harness boot. |
+| `guidance_merge` | Merged as a managed block into the runtime's guidance file: for Claude, the `managed_blocks` file (`CLAUDE.md` or `CLAUDE.local.md`); for Codex, the `managed_blocks` file (`AGENTS.md` or `AGENTS.override.md`); for Pi and OMP, `AGENTS.md`. Delivered before harness boot. |
 | `skill_install` | Installed as a skill in the runtime's skill directory. Delivered before harness boot. |
 | `send_text` | Sent as text to the agent's terminal after the harness is ready. Requires the agent TUI to be active. |
 

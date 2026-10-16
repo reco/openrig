@@ -27,6 +27,8 @@ export interface NodeBinding extends Binding {
   launchGeneration?: string;
   /** #25: the rig's `managed_blocks.claude-code` file. Absent = CLAUDE.md. Only the Claude adapter reads it. */
   claudeManagedBlockFile?: import("./managed-blocks.js").ClaudeManagedBlockFile;
+  /** The rig's `managed_blocks.codex` file. Absent = AGENTS.md. Only the Codex adapter reads it. */
+  codexManagedBlockFile?: import("./managed-blocks.js").CodexManagedBlockFile;
 }
 
 // -- Resolved startup file with source-root provenance --
@@ -176,6 +178,7 @@ export interface RuntimeAdapter {
     opts: { name: string; resumeToken?: string; forkSource?: ForkSource },
   ): Promise<HarnessLaunchResult>;
 
-  /** Check if the runtime harness is responsive and ready. */
-  checkReady(binding: NodeBinding): Promise<ReadinessResult>;
+  /** Check if the runtime harness is responsive and ready. `revealNarrowScreen`: a launch's own wait
+   *  may briefly enlarge a too-small window to read a live runtime's screen, restoring it after. */
+  checkReady(binding: NodeBinding, opts?: { revealNarrowScreen?: boolean }): Promise<ReadinessResult>;
 }

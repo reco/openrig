@@ -1,3 +1,4 @@
+import { ROUTED_MESSAGE_PREFIX } from "../src/domain/session-transport.js";
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import { createDb } from "../src/db/connection.js";
@@ -32,7 +33,10 @@ type Mode = "unchanged" | "rotation" | "duplicate-hook" | "delayed-hook" | "shim
 const sourcedModes = ["resume-rotation", "resume-then-clear", "clear-sourced", "startup-sourced",
   "compact-sourced", "resume-stale-generation", "resume-no-source",
   "resume-no-marker", "resume-other-marker", "resume-after-launch-hook", "resume-clear-resume",
-  "resume-child-missed-parent", "resume-in-process-missed-first"] as const;
+  "resume-child-missed-parent", "resume-in-process-missed-first",
+  "fresh-clear", "clear-unrecorded", "clear-replaced-process"] as const;
+// The launch path recorded no process (a seat launched before it did), or another process than 102.
+const clearModes = ["clear-sourced", "fresh-clear", "clear-unrecorded", "clear-replaced-process"];
 type SourcedMode = typeof sourcedModes[number];
 const tokenOnlyModes = ["N1-settings-before", "settings-after", "plain-wrong-token", "lone-wrong-shim"] as const;
 
@@ -48,10 +52,11 @@ async function sendAfterHook(mode: Mode, consumer: "send" | "wake" | "handoff" =
     const session = registry.registerSession(node.id, name);
     registry.updateStatus(session.id, "running");
     registry.updateBinding(node.id, { tmuxSession: name, tmuxPane: "%1" });
-    // OpenRig launched this seat with `--resume original`.
-    registry.recordResumeLaunch(session.id, original);
-    // ... and observed the process it started (102 below) right after the launch.
-    registry.recordResumeLaunchProcess(session.id, original, { pid: 102, startedAt: "Sat Oct  3 01:00:00 2026" });
+    // OpenRig launched this seat with `--resume original` (fresh-clear: `--session-id original`).
+    registry.recordResumeLaunch(session.id, mode === "fresh-clear" ? null : original);
+    // ... and observed the process it started (102 below) once it ran.
+    if (mode !== "clear-unrecorded") registry.recordResumeLaunchProcess(session.id, original,
+      { pid: 102, startedAt: mode === "clear-replaced-process" ? "Sat Oct  3 00:59:00 2026" : "Sat Oct  3 01:00:00 2026" });
     const store = new AgentActivityStore({ db, eventBus });
     const app = new Hono();
     // The process table while a SessionStart hook runs: the pane's launched Claude (102) ran the
@@ -96,10 +101,10 @@ async function sendAfterHook(mode: Mode, consumer: "send" | "wake" | "handoff" =
     const tokenOnly = tokenOnlyModes.some(value => value === mode) || mode === "probe-refresh";
     const sourced = sourcedModes.some(value => value === mode);
     if (sourced) {
-      const source = mode === "clear-sourced" ? "clear" : mode === "startup-sourced" ? "startup"
+      const source = clearModes.includes(mode) ? "clear" : mode === "startup-sourced" ? "startup"
         : mode === "compact-sourced" ? "compact" : mode === "resume-no-source" ? undefined : "resume";
       // A Claude started by hand in the pane carries no marker; a stale one names another launch.
-      const resumeLaunch = mode === "resume-no-marker" ? undefined : mode === "resume-other-marker" ? third : original;
+      const resumeLaunch = mode === "resume-no-marker" || mode === "fresh-clear" ? undefined : mode === "resume-other-marker" ? third : original;
       // The launched process's own first hook kept its id. What follows is an in-process /resume,
       // or a child `claude -p --resume` that inherited the seat's environment, marker included.
       if (mode === "resume-after-launch-hook") await hook(original, undefined, { source: "resume", generation, resumeLaunch });
@@ -153,7 +158,8 @@ async function sendAfterHook(mode: Mode, consumer: "send" | "wake" | "handoff" =
       getPaneCommand: async () => "sh",
       listPanes: async () => [{ id: mode === "changed-pane" ? "%2" : "%1" }],
       capturePaneContent: async () => screen,
-      sendText: async () => {
+      sendText: async (_target: string, text: string) => {
+        if (text === ROUTED_MESSAGE_PREFIX) return { ok: true };
         calls.push("text");
         if (mode === "changed-after-paste") registry.updateBinding(node.id, { tmuxSession: name, tmuxPane: "%2" });
         return { ok: true };
@@ -263,9 +269,21 @@ describe("a resumed conversation that changed its id, with the hook's evidence (
     expect(calls).toEqual(["text", "enter"]);
   });
 
-  it.each(["clear-sourced", "resume-then-clear", "startup-sourced", "compact-sourced", "resume-stale-generation", "resume-no-source",
-    "resume-no-marker", "resume-other-marker", "resume-after-launch-hook", "resume-clear-resume", "resume-child-missed-parent",
-    "resume-in-process-missed-first"] as const)(
+  // Decision A, narrowed: a conversation change reported by the very process the launch path recorded
+  // (pid and start time), in the current generation, verifies whatever its source or marker; the
+  // proof still accepts only that process's own launch token in argv.
+  it.each(["clear-sourced", "fresh-clear", "resume-then-clear", "resume-clear-resume", "startup-sourced", "compact-sourced",
+    "resume-no-source", "resume-no-marker", "resume-other-marker", "resume-in-process-missed-first"] as const)(
+    "%s: the recorded launched process changed its own conversation, so send verifies the seat", async mode => {
+      const { result, calls, observed, strict } = await sendAfterHook(mode);
+      expect(observed.state).toBe("verified");
+      expect(strict).not.toBeNull();
+      expect(result.warning ?? "").not.toContain("unverified");
+      expect(calls).toEqual(["text", "enter"]);
+    });
+
+  it.each(["resume-stale-generation", "resume-after-launch-hook", "resume-child-missed-parent", "clear-unrecorded",
+    "clear-replaced-process"] as const)(
     "%s keeps today's warning: the conversation is unverified", async mode => {
       const { result, calls, observed, strict } = await sendAfterHook(mode);
       expect(observed.state).toBe("unknown");

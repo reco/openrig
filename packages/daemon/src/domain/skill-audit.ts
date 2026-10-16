@@ -1,4 +1,5 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { VENDOR_MANIFEST } from "./plugin-vendor-service.js";
 import { basename, join, resolve, dirname } from "node:path";
 import { sha256Hex } from "./files/file-write-service.js";
 import type { SkillProvenanceEntry } from "./skill-discovery.js";
@@ -197,6 +198,8 @@ function listFilesRecursive(dir: string, prefix = ""): string[] {
 
 // The projection writes this marker beside the plugin's files (plugin-vendor-service GLOBAL_VENDOR_VERSION).
 const PROJECTION_MARKER = ".openrig-vendor-version";
+/** The vendor's record of what it installed, and the earlier bytes it kept when replacing a file. */
+const isVendorBookkeeping = (rel: string) => rel === PROJECTION_MARKER || rel === VENDOR_MANIFEST || /\.pre-\d+\.\d+\.\d+$/.test(rel);
 
 /** A copy is bundled when the same-named skill in an installed plugin exists, the copy holds exactly the
  *  plugin's files (plus the projection's version marker), and every one has identical bytes. An edited,
@@ -206,7 +209,7 @@ function matchBundledSource(skillPath: string, sources: BundledSkillSource[]): B
     const pluginSkill = join(source.skillsDir, basename(skillPath));
     const files = listFilesRecursive(pluginSkill);
     if (!files.includes("SKILL.md")) continue;
-    if (listFilesRecursive(skillPath).some((rel) => rel !== PROJECTION_MARKER && !files.includes(rel))) continue;
+    if (listFilesRecursive(skillPath).some((rel) => !isVendorBookkeeping(rel) && !files.includes(rel))) continue;
     const identical = files.every((rel) => {
       try { return readFileSync(join(pluginSkill, rel)).equals(readFileSync(join(skillPath, rel))); }
       catch { return false; }
