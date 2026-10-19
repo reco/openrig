@@ -506,7 +506,7 @@ identity remains unverified; a version number alone cannot clear it.
   // Thin CLI over the daemon's SeatLifecycleService; refusals print message +
   // guidance + match list exactly as the daemon named them.
   const runLifecycleVerb = async (
-    path: "set-model" | "set-permissions" | "launch" | "continue" | "stop" | "clean",
+    path: "set-model" | "set-cwd" | "set-permissions" | "launch" | "continue" | "stop" | "clean",
     seat: string,
     body: Record<string, unknown>,
     opts: { json?: boolean },
@@ -602,6 +602,42 @@ resume/successor launch reads it at call time. Examples:
         }
         console.log(`Model for ${s?.logicalId}@${s?.rigName}: ${String(data["from"] ?? "none")} -> ${String(data["to"])} (audited).`);
         console.log("The next managed resume/successor launch composes the new model.");
+      });
+    });
+
+  cmd
+    .command("set-cwd")
+    .argument("<seat>", "Canonical session name or logical seat ref")
+    .requiredOption("--cwd <path>", "Existing absolute directory the seat launches in from now on")
+    .requiredOption("--reason <text>", "Audit reason recorded on the node.cwd_changed event")
+    .option("--operator <address>", "Operator recorded on the audit event")
+    .option("--json", "JSON output for agents")
+    .description("Persist one seat's working directory (audited); no relaunch, other seats untouched")
+    .addHelpText("after", `
+Only nodes.cwd changes: the running agent, its native session, resume token,
+model, permissions and auth home stay as they are. Launches read the cwd from
+the snapshot they use and managed Claude launches refuse one that disagrees
+with this setting, so snapshot after the change. To move a seat into the same
+conversation:
+  rig seat set-cwd dev-impl@my-rig --cwd /abs/new/dir --reason "move worktree"
+  rig snapshot <rigId>
+  rig seat stop dev-impl@my-rig --reason "move worktree"
+  copy the generated runtime files the seat needs from the old directory
+  (.claude/plugins, .claude/settings.local.json, .mcp.json, .openrig/);
+  a resume does not project them again, only missing guidance blocks
+  rig launch <rigId> dev.impl --snapshot-id <that snapshot>
+Claude resumes a session id from any directory of the same repository (or any
+project when only one holds it). To go back, repeat the same steps with the
+old directory.`)
+    .action(async (seat: string, opts: { cwd: string; reason: string; operator?: string; json?: boolean }) => {
+      await runLifecycleVerb("set-cwd", seat, { cwd: opts.cwd, reason: opts.reason, operator: opts.operator }, opts, (data) => {
+        const s = data["seat"] as { logicalId?: string; rigName?: string } | undefined;
+        if (data["changed"] === false) {
+          console.log(`Cwd for ${s?.logicalId}@${s?.rigName} already ${String(data["to"])}; no change recorded.`);
+          return;
+        }
+        console.log(`Cwd for ${s?.logicalId}@${s?.rigName}: ${String(data["from"] ?? "none")} -> ${String(data["to"])} (audited).`);
+        console.log("Launches from a snapshot taken after this change use the new directory.");
       });
     });
 

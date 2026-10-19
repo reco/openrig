@@ -244,7 +244,7 @@ export function seatLifecycleService(c: { get(key: never): unknown }): SeatLifec
 }
 
 function seatLifecycleStatus(code: SeatRefusal["code"]): 400 | 404 | 409 | 500 | 502 {
-  if (code === "seat_ref_required" || code === "missing_model" || code === "missing_reason" || code === "fresh_required") return 400;
+  if (code === "seat_ref_required" || code === "missing_model" || code === "invalid_cwd" || code === "missing_reason" || code === "fresh_required") return 400;
   if (code === "seat_not_found") return 404;
   if (code === "tmux_probe_failed") return 502;
   if (code === "launch_unavailable" || code === "runtime_adapter_missing" || code === "launch_failed" || code === "startup_failed") return 500;
@@ -270,6 +270,18 @@ seatRoutes.post("/set-model/:seatRef", async (c) => {
   const result = await seatLifecycleService(c).setModel({
     seatRef: c.req.param("seatRef")!,
     model: typeof body["model"] === "string" ? body["model"] : "",
+    reason: typeof body["reason"] === "string" ? body["reason"] : "",
+    operator: typeof body["operator"] === "string" ? body["operator"] : null,
+  });
+  if (result.ok) return c.json(result);
+  return c.json(result, seatLifecycleStatus(result.code));
+});
+
+seatRoutes.post("/set-cwd/:seatRef", async (c) => {
+  const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
+  const result = seatLifecycleService(c).setCwd({
+    seatRef: c.req.param("seatRef")!,
+    cwd: typeof body["cwd"] === "string" ? body["cwd"] : "",
     reason: typeof body["reason"] === "string" ? body["reason"] : "",
     operator: typeof body["operator"] === "string" ? body["operator"] : null,
   });

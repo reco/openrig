@@ -515,6 +515,10 @@ export class RigRepository {
     return result.changes > 0;
   }
 
+  setNodeCwd(nodeId: string, cwd: string): boolean {
+    return this.db.prepare("UPDATE nodes SET cwd = ? WHERE id = ?").run(cwd, nodeId).changes > 0;
+  }
+
   setNodeEffort(nodeId: string, effort: string): boolean {
     if (!this.hasNodeColumn("effort")) return false;
     const result = this.db

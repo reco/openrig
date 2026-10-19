@@ -192,6 +192,35 @@ describe("rig seat set-model", () => {
   });
 });
 
+describe("rig seat set-cwd", () => {
+  it("posts cwd/reason/operator to /api/seat/set-cwd/<seat> and prints the from->to summary", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const deps = makeDeps({
+      status: 200,
+      data: { ok: true, seat: { logicalId: "dev.impl", rigName: "seat-rig" }, from: "/old", to: "/new", changed: true },
+    }, calls);
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCommand(deps).parseAsync(["node", "rig", "seat", "set-cwd", "dev-impl@seat-rig", "--cwd", "/new", "--reason", "move", "--operator", "op@rig"]);
+    });
+    expect(calls[0]!.path).toBe("/api/seat/set-cwd/dev-impl%40seat-rig");
+    expect(calls[0]!.body).toEqual({ cwd: "/new", reason: "move", operator: "op@rig" });
+    expect(exitCode).toBeUndefined();
+    expect(logs.join("\n")).toContain("/old -> /new");
+  });
+
+  it("requires --cwd and --reason (commander rejects before any request)", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const deps = makeDeps({ status: 200, data: {} }, calls);
+    await expect(
+      makeCommand(deps).parseAsync(["node", "rig", "seat", "set-cwd", "dev-impl@seat-rig", "--reason", "x"]),
+    ).rejects.toThrow(/--cwd/);
+    await expect(
+      makeCommand(deps).parseAsync(["node", "rig", "seat", "set-cwd", "dev-impl@seat-rig", "--cwd", "/new"]),
+    ).rejects.toThrow(/--reason/);
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe("rig seat stop", () => {
   it("posts reason to /api/seat/stop/<seat> and prints the stopped summary", async () => {
     const calls: Array<{ path: string; body: unknown }> = [];

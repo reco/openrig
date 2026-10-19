@@ -18,6 +18,8 @@ import type { OccupantInvalidator } from "./occupant-invalidator.js";
 import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
 import { observeSolePane } from "./pane-binding-observation.js";
 import { createHash } from "node:crypto";
+import { statSync } from "node:fs";
+import nodePath from "node:path";
 import { NativePermissionStore } from "./native-permission-store.js";
 import { validateNativePermissionSelection, unresolvedClaudePermissionModes } from "./native-permission-selection.js";
 
@@ -67,6 +69,7 @@ export interface SeatRefusal {
     | "seat_not_found"
     | "seat_ambiguous"
     | "missing_model"
+    | "invalid_cwd"
     | "missing_reason"
     | "permission_selection_refused"
     | "no_session"
@@ -219,6 +222,39 @@ export class SeatLifecycleService {
     if (persisted) this.eventBus.notifySubscribers(persisted);
 
     return { ok: true, seat, from, to: model, changed: true };
+  }
+
+  setCwd(input: { seatRef: string; cwd: string; reason: string; operator?: string | null }): SetModelResult {
+    const required = this.requireReason(input.reason);
+    if (required) return required;
+    const requested = input.cwd?.trim() ?? "";
+    const cwd = nodePath.resolve(requested);
+    if (!nodePath.isAbsolute(requested) || !statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) {
+      return { ok: false, code: "invalid_cwd", message: `--cwd must be an existing absolute directory; got '${input.cwd ?? ""}'.` };
+    }
+    const resolved = this.resolveSeat(input.seatRef);
+    if ("code" in resolved) return resolved;
+
+    const seat = this.describe(resolved);
+    const from = resolved.entry.cwd ?? null;
+    if (from === cwd) return { ok: true, seat, from, to: cwd, changed: false };
+
+    let persisted: PersistedEvent | null = null;
+    this.db.transaction(() => {
+      this.rigRepo.setNodeCwd(resolved.nodeId, cwd);
+      persisted = this.eventBus.persistWithinTransaction({
+        type: "node.cwd_changed",
+        rigId: seat.rigId,
+        nodeId: seat.nodeId,
+        logicalId: seat.logicalId,
+        from,
+        to: cwd,
+        reason: input.reason.trim(),
+        operator: input.operator ?? null,
+      });
+    })();
+    if (persisted) this.eventBus.notifySubscribers(persisted);
+    return { ok: true, seat, from, to: cwd, changed: true };
   }
 
   async setPermissions(input: { seatRef: string; mode: string; reason: string; actor: string }): Promise<
