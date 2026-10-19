@@ -226,6 +226,40 @@ describe("phase 1 request lifecycle sweep", () => {
       expect(isOpen()).toBe(true);
     });
 
+    it("an answered approval, prompt or Merge card is finished by its answer: its thread closes quietly and no reminder follows", async () => {
+      const card = async (tags: string[], conversation: string) => {
+        const id = (await repo.create({ ...request, humanIntent: "decision", tags })).qitemId;
+        map.open({ threadTs: conversation, channel: "C-TEST", human, seat: "author@rig", conversationId: id });
+        repo.update({ qitemId: id, actorSession: human, state: "done", closureReason: "no-follow-on", transitionNote: "direct human reply received", ownerNotificationKind: "human-decision-resolved" });
+        return id;
+      };
+      map.close("1.1");
+      const approval = await card(["approval-request"], "4.1");
+      const prompt = await card(["stuck-prompt-session:author@rig", "stuck-prompt-key:k"], "4.2");
+      const merge = await card(["human-merge"], "4.3");
+      repo.update({ qitemId: merge, actorSession: "daemon@kernel", transitionNote: "human-merge result: merge pending" });
+      repo.update({ qitemId: merge, actorSession: "daemon@kernel", transitionNote: `human-merge result: merged ${"c".repeat(40)}` });
+      at(3.1); await sweep();
+      for (const [id, ts] of [[approval, "4.1"], [prompt, "4.2"], [merge, "4.3"]] as const) {
+        expect(map.resolveByThread(ts)?.state).toBe("closed");
+        expect(repo.transitionLog.listForQitem(id).some((t) => t.transitionNote === "request-closed reason=card-answered")).toBe(true);
+      }
+      expect(threadPosts).toEqual([]);
+      expect(toSeat().filter((q) => q.tags?.includes("request-reminder"))).toEqual([]);
+    });
+
+    it("a Merge card still merging, or an answered ordinary decision, stays open and reminds its seat", async () => {
+      const merge = (await repo.create({ ...request, humanIntent: "decision", tags: ["human-merge"] })).qitemId;
+      map.open({ threadTs: "5.1", channel: "C-TEST", human, seat: "author@rig", conversationId: merge });
+      repo.update({ qitemId: merge, actorSession: human, state: "done", closureReason: "no-follow-on", transitionNote: "direct human reply received", ownerNotificationKind: "human-decision-resolved" });
+      repo.update({ qitemId: merge, actorSession: "daemon@kernel", transitionNote: "human-merge result: merge pending" });
+      resolve();
+      at(3.1); await sweep();
+      expect(map.resolveByThread("5.1")?.state).toBe("open");
+      expect(isOpen()).toBe(true);
+      expect(toSeat().filter((q) => q.tags?.includes("request-reminder"))).toHaveLength(2);
+    });
+
     it("closed requests get no reminders", async () => {
       link("pr:https://github.com/reco/openrig/pull/1");
       github.set("https://github.com/reco/openrig/pull/1", "merged");
