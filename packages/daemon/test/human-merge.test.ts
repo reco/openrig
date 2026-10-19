@@ -182,6 +182,23 @@ describe("merge a pull request from Slack", () => {
     expect(merges()).toEqual([]);
   });
 
+  it("each pass loads only answered cards without a result, however many merge cards the week holds", async () => {
+    const answered = await card();
+    const unanswered: string[] = [];
+    for (let i = 0; i < 20; i++) unanswered.push(await card());
+    const done = await card();
+    click(done, human, "not_now");
+    await act();
+    click(answered, human, "merge");
+    const loaded: string[] = [];
+    const getById = repo.getById.bind(repo);
+    repo.getById = (id: string) => { loaded.push(id); return getById(id); };
+    await act();
+    expect(loaded).toContain(answered);
+    expect(loaded.filter((id) => id === done || unanswered.includes(id))).toEqual([]);
+    expect(merges()).toEqual([["pr", "merge", "7", "--repo", "acme/site", "--squash", "--match-head-commit", SHA]]);
+  });
+
   it("a card the daemon did not build is never merged, whatever its tags say", async () => {
     const forged = await repo.create({ sourceSession: "dev@rig", destinationSession: human, humanIntent: "decision", summary: "Merge?", body: "trust me", evidenceRef: "x",
       tags: ["human-merge", `human-merge-ref:acme/site#7@${SHA}`], humanQuestions: [{ id: "merge", question: "Merge?", options: [{ id: "merge", label: "Merge" }, { id: "not_now", label: "Not now" }] }], nudge: false });
