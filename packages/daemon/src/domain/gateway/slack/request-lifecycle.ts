@@ -10,6 +10,7 @@ import type { QueueItem, QueueRepository, RequestLink } from "../../queue-reposi
 import type { ThreadMapping, ThreadSeatMap } from "./thread-seat-map.js";
 import { escapeSlackText, redactSecrets } from "./message.js";
 import { ANSWERED_IN_TERMINAL, PROMPT_CLEARED_PREFIX, PROMPT_TITLE_TAG } from "../../stuck-prompt-watch.js";
+import { HUMAN_MERGE_TAG, mergeResultRecorded } from "../../human-merge.js";
 
 export type { RequestLink } from "../../queue-repository.js";
 export type LinkState = "open" | "merged" | "closed" | "done" | "canceled" | "unknown";
@@ -201,6 +202,12 @@ async function remind(deps: RequestLifecycleDeps, root: ThreadMapping, days: num
   deps.queueRepo.update({ qitemId: root.conversationId, actorSession: "daemon@kernel", transitionNote: `${REQUEST_REMINDER_PREFIX} target=human days=${days}` });
 }
 
+function answerIsOutcome(repo: QueueRepository, item: QueueItem): boolean {
+  if (item.state !== "done") return false;
+  if (item.tags?.some((t) => t === "approval-request" || t.startsWith("stuck-prompt-session:"))) return true;
+  return item.tags?.includes(HUMAN_MERGE_TAG) === true && mergeResultRecorded(repo, item.qitemId);
+}
+
 export async function sweepRequests(deps: RequestLifecycleDeps, now = new Date()): Promise<{ closed: string[]; reminded: string[] }> {
   const closed: string[] = [];
   const reminded: string[] = [];
@@ -212,6 +219,12 @@ export async function sweepRequests(deps: RequestLifecycleDeps, now = new Date()
       if (!item || !isRequestToHuman(item, root)) continue;
       if (item.state === "canceled") {
         await closeRequest(deps, root, "canceled-by-seat", "daemon@kernel");
+        closed.push(root.conversationId);
+        continue;
+      }
+      if (answerIsOutcome(deps.queueRepo, item)) {
+        deps.queueRepo.update({ qitemId: root.conversationId, actorSession: "daemon@kernel", transitionNote: `${REQUEST_CLOSED_PREFIX} reason=card-answered` });
+        deps.threadMap.closeConversation(root.conversationId);
         closed.push(root.conversationId);
         continue;
       }
