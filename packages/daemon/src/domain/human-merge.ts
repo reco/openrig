@@ -141,7 +141,9 @@ async function readSettledPr(deps: MergeDeps, ref: MergeRef): Promise<PrState> {
  *  card's thread and returns to the seat. */
 export async function actOnMergeAnswers(repo: QueueRepository, deps: MergeDeps): Promise<void> {
   const now = deps.now ?? Date.now;
-  const rows = repo.db.prepare(`SELECT qitem_id FROM queue_items WHERE ts_created > ? AND tags LIKE '%"${HUMAN_MERGE_TAG}"%'`)
+  const rows = repo.db.prepare(`SELECT q.qitem_id FROM queue_items q WHERE q.ts_created > ? AND q.tags LIKE '%"${HUMAN_MERGE_TAG}"%'
+      AND (q.human_answers LIKE '%"${QUESTION_ID}":"merge"%' OR q.human_answers LIKE '%"${QUESTION_ID}":"not_now"%')
+      AND NOT EXISTS (SELECT 1 FROM queue_transitions t WHERE t.qitem_id = q.qitem_id AND t.transition_note LIKE '${RESULT_NOTE}%')`)
     .all(new Date(now() - 7 * 24 * 3600_000).toISOString()) as Array<{ qitem_id: string }>;
   for (const { qitem_id } of rows) {
     const row = repo.getById(qitem_id);
