@@ -239,6 +239,8 @@ describe("phase 1 request lifecycle sweep", () => {
       const merge = await card(["human-merge"], "4.3");
       repo.update({ qitemId: merge, actorSession: "daemon@kernel", transitionNote: "human-merge result: merge pending" });
       repo.update({ qitemId: merge, actorSession: "daemon@kernel", transitionNote: `human-merge result: merged ${"c".repeat(40)}` });
+      at(2.9); await sweep();
+      expect(["4.1", "4.2", "4.3"].map((ts) => map.resolveByThread(ts)?.state)).toEqual(["open", "open", "open"]);
       at(3.1); await sweep();
       for (const [id, ts] of [[approval, "4.1"], [prompt, "4.2"], [merge, "4.3"]] as const) {
         expect(map.resolveByThread(ts)?.state).toBe("closed");
@@ -246,6 +248,15 @@ describe("phase 1 request lifecycle sweep", () => {
       }
       expect(threadPosts).toEqual([]);
       expect(toSeat().filter((q) => q.tags?.includes("request-reminder"))).toEqual([]);
+    });
+
+    it("an unanswered approval card stays open and reminds its human", async () => {
+      map.close("1.1");
+      const approval = (await repo.create({ ...request, humanIntent: "decision", tags: ["approval-request"] })).qitemId;
+      map.open({ threadTs: "6.1", channel: "C-TEST", human, seat: "author@rig", conversationId: approval });
+      at(3.1); await sweep();
+      expect(map.resolveByThread("6.1")?.state).toBe("open");
+      expect(threadPosts.map((p) => p.threadTs)).toEqual(["6.1"]);
     });
 
     it("a Merge card still merging, or an answered ordinary decision, stays open and reminds its seat", async () => {
