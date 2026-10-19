@@ -222,12 +222,6 @@ export async function sweepRequests(deps: RequestLifecycleDeps, now = new Date()
         closed.push(root.conversationId);
         continue;
       }
-      if (answerIsOutcome(deps.queueRepo, item)) {
-        deps.queueRepo.update({ qitemId: root.conversationId, actorSession: "daemon@kernel", transitionNote: `${REQUEST_CLOSED_PREFIX} reason=card-answered` });
-        deps.threadMap.closeConversation(root.conversationId);
-        closed.push(root.conversationId);
-        continue;
-      }
       const links = deps.queueRepo.requestLinks(root.conversationId);
       if (links.length > 0) {
         const states = await Promise.all(links.map((link) => stateOf(deps, link)));
@@ -238,7 +232,12 @@ export async function sweepRequests(deps: RequestLifecycleDeps, now = new Date()
         }
       }
       const quietSince = Date.parse(deps.queueRepo.requestActivityAt(root.conversationId) ?? root.openedAt);
-      if (now.getTime() - quietSince >= deps.staleReminderDays * DAY_MS) {
+      if (now.getTime() - quietSince < deps.staleReminderDays * DAY_MS) continue;
+      if (answerIsOutcome(deps.queueRepo, item)) {
+        deps.queueRepo.update({ qitemId: root.conversationId, actorSession: "daemon@kernel", transitionNote: `${REQUEST_CLOSED_PREFIX} reason=card-answered` });
+        deps.threadMap.closeConversation(root.conversationId);
+        closed.push(root.conversationId);
+      } else {
         await remind(deps, root, deps.staleReminderDays);
         reminded.push(root.conversationId);
       }
