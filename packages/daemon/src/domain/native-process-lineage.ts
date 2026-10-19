@@ -20,7 +20,19 @@ export interface NativeProcessRow {
 
 export type NativeRuntime = "claude-code" | "codex";
 
-function tokens(command: string): string[] {
+const TOKEN_CACHE_LIMIT = 4096;
+const tokenCache = new Map<string, readonly string[]>();
+
+function tokens(command: string): readonly string[] {
+  let cached = tokenCache.get(command);
+  if (!cached) {
+    if (tokenCache.size >= TOKEN_CACHE_LIMIT) tokenCache.clear();
+    tokenCache.set(command, cached = Object.freeze(parseTokens(command)));
+  }
+  return cached;
+}
+
+function parseTokens(command: string): string[] {
   // ps flattens argv: inline settings JSON retains its string delimiters.
   // A quote inside a name or filename is literal, not a shell span delimiter.
   const result: string[] = [];
