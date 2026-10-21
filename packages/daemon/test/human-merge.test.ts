@@ -267,7 +267,7 @@ describe("merge a pull request from Slack", () => {
     await act();
     expect(loaded).toContain(answered);
     expect(loaded.filter((id) => id === done || unanswered.includes(id))).toEqual([]);
-    expect(merges()).toEqual([["pr", "merge", "7", "--repo", "acme/site", "--squash", "--match-head-commit", SHA]]);
+    expect(merges()).toEqual([MERGE_CALL]);
   });
 
   it("a card the daemon did not build is never merged, whatever its tags say", async () => {
