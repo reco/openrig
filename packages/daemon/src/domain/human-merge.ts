@@ -35,7 +35,8 @@ export function parseMergeRef(text: string): MergeRef | null {
 export const formatMergeRef = (ref: MergeRef) => `${ref.repo}#${ref.number}@${ref.sha}`;
 
 export const mergeResultRecorded = (repo: QueueRepository, qitemId: string) => repo.transitionLog.listForQitem(qitemId)
-  .some((t) => t.actorSession === "daemon@kernel" && t.transitionNote?.startsWith(RESULT_NOTE) && !t.transitionNote.endsWith(" pending"));
+  .some((t) => t.actorSession === "daemon@kernel" && t.transitionNote?.startsWith(RESULT_NOTE) && !t.transitionNote.endsWith(" pending")
+    && !t.transitionNote.startsWith(`${RESULT_NOTE} accepted`));
 
 interface Check { name: string; outcome: "pass" | "fail" | "pending" }
 

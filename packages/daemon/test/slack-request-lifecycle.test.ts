@@ -259,16 +259,20 @@ describe("phase 1 request lifecycle sweep", () => {
       expect(threadPosts.map((p) => p.threadTs)).toEqual(["6.1"]);
     });
 
-    it("a Merge card still merging, or an answered ordinary decision, stays open and reminds its seat", async () => {
-      const merge = (await repo.create({ ...request, humanIntent: "decision", tags: ["human-merge"] })).qitemId;
-      map.open({ threadTs: "5.1", channel: "C-TEST", human, seat: "author@rig", conversationId: merge });
-      repo.update({ qitemId: merge, actorSession: human, state: "done", closureReason: "no-follow-on", transitionNote: "direct human reply received", ownerNotificationKind: "human-decision-resolved" });
-      repo.update({ qitemId: merge, actorSession: "daemon@kernel", transitionNote: "human-merge result: merge pending" });
+    it("a Merge card still merging or only accepted by GitHub, or an answered ordinary decision, stays open and reminds its seat", async () => {
+      const mergeCard = async (conversation: string, notes: string[]) => {
+        const id = (await repo.create({ ...request, humanIntent: "decision", tags: ["human-merge"] })).qitemId;
+        map.open({ threadTs: conversation, channel: "C-TEST", human, seat: "author@rig", conversationId: id });
+        repo.update({ qitemId: id, actorSession: human, state: "done", closureReason: "no-follow-on", transitionNote: "direct human reply received", ownerNotificationKind: "human-decision-resolved" });
+        for (const transitionNote of notes) repo.update({ qitemId: id, actorSession: "daemon@kernel", transitionNote });
+      };
+      await mergeCard("5.1", ["human-merge result: merge pending"]);
+      await mergeCard("5.2", ["human-merge result: merge pending", "human-merge result: accepted 8f0c-uuid"]);
       resolve();
       at(3.1); await sweep();
-      expect(map.resolveByThread("5.1")?.state).toBe("open");
+      expect(["5.1", "5.2"].map((ts) => map.resolveByThread(ts)?.state)).toEqual(["open", "open"]);
       expect(isOpen()).toBe(true);
-      expect(toSeat().filter((q) => q.tags?.includes("request-reminder"))).toHaveLength(2);
+      expect(toSeat().filter((q) => q.tags?.includes("request-reminder"))).toHaveLength(3);
     });
 
     it("closed requests get no reminders", async () => {
