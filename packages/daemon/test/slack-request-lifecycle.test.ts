@@ -259,7 +259,7 @@ describe("phase 1 request lifecycle sweep", () => {
       expect(threadPosts.map((p) => p.threadTs)).toEqual(["6.1"]);
     });
 
-    it("a Merge card still merging or only accepted by GitHub, or an answered ordinary decision, stays open and reminds its seat", async () => {
+    it("a Merge card still merging, only accepted by GitHub or in its merge queue, or an answered ordinary decision, stays open and reminds its seat", async () => {
       const mergeCard = async (conversation: string, notes: string[]) => {
         const id = (await repo.create({ ...request, humanIntent: "decision", tags: ["human-merge"] })).qitemId;
         map.open({ threadTs: conversation, channel: "C-TEST", human, seat: "author@rig", conversationId: id });
@@ -268,11 +268,12 @@ describe("phase 1 request lifecycle sweep", () => {
       };
       await mergeCard("5.1", ["human-merge result: merge pending"]);
       await mergeCard("5.2", ["human-merge result: merge pending", "human-merge result: accepted 8f0c-uuid"]);
+      await mergeCard("5.3", ["human-merge result: merge pending", "human-merge result: enqueued"]);
       resolve();
       at(3.1); await sweep();
-      expect(["5.1", "5.2"].map((ts) => map.resolveByThread(ts)?.state)).toEqual(["open", "open"]);
+      expect(["5.1", "5.2", "5.3"].map((ts) => map.resolveByThread(ts)?.state)).toEqual(["open", "open", "open"]);
       expect(isOpen()).toBe(true);
-      expect(toSeat().filter((q) => q.tags?.includes("request-reminder"))).toHaveLength(3);
+      expect(toSeat().filter((q) => q.tags?.includes("request-reminder"))).toHaveLength(4);
     });
 
     it("closed requests get no reminders", async () => {

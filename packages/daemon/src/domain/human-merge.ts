@@ -36,7 +36,7 @@ export const formatMergeRef = (ref: MergeRef) => `${ref.repo}#${ref.number}@${re
 
 export const mergeResultRecorded = (repo: QueueRepository, qitemId: string) => repo.transitionLog.listForQitem(qitemId)
   .some((t) => t.actorSession === "daemon@kernel" && t.transitionNote?.startsWith(RESULT_NOTE) && !t.transitionNote.endsWith(" pending")
-    && !t.transitionNote.startsWith(`${RESULT_NOTE} accepted`));
+    && !t.transitionNote.startsWith(`${RESULT_NOTE} accepted`) && t.transitionNote !== `${RESULT_NOTE} enqueued`);
 
 interface Check { name: string; outcome: "pass" | "fail" | "pending" }
 
