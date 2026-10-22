@@ -107,6 +107,8 @@ decision and shows a Confirm button. Pick the kind that fits:
 - a choice: `--human-questions-file` option buttons;
 - information: `--human-intent update`; no buttons and no acknowledgement.
   Silence means read; if the human disagrees, it arrives as a thread reply.
+  An update is quiet; when the human asked to be pinged, add `--mention` and
+  Slack @mentions them. Typing `<@U…>` in the body shows as text, not a mention.
 A decision with buttons of its own (`--confirm` or `--human-questions-file`) may
 also go into an earlier request's thread with `--reply-to`; its clicks answer it,
 not the thread's request.

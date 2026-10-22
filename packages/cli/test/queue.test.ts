@@ -220,6 +220,21 @@ describe("rig queue CLI", () => {
     process.exitCode = 0;
   });
 
+  it("create --mention on an update sends the mention tag", async () => {
+    const { deps, calls } = makeDeps();
+    await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "lee@external", "--body", "Please check.", "--human-intent", "update", "--mention", "--json"]);
+    expect(calls.find((c) => c.path === "/api/queue/create")?.body).toMatchObject({ humanIntent: "update", tags: ["mention"] });
+  });
+
+  it("create --mention without --human-intent update fails locally and never contacts the daemon", async () => {
+    const { deps, calls } = makeDeps();
+    await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "lee@external", "--body", "Please check.", "--mention", "--json"]);
+    expect(process.exitCode).toBe(1);
+    expect(errors.join("\n")).toMatch(/mention_requires_update/);
+    expect(calls.filter((c) => c.path === "/api/queue/create")).toHaveLength(0);
+    process.exitCode = 0;
+  });
+
   it("create --reply-to with --human-intent update sends replyTo", async () => {
     const { deps, calls } = makeDeps();
     await createProgram({ queueDeps: deps }).parseAsync(["node", "rig", "queue", "create", "--destination", "human-founder@external", "--body", "Merged.", "--human-intent", "update", "--reply-to", "qitem-earlier", "--json"]);

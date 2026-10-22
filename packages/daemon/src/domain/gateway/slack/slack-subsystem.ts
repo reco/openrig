@@ -30,7 +30,7 @@ import { abortableSleep, evidenceAttachment, subsystemSlackDeliver } from "./sla
 import { InboundRouter, inboundQitemIdFor, NOT_ADDRESSED_TAG, SLACK_MESSAGE_TAG, type ReactionTarget, type SlackEvent, type SlackBlockActions, type InboundFilePort, type InboundFileResult, type StoredInboundFile, type FailedInboundFile } from "./inbound.js";
 import { makeInboundSenderResolver, type RegistrySurface } from "./inbound-admission.js";
 import { ThreadSeatMap, formatPostedStamp } from "./thread-seat-map.js";
-import { attributionFromSession, buildCompactClosedMessage, buildOutboundMessage, DEFAULT_CONFIRM_DECISION } from "./message.js";
+import { attributionFromSession, buildCompactClosedMessage, buildOutboundMessage, DEFAULT_CONFIRM_DECISION, UPDATE_MENTION_TAG } from "./message.js";
 import { makeThreadRouteResolver } from "./thread-routing.js";
 import { closeRequest, isRequestToHuman, currentGateResolved, entityOf, gateOpenedAt, githubLinkState, isRequestHuman, sweepRequests, type LinkState, type RequestLifecycleDeps, type RequestLink } from "./request-lifecycle.js";
 import { resolveOutboundChannel, unsupportedChannelMapFields } from "./channel-map.js";
@@ -309,12 +309,21 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   // OPR.0.5.6.1 — the one engine consult (AM-F5: the gateway consults the
   // engine BEFORE dispatch). Null = destination is not a registered human;
   // the caller keeps the pre-engine dial behavior (stated degrade).
-  const decideForPayload = (p: OutboundPostPayload): DeliveryDecision | null => {
+  const destinationHuman = (p: OutboundPostPayload) => {
     const local = (p.destinationSession ?? "").split("@")[0] ?? "";
     if (!local) return null;
     const reg = registrySurface.loadHumanRegistry(opts.home);
     if (!reg.ok) return null;
-    const human = reg.entities.find((e) => e.entityId === local);
+    return reg.entities.find((e) => e.entityId === local) ?? null;
+  };
+  const requestedUpdateMention = (p: OutboundPostPayload): string | undefined => {
+    if (!p.tags?.includes(UPDATE_MENTION_TAG)) return undefined;
+    const human = destinationHuman(p);
+    if (!human || resolveAvailability(human.prefs) !== "available") return undefined;
+    return human.connectorBindings.find((b) => b.kind === "slack" && b.handle)?.handle;
+  };
+  const decideForPayload = (p: OutboundPostPayload): DeliveryDecision | null => {
+    const human = destinationHuman(p);
     if (!human) return null;
     return decideDelivery({
       level: p.ownerNotificationLevel ?? null,
@@ -672,7 +681,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         },
         // S14: posting and interruption are separate threshold dials over one vocabulary.
         resolveMentionUserId: (p) => {
-          if (p.humanIntent === "update" || isResolvedNotice(p)) return undefined;
+          if (isResolvedNotice(p)) return undefined;
+          if (p.humanIntent === "update") return requestedUpdateMention(p);
           // OPR.0.5.6.1: the engine's decided loudness is the mention rule for
           // registered humans; the dial pair remains only for the null degrade.
           if ((p as { deliveryDigestPost?: boolean }).deliveryDigestPost) return undefined; // notify-class aggregate, never a mention

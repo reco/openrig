@@ -123,6 +123,7 @@ const TYPED_REPLY_HINT = "Or reply in this thread with your own answer.";
 export const DEFAULT_CONFIRM_LABEL = "Confirm";
 /** Alerts the daemon closes itself (a wake escalation, a stuck-sweep finding): nothing for the human to confirm. */
 export const SELF_CLOSING_ALERT_TAGS: ReadonlySet<string> = new Set(["wake-escalation", "stuck-sweep-finding"]);
+export const UPDATE_MENTION_TAG = "mention";
 export const DEFAULT_CONFIRM_DECISION = "confirmed";
 
 /** Parse a clicked button back into its question and option ids; null if it is not ours. */
@@ -353,7 +354,8 @@ function bounded(text: string, max: number, field: string): string {
  * the human sees one subject, complete body and one sender attribution. */
 export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): SlackMessagePayload {
   const body = bounded(inert(String(q.body || "")), SLACK_SECTION_CAP, "body");
-  const mention = opts.mentionUserId ? `<@${opts.mentionUserId}> :rotating_light: ` : "";
+  const siren = q.humanIntent === "update" ? "" : ":rotating_light: ";
+  const mention = opts.mentionUserId ? `<@${opts.mentionUserId}> ${siren}` : "";
   // No summary, no headline: the body starts the message (a mention still leads it).
   const headline = q.summary?.trim()
     ? bounded(`${mention}*${inert(q.summary)}*`, SLACK_SECTION_CAP, "subject")
