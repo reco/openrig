@@ -421,6 +421,30 @@ describe("SessionTransport", () => {
     expect(typedPrefixes).toEqual([]);
   });
 
+  it("a routed message still in a Claude seat's input after Enter gets one more Enter; one that stays is reported", async () => {
+    seedCanonicalRig();
+    const staged = `history\n❯ earlier message\n⏺ reply\n❯ ${ROUTED_MESSAGE_PREFIX}From: lead@rig\n  Do the thing\n────────────`;
+    const cleared = `history\n❯ ${ROUTED_MESSAGE_PREFIX}From: lead@rig\n  Do the thing\n⏺ working\n────────────\n❯ \n────────────`;
+    const run = async (afterEnters: string[]) => {
+      let enters = 0;
+      const tmux = mockTmux({
+        sendKeys: async (_t, keys) => { if (keys.includes("Enter")) enters++; return { ok: true }; },
+        capturePaneContent: async () => enters === 0 ? "idle prompt\n❯ " : afterEnters[Math.min(enters, afterEnters.length) - 1]!,
+      });
+      const result = await createTransport(tmux, { sleep: async () => {} }).send("dev-impl@my-rig", "From: lead@rig\nDo the thing");
+      return { result, enters };
+    };
+    const once = await run([cleared]);
+    expect(once.enters).toBe(1);
+    expect(once.result.warning ?? "").not.toMatch(/Enter again|still in its input/);
+    const dropped = await run([staged, cleared]);
+    expect(dropped.enters).toBe(2);
+    expect(dropped.result).toMatchObject({ ok: true, warning: expect.stringContaining("pressed Enter again") });
+    const stuck = await run([staged, staged]);
+    expect(stuck.enters).toBe(2);
+    expect(stuck.result).toMatchObject({ ok: true, verified: false, outcome: "rendered-unconfirmed", warning: expect.stringContaining("still in its input") });
+  });
+
   // Test 2: send to canonical session name resolves correctly
   it("send to canonical session name resolves correctly", async () => {
     seedCanonicalRig();
