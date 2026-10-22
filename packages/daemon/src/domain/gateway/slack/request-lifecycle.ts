@@ -202,9 +202,11 @@ async function remind(deps: RequestLifecycleDeps, root: ThreadMapping, days: num
   deps.queueRepo.update({ qitemId: root.conversationId, actorSession: "daemon@kernel", transitionNote: `${REQUEST_REMINDER_PREFIX} target=human days=${days}` });
 }
 
+const isSelfClosingAlert = (item: QueueItem): boolean => item.tags?.some((t) => SELF_CLOSING_ALERT_TAGS.has(t)) === true;
+
 function answerIsOutcome(repo: QueueRepository, item: QueueItem): boolean {
   if (item.state !== "done") return false;
-  if (item.tags?.some((t) => t === "approval-request" || t.startsWith("stuck-prompt-session:") || SELF_CLOSING_ALERT_TAGS.has(t))) return true;
+  if (isSelfClosingAlert(item) || item.tags?.some((t) => t === "approval-request" || t.startsWith("stuck-prompt-session:"))) return true;
   return item.tags?.includes(HUMAN_MERGE_TAG) === true && mergeResultRecorded(repo, item.qitemId);
 }
 
@@ -237,7 +239,7 @@ export async function sweepRequests(deps: RequestLifecycleDeps, now = new Date()
         deps.queueRepo.update({ qitemId: root.conversationId, actorSession: "daemon@kernel", transitionNote: `${REQUEST_CLOSED_PREFIX} reason=card-answered` });
         deps.threadMap.closeConversation(root.conversationId);
         closed.push(root.conversationId);
-      } else {
+      } else if (!isSelfClosingAlert(item)) {
         await remind(deps, root, deps.staleReminderDays);
         reminded.push(root.conversationId);
       }
