@@ -165,6 +165,7 @@ export type ConfirmOutcome = "confirmed" | "not-used";
 export const DEFAULT_CONFIRM_LABEL = "Confirm";
 /** Alerts the daemon closes itself (a wake escalation, a stuck-sweep finding): nothing for the human to confirm. */
 export const SELF_CLOSING_ALERT_TAGS: ReadonlySet<string> = new Set(["wake-escalation", "stuck-sweep-finding"]);
+export const UPDATE_MENTION_TAG = "mention";
 export const DEFAULT_CONFIRM_DECISION = "confirmed";
 
 /** Parse a clicked button back into its question and option ids; null if it is not ours. */
@@ -674,7 +675,8 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
       ? ""
       : bounded(`Evidence: ${inert(gateEvidence)}`, SLACK_SECTION_CAP, "body"))
     : bounded(markdownToSlackMrkdwn(String(q.body || ""), q.bodyOpenFence ?? ""), SLACK_SECTION_CAP, "body");
-  const mention = opts.mentionUserId ? `<@${opts.mentionUserId}> :rotating_light: ` : "";
+  const siren = q.humanIntent === "update" ? "" : ":rotating_light: ";
+  const mention = opts.mentionUserId ? `<@${opts.mentionUserId}> ${siren}` : "";
   const sender = `From ${inert(opts.attribution?.session || opts.sourceLabel)}`;
   const machineSeg = (value: string | undefined) =>
     opts.attribution && !opts.attribution.host && value ? ` on ${inert(value)}` : "";

@@ -1326,6 +1326,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--human-intent <intent>", "decision (default; shows buttons, a Confirm button if none are given) or update (status, answers, information: no buttons and no acknowledgement; silence means read)")
     .option("--alert", "For an ask to a person that's urgent: something only they can do, or an approval whose wait costs now. It stands out in Slack (an interrupt with a mention). Without it the ask still posts to Slack for a person on the default Slack subscription (every-ask), and waits on Steering and the TUI for one on urgent-only")
     .option("--human-detail-file <path>", "One explicitly authored supplemental thread reply; keep the complete action/options in --body-file")
+    .option("--mention", "With --human-intent update: @mention the destination human in Slack (their registered handle, only while their availability is available); translated to a mention tag. Mention syntax in the body is always shown as text.")
     .option("--reply-to <qitemId>", "Post this update, or a decision with its own buttons (--confirm or --human-questions-file), into an earlier qitem's Slack thread (an update needs --human-intent update; posts as a new top-level message instead if that thread can't be used, e.g. it is missing, or it still has an open human decision while slack explicitAnswersOnly is off; --verify reports why)")
     .option("--link <kind:ref>", "Link this request to its outcome, kind:ref with kind pr|issue|qitem (repeatable). The request's Slack thread closes once every linked outcome is finished (PR merged or closed, issue closed, qitem done or canceled)", collectLink, [] as string[])
     .option("--confirm <reading>", "A one-click answer that resolves with exactly this text. On a decision: the approve button's call to action, at most 75 characters (e.g. \"Build it\", \"Write the issue\"). On an update with --reply-to <decision>: your reading of their answer, shown with a Confirm button")
@@ -1356,6 +1357,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       humanIntent?: string;
       alert?: boolean;
       humanDetailFile?: string;
+      mention?: boolean;
       replyTo?: string;
       humanQuestionsFile?: string;
       confirm?: string;
@@ -1413,6 +1415,13 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
         process.exitCode = 1;
         return;
       }
+      if (opts.mention && opts.humanIntent !== "update") {
+        const message = "mention_requires_update: --mention is accepted with --human-intent update; a decision's mention follows the human's notification settings.";
+        if (opts.json) console.error(JSON.stringify({ error: "mention_requires_update", message }));
+        else console.error(message);
+        process.exitCode = 1;
+        return;
+      }
       // #193 — read and parse the questions locally too; the daemon validates their shape.
       let humanQuestions: unknown;
       if (opts.humanQuestionsFile) {
@@ -1466,6 +1475,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       // Atom 6b snapshot provenance: record WHERE the body came from so the
       // handoff stays auditable even if the pack is edited later.
       if (opts.bodyContext) fromFlags.push(`body-context:${opts.bodyContext}`);
+      if (opts.mention) fromFlags.push("mention");
       const merged = [...fromFlags, ...fromTagsArg];
       const seen = new Set<string>();
       const dedupedTags = merged.filter((t) => { if (seen.has(t)) return false; seen.add(t); return true; });

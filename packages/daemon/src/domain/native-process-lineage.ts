@@ -237,7 +237,7 @@ function codexConversationToken(args: string[], subcommand: "resume" | "fork", e
 
 /** A `ps` command line split the way identity proof splits it. */
 export function processArgv(command: string): string[] {
-  return tokens(command);
+  return [...tokens(command)];
 }
 
 /** The conversation a Claude command line names (--resume, --session-id, or a fork's own --session-id);
