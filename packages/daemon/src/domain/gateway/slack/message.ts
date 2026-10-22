@@ -164,7 +164,7 @@ export type ConfirmOutcome = "confirmed" | "not-used";
 /** Phase 1: a decision that brings no buttons of its own gets this one. */
 export const DEFAULT_CONFIRM_LABEL = "Confirm";
 /** Alerts the daemon closes itself (a wake escalation, a stuck-sweep finding): nothing for the human to confirm. */
-const SELF_CLOSING_ALERT_TAGS = new Set(["wake-escalation", "stuck-sweep-finding"]);
+export const SELF_CLOSING_ALERT_TAGS: ReadonlySet<string> = new Set(["wake-escalation", "stuck-sweep-finding"]);
 export const DEFAULT_CONFIRM_DECISION = "confirmed";
 
 /** Parse a clicked button back into its question and option ids; null if it is not ours. */

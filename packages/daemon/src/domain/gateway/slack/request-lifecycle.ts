@@ -8,7 +8,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { QueueItem, QueueRepository, RequestLink } from "../../queue-repository.js";
 import type { ThreadMapping, ThreadSeatMap } from "./thread-seat-map.js";
-import { escapeSlackText, redactSecrets } from "./message.js";
+import { SELF_CLOSING_ALERT_TAGS, escapeSlackText, redactSecrets } from "./message.js";
 import { ANSWERED_IN_TERMINAL, PROMPT_CLEARED_PREFIX, PROMPT_TITLE_TAG } from "../../stuck-prompt-watch.js";
 import { HUMAN_MERGE_TAG, mergeResultRecorded } from "../../human-merge.js";
 
@@ -204,7 +204,7 @@ async function remind(deps: RequestLifecycleDeps, root: ThreadMapping, days: num
 
 function answerIsOutcome(repo: QueueRepository, item: QueueItem): boolean {
   if (item.state !== "done") return false;
-  if (item.tags?.some((t) => t === "approval-request" || t.startsWith("stuck-prompt-session:"))) return true;
+  if (item.tags?.some((t) => t === "approval-request" || t.startsWith("stuck-prompt-session:") || SELF_CLOSING_ALERT_TAGS.has(t))) return true;
   return item.tags?.includes(HUMAN_MERGE_TAG) === true && mergeResultRecorded(repo, item.qitemId);
 }
 
