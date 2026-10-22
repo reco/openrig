@@ -250,6 +250,25 @@ describe("phase 1 request lifecycle sweep", () => {
       expect(toSeat().filter((q) => q.tags?.includes("request-reminder"))).toEqual([]);
     });
 
+    it("a done wake escalation or stuck-sweep finding has no decision to remind about: its thread closes quietly", async () => {
+      map.close("1.1");
+      const alert = async (tags: string[], conversation: string) => {
+        const id = (await repo.create({ sourceSession: "author@rig", destinationSession: "author@rig", summary: "Wake escalation", body: "Baton stuck", tags, nudge: false })).qitemId;
+        map.open({ threadTs: conversation, channel: "C-TEST", human, seat: "author@rig", conversationId: id });
+        repo.update({ qitemId: id, actorSession: "author@rig", state: "done", closureReason: "no-follow-on", transitionNote: "handled" });
+        return id;
+      };
+      const wake = await alert(["wake-escalation", "wake-prompt-refusal"], "7.1");
+      const finding = await alert(["stuck-sweep-finding"], "7.2");
+      at(3.1); await sweep();
+      for (const [id, ts] of [[wake, "7.1"], [finding, "7.2"]] as const) {
+        expect(map.resolveByThread(ts)?.state).toBe("closed");
+        expect(repo.transitionLog.listForQitem(id).some((t) => t.transitionNote === "request-closed reason=card-answered")).toBe(true);
+      }
+      expect(threadPosts).toEqual([]);
+      expect(toSeat().filter((q) => q.tags?.includes("request-reminder"))).toEqual([]);
+    });
+
     it("an unanswered approval card stays open and reminds its human", async () => {
       map.close("1.1");
       const approval = (await repo.create({ ...request, humanIntent: "decision", tags: ["approval-request"] })).qitemId;
