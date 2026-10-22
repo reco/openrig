@@ -1713,13 +1713,14 @@ export class SessionTransport {
     // An Enter can be lost after the paste (seen on busy and idle Claude seats): the message then
     // waits in the input until the next delivery's Enter submits both. Press it once more while the
     // input still holds this routed message, and say so if it still does.
-    if (!promptOverride && typesRoutedLine(runtime, text)) {
+    const checksUnsent = !promptOverride && typesRoutedLine(runtime, text);
+    if (checksUnsent) {
       const unsent = async () => {
         await this.sleep(500);
         return routedMessageUnsent(await this.tmuxAdapter.capturePaneContent(sessionName, 50).catch(() => null));
       };
       if (await unsent()) {
-        if (bindingChanged()) return observe(changedRecipient(true));
+        if (bindingChanged()) return observe({ ...changedRecipient(true), error: "Recipient binding changed after Enter; the routed message may still be in its input. No second Enter was sent." });
         const retry = await this.runStage("session_transport.submit_retry",
           () => { opts?.beforeWrite?.(); return opts?.beforeWrite ? this.tmuxAdapter.sendKeys(sessionName, ["Enter"], opts.beforeWrite) : this.tmuxAdapter.sendKeys(sessionName, ["Enter"]); },
           (result) => result.ok ? "ok" : "failed");
@@ -1737,7 +1738,7 @@ export class SessionTransport {
     // (a TUI redraw race, or the capture throwing) is therefore the honest
     // middle outcome `rendered-unconfirmed` — never a failure (OPR.99.0.6.3).
     if (opts?.verify) {
-      await this.sleep(500);
+      if (!checksUnsent) await this.sleep(500);
       const captureSeq = observed ? nextCaptureSeq++ : 0;
       try {
         const content = await this.runStage(

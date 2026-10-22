@@ -443,6 +443,20 @@ describe("SessionTransport", () => {
     const stuck = await run([staged, staged]);
     expect(stuck.enters).toBe(2);
     expect(stuck.result).toMatchObject({ ok: true, verified: false, outcome: "rendered-unconfirmed", warning: expect.stringContaining("still in its input") });
+    const atPrompt = await run([`history\n❯ ${ROUTED_MESSAGE_PREFIX}From: lead@rig\n  Do the thing\n⏺ Bash(rm -rf build)\n Do you want to proceed?\n ❯ 1. Yes\n   2. No`]);
+    expect(atPrompt.enters).toBe(1);
+  });
+
+  it("a failed second Enter is reported as not submitted", async () => {
+    seedCanonicalRig();
+    let enters = 0;
+    const tmux = mockTmux({
+      sendKeys: async () => (++enters === 1 ? { ok: true } : { ok: false, code: "tmux_error", message: "boom" }) as TmuxResult,
+      capturePaneContent: async () => enters === 0 ? "idle prompt\n❯ " : `❯ ${ROUTED_MESSAGE_PREFIX}From: lead@rig\n  Do the thing`,
+    });
+    const result = await createTransport(tmux, { sleep: async () => {} }).send("dev-impl@my-rig", "From: lead@rig\nDo the thing");
+    expect(enters).toBe(2);
+    expect(result).toMatchObject({ ok: true, outcome: "rendered-unconfirmed", warning: expect.stringContaining("still in its input") });
   });
 
   // Test 2: send to canonical session name resolves correctly

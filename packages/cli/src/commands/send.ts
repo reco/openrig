@@ -15,6 +15,7 @@ import { resolveSenderSession, SENDER_FALLBACK } from "../sender-identity.js";
 import { resolveContextRef, walkSizedWarning } from "../context-resolve.js";
 
 const WAIT_FOR_IDLE_REQUEST_OVERHEAD_MS = 5_000;
+const BROADCAST_REQUEST_TIMEOUT_MS = 120_000;
 // A cross-host send waits for the remote to deliver, and the remote has no fixed deadline of its own (its tmux
 // calls run without a timeout), so no client budget is exact. This one sits well above a normal send, and above
 // fetch's 10 s connect timeout, so a host that never accepts the connection still reads as unreachable. A send
@@ -972,7 +973,7 @@ async function runFanOutSend(params: {
 
   let res: { status: number; data: Record<string, unknown> };
   try {
-    res = await client.post<Record<string, unknown>>("/api/transport/broadcast", body, transportRequestOptions());
+    res = await client.post<Record<string, unknown>>("/api/transport/broadcast", body, { ...transportRequestOptions(), timeoutMs: BROADCAST_REQUEST_TIMEOUT_MS });
   } catch (err) {
     if (err instanceof DaemonConnectionError) {
       // 1b45cf21 — same helper as single-seat, so the remediation is
