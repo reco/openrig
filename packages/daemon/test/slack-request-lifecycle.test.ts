@@ -269,6 +269,22 @@ describe("phase 1 request lifecycle sweep", () => {
       expect(toSeat().filter((q) => q.tags?.includes("request-reminder"))).toEqual([]);
     });
 
+    it("a wake escalation still open after quiet days is the daemon's to close: no reminder to anyone", async () => {
+      map.close("1.1");
+      const id = (await repo.create({ sourceSession: "author@rig", destinationSession: "author@rig", summary: "Wake escalation", body: "Baton stuck", tags: ["wake-escalation"], nudge: false })).qitemId;
+      map.open({ threadTs: "8.1", channel: "C-TEST", human, seat: "author@rig", conversationId: id });
+      at(3.1); await sweep();
+      expect(map.resolveByThread("8.1")?.state).toBe("open");
+      expect(threadPosts).toEqual([]);
+      expect(toSeat().filter((q) => q.tags?.includes("request-reminder"))).toEqual([]);
+    });
+
+    it("a done ordinary request with no answered gate still reminds its human", async () => {
+      repo.update({ qitemId: decisionId, actorSession: "author@rig", state: "done", closureReason: "no-follow-on", transitionNote: "done by seat" });
+      at(3.1); await sweep();
+      expect(threadPosts.map((p) => p.threadTs)).toEqual(["1.1"]);
+    });
+
     it("an unanswered approval card stays open and reminds its human", async () => {
       map.close("1.1");
       const approval = (await repo.create({ ...request, humanIntent: "decision", tags: ["approval-request"] })).qitemId;
