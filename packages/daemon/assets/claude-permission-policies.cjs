@@ -35,7 +35,7 @@ const TEAM_CLAUDE_ASK = [
   "up", "down", "start", "launch", "restore", "fork", "bootstrap", "create", "add", "remove",
   "grow", "shrink", "expand", "destroy", "handover", "env down",
   "daemon start", "daemon stop", "bundle install", "seat launch", "seat stop", "seat handover", "seat restart",
-  "import", "seat set-permissions", "policy apply", "policy permissions apply", "setup", "compact",
+  "import", "seat set-permissions", "policy apply", "policy permissions apply", "setup", "compact", "seat set-cwd",
 ].map(command => `Bash(rig ${command}:*)`);
 
 module.exports = { KERNEL_CLAUDE_ALLOW, TEAM_CLAUDE_ALLOW, TEAM_CLAUDE_ASK };

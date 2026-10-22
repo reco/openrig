@@ -82,6 +82,10 @@ describe("Claude kernel inspection permissions", () => {
 });
 
 describe("Claude team command permissions", () => {
+  it("asks before a team seat moves a seat's working directory", () => {
+    expect(decide("rig seat set-cwd dev@rig --cwd /work/other --reason move", policy)).toBe("ask");
+  });
+
   for (const rule of TEAM_CLAUDE_ASK) {
     const command = rule.slice(5, -3);
     it(`${command}: real action asks, help does not`, () => {
@@ -118,6 +122,7 @@ describe("Claude team command permissions", () => {
     "seat set-permissions", "policy apply", "policy permissions apply", // an explicit permission choice stays with a person
     "setup", // its --policy option records a permission choice, and the prefix rule can't tell it from ordinary setup
     "compact", // it replaces a peer's working context
+    "seat set-cwd",
   ];
   const ORDINARY = [
     "archive", "unarchive", "adopt", "attach", "bind", "unclaim", "release", "reconcile-session",
@@ -131,7 +136,7 @@ describe("Claude team command permissions", () => {
     expect(decide(`rig seat restart example@demo ${flag}`, policy)).toBe("ask");
     expect(decide("rig seat restart --help", policy)).toBe("allow");
   });
-  it("the ask list is exactly those 29", () => {
+  it("the ask list is exactly those 30", () => {
     expect([...TEAM_CLAUDE_ASK].sort()).toEqual([...STARTS_STOPS_OR_REMOVES, ...KEPT_FOR_A_PERSON].map(command => `Bash(rig ${command}:*)`).sort());
   });
 
