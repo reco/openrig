@@ -105,7 +105,7 @@ export function makeThreadRouteResolver(opts: {
         // only the conversation's newest root correlates to its current human gate.
         // Phase 1: a closed request answers nothing; its replies still reach the seat.
         const newest = opts.map.resolveByConversation(mapping.conversationId);
-        const current = mapping.state === "open" && (!newest || (newest.threadTs === threadTs && newest.channel === mapping.channel))
+        const current = (mapping.state === "open" || ev.recoveredAfterGap === true) && (!newest || (newest.threadTs === threadTs && newest.channel === mapping.channel))
           && !opts.isHumanStarted?.(mapping.conversationId);
         log(`inbound routed thread_ts=${threadTs} -> ${mapping.seat} (${routeClass}${current ? "" : ", superseded root: no gate correlation"})`);
         return {

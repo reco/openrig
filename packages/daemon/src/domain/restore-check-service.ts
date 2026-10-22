@@ -1242,16 +1242,6 @@ export class RestoreCheckService {
       entry.category === "runtime_resource" && entry.resourceType === "claude_activity_hooks"
     ));
     const current = startup?.status === "ok" && !savedSelects ? this.deps.currentActivityHookSelection?.(node) ?? null : null;
-    if (current === "unknown" || (current !== null && typeof current === "object")) {
-      return {
-        check: `seat.${session}.hooks`, status: "yellow",
-        evidence: current === "unknown"
-          ? "The saved startup context selects no Claude activity hooks and the seat's current spec cannot be resolved (no rig root); whether it should have them is unknown"
-          : `The saved startup context selects no Claude activity hooks and the seat's current definition could not be read: ${current.unresolved}`,
-        remediation: "Confirm the seat's agent spec selection before trusting activity-hook readiness",
-        remediationSafe: false,
-      };
-    }
     if (startup?.status === "ok" && !savedSelects && current !== "selected") {
       return this.checkOtherHookChannels(node, startup);
     }

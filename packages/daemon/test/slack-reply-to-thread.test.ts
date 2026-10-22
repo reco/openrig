@@ -742,7 +742,8 @@ describe("update --reply-to an earlier item's thread (#96)", () => {
       expect(here.qitemId).not.toBe(there.qitemId);
       // The person's reply in the other channel's thread belongs to that channel's root.
       await humanReply("907.1", "907.2", "C-OTHER");
-      expect(inboundRow("907.2", "C-OTHER")?.replyTo).toBe(there.qitemId);
+      // A thread the person started routes to its seat but answers no request (routing only), so the reply names it by tag.
+      expect(inboundRow("907.2", "C-OTHER")?.tags).toContain(`reply-to:${there.qitemId}`);
       // The seat's answer to each root posts in that root's own channel and thread.
       for (const [row, channel] of [[there, "C-OTHER"], [here, "C-TEST"]] as const) {
         const answer = await repo.create({ ...request, sourceSession: "operator-agent@kernel", humanIntent: "update", body: "On it.", replyTo: row.qitemId });

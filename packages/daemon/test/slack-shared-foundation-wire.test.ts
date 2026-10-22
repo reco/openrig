@@ -39,6 +39,8 @@ describe("one shared Slack app across two machines", () => {
   const slack = (m: Machine) => async (url: string, init?: RequestInit) => {
     if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
     if (url.includes("conversations.history") || url.includes("conversations.replies")) return reply({ ok: true, messages: [], has_more: false });
+    // The addressed-only rule's reads (the app's own user, a channel's members) are not posts.
+    if (url.includes("auth.test") || url.includes("conversations.members") || url.includes("users.info")) return reply({ ok: true, user_id: "UBOT", members: [] });
     const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
     m.posts.push(body);
     return reply({ ok: true, ts: `${m.posts.length}.9` });

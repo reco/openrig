@@ -723,13 +723,13 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       const root = (inThread ? threadMap.resolveByThread(inThread) : null) ?? threadMap.resolveByConversation(item.qitemId);
       if (root) {
         if (root.state === "closed") return { kind: "fallback", reason: "root-closed", threadTs: root.threadTs };
-        // Who the root belongs to is checked before where it is, so a reply that isn't the root's
-        // says so even when it also posts in another channel.
-        if (root.human !== (p.destinationSession ?? "")) return { kind: "fallback", reason: "root-other-human", threadTs: root.threadTs };
         if (root.seat !== (p.sourceSession ?? "") && !humanWroteHere(item, root, p.sourceSession ?? "")) return { kind: "fallback", reason: "root-other-seat", threadTs: root.threadTs };
         // #192: with a channel map a root in another channel than this attempt's cannot carry the post.
         if (cfg.channelMap?.length && root.channel !== channel) return { kind: "fallback", reason: "root-other-channel", threadTs: root.threadTs };
         if (!isConfiguredChannel(root.channel) && root.origin !== "person" && !isHumanStartedRoot(root)) return { kind: "fallback", reason: "root-other-channel", threadTs: root.threadTs };
+        // A reply row (a reaction, an answer) names its ask's root: that ask's own live gate still keeps the thread.
+        const owner = root.seat === p.sourceSession && root.conversationId !== item.qitemId ? opts.queueRepo.getById(root.conversationId) : null;
+        if (!cfg.explicitAnswersOnly && owner && hasLiveHumanGate(owner)) return { kind: "fallback", reason: "reference-has-live-gate", qitemId: owner.qitemId };
         return { kind: "thread", threadTs: root.threadTs };
       }
       // A human-started message has no root of ours: answer in that message's own thread, in the

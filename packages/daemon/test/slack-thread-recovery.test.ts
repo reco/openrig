@@ -113,9 +113,9 @@ it.each(["open", "closed"])("a missed reply in a %s decision thread lands once a
     expect(f.rows()[0]!.body).toContain(text);
   }
   expect(f.resolveHumanReply).not.toHaveBeenCalled();
-  // A live envelope can't claim the recovered mark: a live reply still answers.
+  // A live envelope can't claim the recovered mark: a live reply still answers an open thread; a closed one answers nothing.
   await handleEnvelope({ type: "events_api", payload: { event: f.reply(60, ROOT, { recoveredThreadReply: true, recoveredAfterGap: true }) } }, () => {}, f.router);
-  expect(f.resolveHumanReply).toHaveBeenCalledTimes(1);
+  expect(f.resolveHumanReply).toHaveBeenCalledTimes(state === "open" ? 1 : 0);
   await r.run();
   expect(f.rows()).toHaveLength(2);
 });

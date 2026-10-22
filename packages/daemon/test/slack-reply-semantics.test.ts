@@ -598,13 +598,13 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-top", type: "events_api", payload: { event: { type: "message", user: "UFOUNDER", text: "Any open items?", ts: "2500.1", channel: "C-TEST" } } }) });
       await vi.waitFor(() => expect(finals("e-top")).toHaveLength(1));
       const inbound = repo.list({ limit: 100 }).find((q) => q.body.includes("Any open items?"))!;
-      const answer = await repo.create({ ...request, humanIntent: "update", summary: "Two open items", body: "1. Review 2. Merge", replyTo: inbound.qitemId });
+      const answer = await repo.create({ ...request, sourceSession: inbound.destinationSession!, humanIntent: "update", summary: "Two open items", body: "1. Review 2. Merge", replyTo: inbound.qitemId });
       await deliver(answer.qitemId);
       expect(posts.at(-1)?.thread_ts).toBe("2500.1");
       expect(repo.getById(answer.qitemId)?.replyToFallback).toBeNull();
       await sayIn("2500.1", "And the third one?", "2501.1");
       const followUp = repo.list({ limit: 100 }).find((q) => q.body.includes("And the third one?"));
-      expect(followUp?.destinationSession).toBe("author@rig");
+      expect(followUp?.destinationSession).toBe(inbound.destinationSession);
       expect(followUp?.tags).toContain(`reply-to:${inbound.qitemId}`);
     });
 
@@ -612,11 +612,11 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-top4", type: "events_api", payload: { event: { type: "message", user: "UFOUNDER", text: "Set up Lee", ts: "2800.1", channel: "C-TEST" } } }) });
       await vi.waitFor(() => expect(finals("e-top4")).toHaveLength(1));
       const inbound = repo.list({ limit: 100 }).find((q) => q.body.includes("Set up Lee"))!;
-      const first = await repo.create({ ...request, humanIntent: "update", summary: "Plan", body: "Three steps.", replyTo: inbound.qitemId });
+      const first = await repo.create({ ...request, sourceSession: inbound.destinationSession!, humanIntent: "update", summary: "Plan", body: "Three steps.", replyTo: inbound.qitemId });
       await deliver(first.qitemId);
       await sayIn("2800.1", "What about his accounts?", "2801.1");
       const reply = repo.list({ limit: 100 }).find((q) => q.body.includes("What about his accounts?"))!;
-      const answer = await repo.create({ ...request, humanIntent: "update", summary: "Accounts", body: "Own Codex and Claude.", replyTo: reply.qitemId });
+      const answer = await repo.create({ ...request, sourceSession: inbound.destinationSession!, humanIntent: "update", summary: "Accounts", body: "Own Codex and Claude.", replyTo: reply.qitemId });
       await deliver(answer.qitemId);
       expect(posts.at(-1)?.thread_ts).toBe("2800.1");
       expect(repo.getById(answer.qitemId)?.replyToFallback).toBeNull();
@@ -626,7 +626,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-top2", type: "events_api", payload: { event: { type: "message", user: "UFOUNDER", text: "Status please", ts: "2600.1", channel: "C-TEST" } } }) });
       await vi.waitFor(() => expect(finals("e-top2")).toHaveLength(1));
       const inbound = repo.list({ limit: 100 }).find((q) => q.body.includes("Status please"))!;
-      const answer = await repo.create({ ...request, humanIntent: "update", summary: "All green", body: "Nothing open.", replyTo: inbound.qitemId });
+      const answer = await repo.create({ ...request, sourceSession: inbound.destinationSession!, humanIntent: "update", summary: "All green", body: "Nothing open.", replyTo: inbound.qitemId });
       await deliver(answer.qitemId);
       await sayIn("2600.1", "answer: thanks", "2601.1");
       await sayIn("2600.1", "cancel", "2602.1");
@@ -640,7 +640,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-top3", type: "events_api", payload: { event: { type: "message", user: "UFOUNDER", text: "Plan the PSA rig", ts: "2700.1", channel: "C-TEST" } } }) });
       await vi.waitFor(() => expect(finals("e-top3")).toHaveLength(1));
       const inbound = repo.list({ limit: 100 }).find((q) => q.body.includes("Plan the PSA rig"))!;
-      const plan = await repo.create({ ...request, humanIntent: "decision", summary: "PSA rig plan", body: "Dedicated rig, Lee as requester.", replyTo: inbound.qitemId, humanConfirm: "Build the PSA rig" });
+      const plan = await repo.create({ ...request, sourceSession: inbound.destinationSession!, humanIntent: "decision", summary: "PSA rig plan", body: "Dedicated rig, Lee as requester.", replyTo: inbound.qitemId, humanConfirm: "Build the PSA rig" });
       await deliver(plan.qitemId);
       expect(posts.at(-1)?.thread_ts).toBe("2700.1");
       const ts = `${posts.length}.1`;
