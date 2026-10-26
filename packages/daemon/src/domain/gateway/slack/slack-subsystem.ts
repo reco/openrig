@@ -566,6 +566,16 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     log(`qitem ${p.qitemId} names unconfigured channel ${id}; posting in the seat's channel`);
     return undefined;
   };
+  // A daemon alert is about a seat: a prompt notice names it, a finding names the row it recovers.
+  const alertSubject = (p: { sourceSession?: string | null; tags?: readonly string[] | null }, depth = 0): string | null | undefined => {
+    if (p.sourceSession !== "daemon@kernel") return p.sourceSession;
+    const tag = (prefix: string) => p.tags?.find((t) => t.startsWith(prefix))?.slice(prefix.length);
+    const seat = tag("stuck-prompt-session:");
+    if (seat) return seat;
+    const recovered = tag("recovery-for:");
+    const row = recovered && depth < 2 ? opts.queueRepo.getById(recovered) : null;
+    return row ? alertSubject(row, depth + 1) : p.sourceSession;
+  };
   const channelForPost = (p: OutboundPostPayload, threadTs: string | undefined): string =>
     (threadTs ? threadMap.resolveByThread(threadTs)?.channel : undefined)
       ?? sharedChannelFor(p.destinationSession, opts.home)?.channelId
@@ -577,7 +587,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   // posts to the default. Only called when outbound is ready, so the default is set.
   // A post to a registered shared channel goes to that channel (0.7.3); a reply there already follows its root's channel.
   const channelFor = (p: OutboundPostPayload): string =>
-    sharedChannelFor(p.destinationSession, opts.home)?.channelId ?? resolveOutboundChannel(cfg, p.sourceSession) ?? cfg.channel!;
+    sharedChannelFor(p.destinationSession, opts.home)?.channelId ?? resolveOutboundChannel(cfg, alertSubject(p)) ?? cfg.channel!;
 
   // OPR.0.5.6.14 — a failed post writes the transport-failed ledger transition so the
   // undelivered surface (and --verify) can name the gateway's error instead of guessing

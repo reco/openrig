@@ -130,6 +130,24 @@ describe("#192 channel map through the real Slack wire", () => {
     expect((await deliver(other.qitemId)).channel).toBe("C0DEFAULT");
   });
 
+  it("a daemon alert about a seat posts to that seat's mapped channel; one about an unmapped seat uses the default", async () => {
+    rewire(MAP);
+    const notice = (seat: string) => repo.create({ sourceSession: "daemon@kernel", destinationSession: human, humanIntent: "update", summary: `${seat} is waiting at a selection prompt`, body: "Prompt", nudge: false, tags: ["stuck-prompt", `stuck-prompt-session:${seat}`] });
+    const pr = await notice("pr@my-rig");
+    const lead = await notice("lead@my-rig");
+    const other = await notice("impl@other-rig");
+    expect((await deliver(pr.qitemId)).channel).toBe("C0EXAMPLE2");
+    expect((await deliver(lead.qitemId)).channel).toBe("C0EXAMPLE1");
+    expect((await deliver(other.qitemId)).channel).toBe("C0DEFAULT");
+  });
+
+  it("a daemon finding about a stuck alert posts to the channel of the seat that alert concerns", async () => {
+    rewire(MAP);
+    const notice = await repo.create({ sourceSession: "daemon@kernel", destinationSession: human, humanIntent: "update", summary: "lead@my-rig is waiting at a selection prompt", body: "Prompt", nudge: false, tags: ["stuck-prompt", "stuck-prompt-session:lead@my-rig"] });
+    const finding = await repo.create({ sourceSession: "daemon@kernel", destinationSession: human, summary: `Stuck sweep: undelivered-wake on ${notice.qitemId}`, body: "Finding", nudge: false, tags: ["stuck-sweep-finding", `recovery-for:${notice.qitemId}`] });
+    expect((await deliver(finding.qitemId)).channel).toBe("C0EXAMPLE1");
+  });
+
   it("a new root records the channel it was posted in, on the thread map and on the rebuild stamp", async () => {
     rewire(MAP);
     const pr = await ask("pr@my-rig");
