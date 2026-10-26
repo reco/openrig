@@ -59,8 +59,12 @@ function lastPark(repo: QueueRepository, qitemId: string): { ts: string; transit
 export const entityOf = (session: string | null | undefined): string => (session ?? "").split("@")[0] ?? "";
 
 /** A request to the thread's human, not a thread the human started (that is conversation: nothing to close or remind). */
-export function isRequestToHuman(item: { humanIntent?: string | null; sourceSession: string } | null, root: ThreadMapping): boolean {
-  return !!item && item.humanIntent !== "update" && entityOf(item.sourceSession) !== entityOf(root.human);
+/** A request asks the thread's human: addressed to them, or parked on them. An agent's row whose
+ *  escalation was posted into the human's thread is an alert about that row, not their request. */
+export function isRequestToHuman(item: { humanIntent?: string | null; sourceSession: string; destinationSession?: string | null; blockedOn?: string | null } | null, root: ThreadMapping): boolean {
+  if (!item || item.humanIntent === "update") return false;
+  const human = entityOf(root.human);
+  return entityOf(item.sourceSession) !== human && (entityOf(item.destinationSession) === human || entityOf(item.blockedOn) === human);
 }
 
 /** The request's asked human, as recorded on its thread when it was posted. */
@@ -218,7 +222,15 @@ export async function sweepRequests(deps: RequestLifecycleDeps, now = new Date()
     if (Number(root.threadTs) * 1000 < (deps.floorMs ?? 0)) continue;
     try {
       const item = deps.queueRepo.getById(root.conversationId);
-      if (!item || !isRequestToHuman(item, root)) continue;
+      if (!item) continue;
+      if (!isRequestToHuman(item, root)) {
+        if (item.state === "done" || item.state === "canceled") {
+          deps.queueRepo.update({ qitemId: root.conversationId, actorSession: "daemon@kernel", transitionNote: `${REQUEST_CLOSED_PREFIX} reason=alert-finished` });
+          deps.threadMap.closeConversation(root.conversationId);
+          closed.push(root.conversationId);
+        }
+        continue;
+      }
       if (item.state === "canceled") {
         await closeRequest(deps, root, "canceled-by-seat", "daemon@kernel");
         closed.push(root.conversationId);

@@ -263,7 +263,7 @@ describe("phase 1 request lifecycle sweep", () => {
       at(3.1); await sweep();
       for (const [id, ts] of [[wake, "7.1"], [finding, "7.2"]] as const) {
         expect(map.resolveByThread(ts)?.state).toBe("closed");
-        expect(repo.transitionLog.listForQitem(id).some((t) => t.transitionNote === "request-closed reason=card-answered")).toBe(true);
+        expect(repo.transitionLog.listForQitem(id).some((t) => t.transitionNote === "request-closed reason=alert-finished")).toBe(true);
       }
       expect(threadPosts).toEqual([]);
       expect(toSeat().filter((q) => q.tags?.includes("request-reminder"))).toEqual([]);
@@ -277,6 +277,28 @@ describe("phase 1 request lifecycle sweep", () => {
       expect(map.resolveByThread("8.1")?.state).toBe("open");
       expect(threadPosts).toEqual([]);
       expect(toSeat().filter((q) => q.tags?.includes("request-reminder"))).toEqual([]);
+    });
+
+    it("an agent's row escalated to the human is an alert, not their request: no reminder, and its thread closes once the row is done", async () => {
+      map.close("1.1");
+      const id = (await repo.create({ sourceSession: "dev@rig", destinationSession: "advisor@kernel", summary: "Root cause + fix", body: "Install?", nudge: false })).qitemId;
+      map.open({ threadTs: "9.1", channel: "C-TEST", human, seat: "dev@rig", conversationId: id });
+      at(3.1); await sweep();
+      expect(map.resolveByThread("9.1")?.state).toBe("open");
+      repo.update({ qitemId: id, actorSession: "advisor@kernel", state: "done", closureReason: "no-follow-on", transitionNote: "installed" });
+      at(6.2); await sweep();
+      expect(map.resolveByThread("9.1")?.state).toBe("closed");
+      expect(threadPosts).toEqual([]);
+      expect(repo.list({ limit: 100 }).filter((q) => q.tags?.includes("request-reminder"))).toEqual([]);
+    });
+
+    it("a park on the human is still their request and reminds them", async () => {
+      map.close("1.1");
+      const id = (await repo.create({ sourceSession: "dev@rig", destinationSession: "worker@rig", body: "Ship it.", nudge: false })).qitemId;
+      repo.update({ qitemId: id, actorSession: "worker@rig", state: "blocked", blockedOn: "human-founder@kernel", summary: "Merge?", evidenceRef: "/proof.md", transitionNote: "parked" });
+      map.open({ threadTs: "9.2", channel: "C-TEST", human, seat: "worker@rig", conversationId: id });
+      at(3.1); await sweep();
+      expect(threadPosts.map((p) => p.threadTs)).toEqual(["9.2"]);
     });
 
     it("a done ordinary request with no answered gate still reminds its human", async () => {
