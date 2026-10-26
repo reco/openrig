@@ -21,6 +21,7 @@ export const COMMAND_LOADERS: ReadonlyMap<string, Load> = new Map<string, Load>(
   ["crash-cart", async () => (await import("./commands/crash-cart.js")).crashCartCommand()],
   ["gateway", async () => (await import("./commands/gateway.js")).gatewayCommand()],
   ["parked", async () => (await import("./commands/parked.js")).parkedCommand()],
+  ["prompt-card", async () => (await import("./commands/prompt-card.js")).promptCardCommand()],
   ["export", async () => (await import("./commands/export.js")).exportCommand()],
   ["import", async () => (await import("./commands/import.js")).importCommand()],
   ["ui", async () => (await import("./commands/ui.js")).uiCommand()],
