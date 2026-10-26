@@ -58,13 +58,20 @@ function lastPark(repo: QueueRepository, qitemId: string): { ts: string; transit
 
 export const entityOf = (session: string | null | undefined): string => (session ?? "").split("@")[0] ?? "";
 
-/** A request to the thread's human, not a thread the human started (that is conversation: nothing to close or remind). */
-/** A request asks the thread's human: addressed to them, or parked on them. An agent's row whose
- *  escalation was posted into the human's thread is an alert about that row, not their request. */
-export function isRequestToHuman(item: { humanIntent?: string | null; sourceSession: string; destinationSession?: string | null; blockedOn?: string | null } | null, root: ThreadMapping): boolean {
+/** A request asks the thread's human: addressed to them, or parked on them now or before (a resolved
+ *  park no longer names its human, but its park and answer stay in its transitions). Not a thread the
+ *  human started, and not an agent's row whose escalation was posted into the human's thread: that is
+ *  an alert about the row. */
+export function isRequestToHuman(repo: QueueRepository, item: { qitemId: string; humanIntent?: string | null; sourceSession: string; destinationSession?: string | null; blockedOn?: string | null } | null, root: ThreadMapping): boolean {
   if (!item || item.humanIntent === "update") return false;
   const human = entityOf(root.human);
-  return entityOf(item.sourceSession) !== human && (entityOf(item.destinationSession) === human || entityOf(item.blockedOn) === human);
+  if (entityOf(item.sourceSession) === human) return false;
+  return entityOf(item.destinationSession) === human || entityOf(item.blockedOn) === human || wasParkedOnHuman(repo, item.qitemId);
+}
+
+function wasParkedOnHuman(repo: QueueRepository, qitemId: string): boolean {
+  return repo.transitionLog.listForQitem(qitemId).some((t) => (t.state === "blocked" && t.ownerNotificationKind === "human-required")
+    || t.ownerNotificationKind === "human-decision-resolved");
 }
 
 /** The request's asked human, as recorded on its thread when it was posted. */
@@ -223,7 +230,7 @@ export async function sweepRequests(deps: RequestLifecycleDeps, now = new Date()
     try {
       const item = deps.queueRepo.getById(root.conversationId);
       if (!item) continue;
-      if (!isRequestToHuman(item, root)) {
+      if (!isRequestToHuman(deps.queueRepo, item, root)) {
         if (item.state === "done" || item.state === "canceled") {
           deps.queueRepo.update({ qitemId: root.conversationId, actorSession: "daemon@kernel", transitionNote: `${REQUEST_CLOSED_PREFIX} reason=alert-finished` });
           deps.threadMap.closeConversation(root.conversationId);

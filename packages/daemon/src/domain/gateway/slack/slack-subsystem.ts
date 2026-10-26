@@ -1672,7 +1672,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
           // After the current write finishes: a close already under way (a human's cancel) has closed the thread by then.
           setImmediate(() => {
             const root = threadMap.resolveByConversation(change.qitemId);
-            if (root?.state !== "open" || root.conversationId !== change.qitemId || !isRequestToHuman(opts.queueRepo.getById(change.qitemId), root)) return;
+            if (root?.state !== "open" || root.conversationId !== change.qitemId || !isRequestToHuman(opts.queueRepo, opts.queueRepo.getById(change.qitemId), root)) return;
             void closeRequest(lifecycle, root, "canceled-by-seat", "daemon@kernel").catch((e) => log(`request ${change.qitemId} close failed: ${(e as Error).message}`));
           });
         }

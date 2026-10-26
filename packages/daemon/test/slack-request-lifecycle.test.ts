@@ -301,6 +301,18 @@ describe("phase 1 request lifecycle sweep", () => {
       expect(threadPosts.map((p) => p.threadTs)).toEqual(["9.2"]);
     });
 
+    it("a park the human resolved is still their request: its quiet thread reminds the owning seat", async () => {
+      map.close("1.1");
+      const id = (await repo.create({ sourceSession: "dev@rig", destinationSession: "worker@rig", body: "Ship it.", nudge: false })).qitemId;
+      repo.update({ qitemId: id, actorSession: "worker@rig", state: "blocked", blockedOn: "human-founder@kernel", summary: "Merge?", evidenceRef: "/proof.md", transitionNote: "parked" });
+      map.open({ threadTs: "9.3", channel: "C-TEST", human, seat: "worker@rig", conversationId: id });
+      repo.update({ qitemId: id, actorSession: "human-founder@kernel", state: "in-progress", transitionNote: "resolved: merge it", ownerNotificationKind: "human-decision-resolved", ownerNotificationLevel: "NOTICE" } as never);
+      expect(repo.getById(id)?.blockedOn ?? null).toBeNull();
+      at(3.1); await sweep();
+      expect(map.resolveByThread("9.3")?.state).toBe("open");
+      expect(repo.list({ limit: 100 }).filter((q) => q.destinationSession === "worker@rig" && q.tags?.includes("request-reminder"))).toHaveLength(1);
+    });
+
     it("a done ordinary request with no answered gate still reminds its human", async () => {
       repo.update({ qitemId: decisionId, actorSession: "author@rig", state: "done", closureReason: "no-follow-on", transitionNote: "done by seat" });
       at(3.1); await sweep();
