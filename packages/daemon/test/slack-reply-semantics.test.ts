@@ -37,6 +37,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
   let seen: Array<Record<string, unknown>>;
   let unseen: Array<Record<string, unknown>>;
   let marks: Map<string, Set<string>>;
+  let failReactionAdds = 0;
   const marksOn = (ts: string) => { if (!marks.has(ts)) marks.set(ts, new Set()); return marks.get(ts)!; };
   let wire: ReturnType<typeof buildSlackGatewayWire>;
   const stops: Array<() => void> = [];
@@ -59,6 +60,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
     seen = [];
     unseen = [];
     marks = new Map();
+    failReactionAdds = 0;
     const contract = new MissionControlWriteContract({ db, eventBus: bus, queueRepo: repo, actionLog: new MissionControlActionLog(db) });
     const realResolve = makeHumanReplyResolver(repo, contract);
     wire = buildSlackGatewayWire({
@@ -76,7 +78,7 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       fetchImpl: async (url, init) => {
         if (url.endsWith("apps.connections.open")) return reply({ ok: true, url: "wss://fake-slack/ws" });
         if (url.endsWith("chat.update")) { updates.push(JSON.parse(String(init?.body))); return reply({ ok: true }); }
-        if (url.endsWith("reactions.add")) { const b = JSON.parse(String(init?.body)); seen.push(b); marksOn(b.timestamp).add(b.name); return reply({ ok: true }); }
+        if (url.endsWith("reactions.add")) { const b = JSON.parse(String(init?.body)); if (failReactionAdds > 0) { failReactionAdds--; return reply({ ok: false, error: "ratelimited" }); } seen.push(b); marksOn(b.timestamp).add(b.name); return reply({ ok: true }); }
         if (url.endsWith("reactions.remove")) { const b = JSON.parse(String(init?.body)); unseen.push(b); marksOn(b.timestamp).delete(b.name); return reply({ ok: true }); }
         if (/auth\.test|conversations\.members|users\.info/.test(url)) return reply({ ok: true }); posts.push(JSON.parse(String(init?.body))); return reply({ ok: true, ts: `${posts.length}.1` });
       },
@@ -669,6 +671,56 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       expect(repo.getById(decisionId)?.state).toBe("done");
       expect(resolutions()).toHaveLength(1);
       expect(decisions).toEqual(["yes"]);
+    });
+  });
+
+  describe("progress reactions on the human's received messages", () => {
+    beforeEach(() => start(true, { received: "rr-scanning", picked: "rr-working", done: "rr-check" }));
+    const stages = (ts: string) => [...marksOn(ts)];
+    const close = (qitemId: string) => repo.update({ qitemId, actorSession: "author@rig", state: "done", closureReason: "no-follow-on", transitionNote: "done" });
+
+    it("shows received when the message reaches the seat, working once claimed and done once closed, each replacing the last", async () => {
+      await say("Please check the build", "2700.1");
+      const row = toSeat().find((q) => q.body.includes("Please check the build"))!;
+      await vi.waitFor(() => expect(stages("2700.1")).toEqual(["rr-scanning"]));
+      repo.claim({ qitemId: row.qitemId, destinationSession: "author@rig" });
+      await vi.waitFor(() => expect(stages("2700.1")).toEqual(["rr-working"]));
+      await close(row.qitemId);
+      await vi.waitFor(() => expect(stages("2700.1")).toEqual(["rr-check"]));
+    });
+
+    it("a handed-off message follows its successor: received at the next seat, working once claimed there, done when it closes", async () => {
+      await say("Route this to the right seat", "2710.1");
+      const row = toSeat().find((q) => q.body.includes("Route this"))!;
+      repo.claim({ qitemId: row.qitemId, destinationSession: "author@rig" });
+      await vi.waitFor(() => expect(stages("2710.1")).toEqual(["rr-working"]));
+      const { created } = await repo.handoff({ qitemId: row.qitemId, fromSession: "author@rig", toSession: "other@rig", tags: ["handed"], nudge: false });
+      await vi.waitFor(() => expect(stages("2710.1")).toEqual(["rr-scanning"]));
+      repo.claim({ qitemId: created.qitemId, destinationSession: "other@rig" });
+      await vi.waitFor(() => expect(stages("2710.1")).toEqual(["rr-working"]));
+      await repo.update({ qitemId: created.qitemId, actorSession: "other@rig", state: "done", closureReason: "no-follow-on", transitionNote: "done" });
+      await vi.waitFor(() => expect(stages("2710.1")).toEqual(["rr-check"]));
+    });
+
+    it("a bot's message and the bot's own posts get no progress stage", async () => {
+      socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-bot", type: "events_api", payload: { event: { type: "message", bot_id: "B0BOT", user: "UBOT", text: "Build finished", ts: "2720.1", channel: "C-TEST" } } }) });
+      await new Promise((r) => setTimeout(r, 150));
+      expect(stages("2720.1")).toEqual([]);
+      expect(seen.filter((s) => s.timestamp === "1.1" && ["rr-scanning", "rr-working"].includes(String(s.name)))).toEqual([]);
+    });
+
+    it("a duplicate event adds the stage once, and a failed reaction is put right on the next transition", async () => {
+      failReactionAdds = 1;
+      await say("Are you there?", "2730.1");
+      await say("Are you there?", "2730.1", "e-dup");
+      await new Promise((r) => setTimeout(r, 100));
+      expect(stages("2730.1")).toEqual([]);
+      const row = toSeat().find((q) => q.body.includes("Are you there?"))!;
+      repo.claim({ qitemId: row.qitemId, destinationSession: "author@rig" });
+      await vi.waitFor(() => expect(stages("2730.1")).toEqual(["rr-working"]));
+      await close(row.qitemId);
+      await vi.waitFor(() => expect(stages("2730.1")).toEqual(["rr-check"]));
+      expect(seen.filter((s) => s.timestamp === "2730.1").map((s) => s.name)).toEqual(["rr-working", "rr-check"]);
     });
   });
 });

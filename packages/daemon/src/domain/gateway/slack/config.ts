@@ -43,9 +43,10 @@ export interface SlackConnectorConfig {
   explicitAnswersOnly: boolean;
   /** Phase 1: an open request quiet this many days gets a reminder; reminders never close. */
   staleReminderDays: number;
-  /** The reaction emoji (standard or the workspace's custom name) a top-level message to a human
-   *  shows once its row no longer waits on them. */
-  receipts: { done: string };
+  /** The reaction emoji (standard or the workspace's custom names) a human's received message shows
+   *  as its row moves (received, picked, done); `done` also marks a top-level message to a human
+   *  once its row no longer waits on them. */
+  receipts: { received: string; picked: string; done: string };
   /** More channels beside `channel`, each landing its new messages on its own seat. */
   extraChannels: Array<{ id: string; inboundDestination: string }>;
   /** Seats (session names) whose permission prompts go to Slack as Approve / Deny buttons. */
@@ -125,7 +126,7 @@ export const DEFAULT_CONFIG: SlackConnectorConfig = {
   minimumLevelThatInterrupts: "ALERT",
   explicitAnswersOnly: true,
   staleReminderDays: 3,
-  receipts: { done: "white_check_mark" },
+  receipts: { received: "eyes", picked: "thinking_face", done: "white_check_mark" },
   extraChannels: [],
   approvalSeats: [],
   approvalTimeoutSeconds: 900,
@@ -150,8 +151,12 @@ function validateLevel(field: string, value: unknown): asserts value is OwnerNot
 function validateConfig(cfg: SlackConnectorConfig, opts: { reading?: boolean } = {}): void {
   validateLevel("minimumLevelThatPosts", cfg.minimumLevelThatPosts);
   validateLevel("minimumLevelThatInterrupts", cfg.minimumLevelThatInterrupts);
-  if (typeof cfg.receipts?.done !== "string" || !/^[a-z0-9_+'-]+$/.test(cfg.receipts.done)) {
-    throw new Error(`receipts.done must be a Slack emoji name without colons (got ${String(cfg.receipts?.done)})`);
+  for (const stage of ["received", "picked", "done"] as const) {
+    const name = cfg.receipts?.[stage];
+    if (typeof name !== "string" || !/^[a-z0-9_+'-]+$/.test(name)) throw new Error(`receipts.${stage} must be a Slack emoji name without colons (got ${String(name)})`);
+  }
+  if (new Set([cfg.receipts.received, cfg.receipts.picked, cfg.receipts.done]).size !== 3) {
+    throw new Error("receipts needs a different emoji name for each stage (received, picked, done)");
   }
   if (!Array.isArray(cfg.extraChannels) || cfg.extraChannels.some((c) => !c || typeof c.id !== "string" || !/^[A-Z0-9-]+$/.test(c.id) || typeof c.inboundDestination !== "string" || !c.inboundDestination)) {
     throw new Error("extraChannels must be a list of { id: <Slack channel id>, inboundDestination: <seat> }");
@@ -196,8 +201,13 @@ export function loadConfig(home?: string): SlackConnectorConfig {
     return { ...DEFAULT_CONFIG };
   }
   const { alertTag: _retiredAlertTag, feedbackReactions: _retiredFeedback, ...supported } = raw;
-  // Only the done mark remains of the receipts; the retired progress stages are ignored.
-  const cfg = { ...DEFAULT_CONFIG, ...supported, receipts: { done: supported.receipts?.done ?? DEFAULT_CONFIG.receipts.done } };
+  // The retired coding, typing and working stages are ignored.
+  const receipts = supported.receipts;
+  const cfg = { ...DEFAULT_CONFIG, ...supported, receipts: {
+    received: receipts?.received ?? DEFAULT_CONFIG.receipts.received,
+    picked: receipts?.picked ?? DEFAULT_CONFIG.receipts.picked,
+    done: receipts?.done ?? DEFAULT_CONFIG.receipts.done,
+  } };
   validateConfig(cfg, { reading: true });
   return cfg;
 }

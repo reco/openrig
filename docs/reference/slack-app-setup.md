@@ -546,13 +546,16 @@ into several messages, earlier parts may already be in Slack; the notice says
 when only part of the ask was posted. A failed part never counts as delivery of
 the whole ask.
 
-## Done mark on your to-dos
+## Progress and done marks
 
-A top-level message to you shows a done reaction once its row no longer waits on you, and loses it
-when the row comes back to you. The emoji is configurable in `slack-connector.json`:
+Each message of yours that reaches a seat shows where its row is: `received` while it waits for the
+seat, `picked` once the seat claims it, `done` once the row closes. Each stage replaces the last; a
+handed-off row follows its successor. A top-level message to you also shows the `done` reaction
+once its row no longer waits on you, and loses it when the row comes back to you. The emoji are
+configurable in `slack-connector.json`, one different name per stage:
 
 ```json
-"receipts": { "done": "white_check_mark" }
+"receipts": { "received": "eyes", "picked": "thinking_face", "done": "white_check_mark" }
 ```
 
 Use any standard or custom emoji name, without colons. Slack apps cannot upload custom emoji: a

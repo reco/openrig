@@ -870,6 +870,56 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     const sep = ref?.lastIndexOf(":") ?? -1;
     return ref && sep > 0 ? { channel: ref.slice(0, sep), ts: ref.slice(sep + 1) } : null;
   };
+  // A human's admitted message shows its row's progress: received while it waits for the seat,
+  // picked once claimed, done once closed. A handed-off row follows its successor. Each sync reads
+  // the current state and runs one at a time per message, so the last sync decides the reaction.
+  const CLOSED_STATES = ["done", "canceled", "failed", "denied"];
+  const successorOf = (qitemId: string) => {
+    const next = opts.queueRepo.db.prepare("SELECT qitem_id FROM queue_items WHERE handed_off_from = ? ORDER BY ts_created DESC LIMIT 1").get(qitemId) as { qitem_id: string } | undefined;
+    return next ? opts.queueRepo.getById(next.qitem_id) : null;
+  };
+  const wantedReceipt = (row: QueueItem): string => {
+    let current: QueueItem | null = row;
+    for (let depth = 0; current?.state === "handed-off" && depth < MAX_REPLY_TO_CHAIN; depth++) current = successorOf(current.qitemId);
+    if (!current || current.state === "handed-off" || current.state === "in-progress" || current.state === "blocked") return cfg.receipts.picked;
+    return CLOSED_STATES.includes(current.state) ? cfg.receipts.done : cfg.receipts.received;
+  };
+  const appliedReceipt = new Map<string, string>(); // channel:ts -> the stage this run last put on it
+  const receiptChains = new Map<string, Promise<void>>();
+  const syncMessageReceipt = (origin: QueueItem, message: { channel: string; ts: string }): Promise<void> => {
+    const key = `${message.channel}:${message.ts}`;
+    const run = (receiptChains.get(key) ?? Promise.resolve()).catch(() => {}).then(async () => {
+      const row = opts.queueRepo.getById(origin.qitemId);
+      if (!bot || !row) return;
+      const wanted = wantedReceipt(row);
+      const applied = appliedReceipt.get(key);
+      if (applied === wanted) return;
+      const input = { channel: message.channel, timestamp: message.ts };
+      const add = await addReaction(bot, { ...input, name: wanted }, opts.fetchImpl);
+      if (!add.ok) { log(`receipt ${wanted} not added ts=${message.ts}: ${add.error}`); return; }
+      appliedReceipt.delete(key);
+      let cleared = true;
+      for (const name of applied ? [applied] : [cfg.receipts.received, cfg.receipts.picked, cfg.receipts.done].filter((n) => n !== wanted)) {
+        const r = await removeReaction(bot, { ...input, name }, opts.fetchImpl);
+        if (!r.ok) { cleared = false; log(`receipt ${name} not removed ts=${message.ts}: ${r.error}`); }
+      }
+      if (cleared) appliedReceipt.set(key, wanted);
+    });
+    receiptChains.set(key, run);
+    void run.finally(() => { if (receiptChains.get(key) === run) receiptChains.delete(key); });
+    return run;
+  };
+  const syncReceipt = (qitemId: string): void => {
+    const row = opts.queueRepo.getById(qitemId);
+    const synced = new Set<string>();
+    for (const id of [...(row?.chainOfRecord ?? []), qitemId]) {
+      const origin = id === qitemId ? row : opts.queueRepo.getById(id);
+      const message = receivedMessage(origin?.tags);
+      if (!origin || !message || origin.tags?.includes(NOT_ADDRESSED_TAG) || synced.has(`${message.channel}:${message.ts}`)) continue;
+      synced.add(`${message.channel}:${message.ts}`);
+      void syncMessageReceipt(origin, message);
+    }
+  };
   // A top-level message to a human is their to-do: it shows the done reaction once its row no
   // longer waits on them, and loses it when the row is reopened to them.
   const rootDone = new Map<string, boolean>(); // root threadTs -> whether it shows the done reaction
@@ -1907,6 +1957,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     starts.push(() => {
       unsubscribe = opts.queueRepo.events.subscribe((event) => {
         if (event.type === "queue.updated" || event.type === "queue.handed_off") void syncRootDone(event.qitemId);
+        if (event.type === "queue.created" || event.type === "queue.claimed" || event.type === "queue.handed_off"
+          || (event.type === "queue.updated" && event.fromState !== event.toState)) syncReceipt(event.qitemId);
       });
     });
     stops.push(() => unsubscribe?.());
