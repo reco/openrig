@@ -113,6 +113,22 @@ describe("S10 CLI cutover — admin verbs route to the daemon", () => {
     process.exitCode = 0;
   });
 
+  it("verify checks membership in each merge channel too", async () => {
+    const { deps } = makeDeps();
+    const base = await deps.surface!();
+    const logs: string[] = [];
+    await run(slackCommand({ ...deps, log: (m) => logs.push(m), surface: async () => ({
+      ...base,
+      loadConfig: () => ({ ...base.loadConfig(), mergeChannels: { "Nex9/imago": "C4" } }),
+      resolveSecret: () => "xoxb-EXAMPLE-fake",
+      verifyScopes: async () => ({ ok: true, granted: ["chat:write"], missing: [] }),
+      verifyChannelMembership: async (_token: string, channel: string) => ({ ok: true, isMember: channel === "C1" }),
+    }) as never }), ["verify", "--json"]);
+    expect(JSON.parse(logs[0]!)).toMatchObject({ ready: false, channels: [{ channel: "C1", member: { isMember: true } }, { channel: "C4", matches: ["merge Nex9/imago"], member: { isMember: false } }] });
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+
   it("verify checks membership in the notifications channel too", async () => {
     const { deps } = makeDeps();
     const base = await deps.surface!();

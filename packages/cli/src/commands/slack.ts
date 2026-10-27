@@ -414,6 +414,11 @@ export function slackCommand(deps: SlackDeps = {}): Command {
         if (known) known.matches.push("notifications");
         else used.push({ channel: cfg.notificationsChannel, isDefault: false, matches: ["notifications"] });
       }
+      for (const [repo, channel] of Object.entries(cfg.mergeChannels ?? {})) {
+        const known = used.find((c) => c.channel === channel);
+        if (known) known.matches.push(`merge ${repo}`);
+        else used.push({ channel, isDefault: false, matches: [`merge ${repo}`] });
+      }
       const channels = [];
       for (const c of used) {
         const membership = await surface.verifyChannelMembership(s.bot, c.channel, deps.fetchImpl);

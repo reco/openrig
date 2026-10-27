@@ -562,7 +562,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const MERGE_REF_TAG = "human-merge-ref:";
   const mergeChannelFor = (p: OutboundPostPayload): string | undefined => {
     const ref = p.tags?.find((t) => t.startsWith(MERGE_REF_TAG))?.slice(MERGE_REF_TAG.length);
-    return ref ? cfg.mergeChannels?.[parseMergeRef(ref)?.repo ?? ""] : undefined;
+    const repo = ref ? parseMergeRef(ref)?.repo.toLowerCase() : undefined;
+    return repo ? Object.entries(cfg.mergeChannels ?? {}).find(([name]) => name.toLowerCase() === repo)?.[1] : undefined;
   };
   // A new root goes to the configured channel its row names, else to the channel whose seat is
   // posting; replies stay in their thread's channel.

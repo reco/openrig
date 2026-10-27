@@ -154,9 +154,11 @@ describe("#192 channel map through the real Slack wire", () => {
     const fromKernel = await card("advisor-lead@kernel", "Nex9/imago");
     const fromMapped = await card("pr@my-rig", "Nex9/imago");
     const otherRepo = await card("pr@my-rig", "Nex9/other");
+    const lowerCase = await card("pr@my-rig", "nex9/imago");
     expect((await deliver(fromKernel.qitemId)).channel).toBe("C0EXAMPLE3");
     expect((await deliver(fromMapped.qitemId)).channel).toBe("C0EXAMPLE3");
     expect((await deliver(otherRepo.qitemId)).channel).toBe("C0EXAMPLE2");
+    expect((await deliver(lowerCase.qitemId)).channel).toBe("C0EXAMPLE3");
   });
 
   it("without a channel map a Merge card for a repo in mergeChannels still posts to that repo's channel", async () => {
