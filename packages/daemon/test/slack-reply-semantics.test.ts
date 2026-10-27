@@ -702,6 +702,18 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
       await vi.waitFor(() => expect(stages("2710.1")).toEqual(["rr-check"]));
     });
 
+    it("handoff-and-complete keeps following the successor, and an unclaimed row shows received again", async () => {
+      await say("Pass this on", "2715.1");
+      const row = toSeat().find((q) => q.body.includes("Pass this on"))!;
+      repo.claim({ qitemId: row.qitemId, destinationSession: "author@rig" });
+      const { created } = await repo.handoffAndComplete({ qitemId: row.qitemId, fromSession: "author@rig", toSession: "other@rig", tags: ["handed"], nudge: false });
+      await vi.waitFor(() => expect(stages("2715.1")).toEqual(["rr-scanning"]));
+      repo.claim({ qitemId: created.qitemId, destinationSession: "other@rig" });
+      await vi.waitFor(() => expect(stages("2715.1")).toEqual(["rr-working"]));
+      repo.unclaim(created.qitemId, "other@rig", "not mine");
+      await vi.waitFor(() => expect(stages("2715.1")).toEqual(["rr-scanning"]));
+    });
+
     it("a bot's message and the bot's own posts get no progress stage", async () => {
       socket.onmessage?.({ data: JSON.stringify({ envelope_id: "e-bot", type: "events_api", payload: { event: { type: "message", bot_id: "B0BOT", user: "UBOT", text: "Build finished", ts: "2720.1", channel: "C-TEST" } } }) });
       await new Promise((r) => setTimeout(r, 150));

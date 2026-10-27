@@ -880,7 +880,12 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   };
   const wantedReceipt = (row: QueueItem): string => {
     let current: QueueItem | null = row;
-    for (let depth = 0; current?.state === "handed-off" && depth < MAX_REPLY_TO_CHAIN; depth++) current = successorOf(current.qitemId);
+    for (let depth = 0; current && depth < MAX_REPLY_TO_CHAIN; depth++) {
+      if (current.state !== "handed-off" && current.closureReason !== "handed_off_to") break;
+      const next = successorOf(current.qitemId);
+      if (!next && current.state !== "handed-off") break;
+      current = next;
+    }
     if (!current || current.state === "handed-off" || current.state === "in-progress" || current.state === "blocked") return cfg.receipts.picked;
     return CLOSED_STATES.includes(current.state) ? cfg.receipts.done : cfg.receipts.received;
   };
@@ -1957,7 +1962,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     starts.push(() => {
       unsubscribe = opts.queueRepo.events.subscribe((event) => {
         if (event.type === "queue.updated" || event.type === "queue.handed_off") void syncRootDone(event.qitemId);
-        if (event.type === "queue.created" || event.type === "queue.claimed" || event.type === "queue.handed_off"
+        if (event.type === "queue.created" || event.type === "queue.claimed" || event.type === "queue.unclaimed" || event.type === "queue.handed_off"
           || (event.type === "queue.updated" && event.fromState !== event.toState)) syncReceipt(event.qitemId);
       });
     });
