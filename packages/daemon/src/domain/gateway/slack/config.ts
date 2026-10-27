@@ -79,7 +79,7 @@ export interface SlackConnectorConfig {
   reactions?: SlackReactionsMode;
   /** Link and media previews on human-row posts; absent defaults to off. */
   unfurl?: "on" | "off";
-  /** Optional: a Merge card for a repo (owner/name) posts to its channel, whatever seat asked. */
+  /** Optional: a Merge card for a repo (owner/name) posts to its channel, unless the asking seat has its own channelMap entry. */
   mergeChannels?: Record<string, string>;
   /** Optional channel for pure FYI posts: an update with no buttons that is not a reply in a thread.
    *  Inbound there lands on `inboundDestination`. Absent = those post where everything else does. */

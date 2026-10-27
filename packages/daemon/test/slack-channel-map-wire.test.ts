@@ -148,17 +148,26 @@ describe("#192 channel map through the real Slack wire", () => {
     expect((await deliver(finding.qitemId)).channel).toBe("C0EXAMPLE1");
   });
 
-  it("a Merge card for a repo in mergeChannels posts to that repo's channel whatever seat asked; other repos follow the seat", async () => {
+  it("a Merge card for a repo in mergeChannels posts to that repo's channel from any seat without its own channel; other repos follow the seat", async () => {
     rewire(MAP, false, "C0DEFAULT", { "Nex9/imago": "C0EXAMPLE3" });
     const card = (seat: string, repoName: string) => ask(seat, { humanIntent: "decision", tags: ["human-merge", `human-merge-ref:${repoName}#7@${"a".repeat(40)}`] });
     const fromKernel = await card("advisor-lead@kernel", "Nex9/imago");
-    const fromMapped = await card("pr@my-rig", "Nex9/imago");
+    const fromRigMapped = await card("lead@my-rig", "Nex9/imago");
     const otherRepo = await card("pr@my-rig", "Nex9/other");
-    const lowerCase = await card("pr@my-rig", "nex9/imago");
+    const lowerCase = await card("lead@my-rig", "nex9/imago");
     expect((await deliver(fromKernel.qitemId)).channel).toBe("C0EXAMPLE3");
-    expect((await deliver(fromMapped.qitemId)).channel).toBe("C0EXAMPLE3");
+    expect((await deliver(fromRigMapped.qitemId)).channel).toBe("C0EXAMPLE3");
     expect((await deliver(otherRepo.qitemId)).channel).toBe("C0EXAMPLE2");
     expect((await deliver(lowerCase.qitemId)).channel).toBe("C0EXAMPLE3");
+  });
+
+  it("a Merge card from a seat with its own channelMap entry stays in that seat's channel; a rig entry does not keep it", async () => {
+    rewire(MAP, false, "C0DEFAULT", { "Nex9/imago": "C0EXAMPLE3" });
+    const card = (seat: string) => ask(seat, { humanIntent: "decision", tags: ["human-merge", `human-merge-ref:Nex9/imago#7@${"a".repeat(40)}`] });
+    const seatMapped = await card("pr@my-rig");
+    const rigMapped = await card("lead@my-rig");
+    expect((await deliver(seatMapped.qitemId)).channel).toBe("C0EXAMPLE2");
+    expect((await deliver(rigMapped.qitemId)).channel).toBe("C0EXAMPLE3");
   });
 
   it("without a channel map a Merge card for a repo in mergeChannels still posts to that repo's channel", async () => {
