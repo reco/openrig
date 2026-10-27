@@ -952,7 +952,7 @@ export function queueRoutes(): Hono {
         // An id reused for a row the seat wrote itself returns that row: it never becomes a send card.
         const built = item.body === body.body && item.summary === body.summary && item.humanDetail === (body.humanDetail ?? null) && item.destinationSession === body.destinationSession
           && JSON.stringify([...(item.tags ?? [])].sort()) === JSON.stringify([...body.tags!].sort()) && item.sourceSession === sourceSession
-          && item.humanIntent === body.humanIntent && JSON.stringify(item.humanQuestions ?? null) === JSON.stringify(body.humanQuestions ?? null) && !item.evidenceRef;
+          && item.humanIntent === body.humanIntent && JSON.stringify(item.humanQuestions ?? null) === JSON.stringify(body.humanQuestions ?? null) && !item.evidenceRef && !item.humanConfirm;
         if (!built) return c.json({ error: `qitem id ${item.qitemId} already names a different row`, code: "invalid_human_send" }, 409);
         if (!getRepo(c).transitionLog.listForQitem(item.qitemId).some((t) => t.actorSession === "daemon@kernel" && t.transitionNote === sendNote && t.identityProvenance === null)) {
           getRepo(c).update({ qitemId: item.qitemId, actorSession: "daemon@kernel", transitionNote: sendNote });
