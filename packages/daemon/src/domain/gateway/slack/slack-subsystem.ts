@@ -562,7 +562,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const MERGE_REF_TAG = "human-merge-ref:";
   const mergeChannelFor = (p: OutboundPostPayload): string | undefined => {
     const ref = p.tags?.find((t) => t.startsWith(MERGE_REF_TAG))?.slice(MERGE_REF_TAG.length);
-    if (!ref || (cfg.channelMap ?? []).some((e) => e.match === p.sourceSession)) return undefined;
+    const asker = opts.queueRepo.getById(p.qitemId)?.sourceSession ?? p.sourceSession;
+    if (!ref || (cfg.channelMap ?? []).some((e) => e.match === asker)) return undefined;
     const repo = parseMergeRef(ref)?.repo.toLowerCase();
     return repo ? Object.entries(cfg.mergeChannels ?? {}).find(([name]) => name.toLowerCase() === repo)?.[1] : undefined;
   };

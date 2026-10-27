@@ -170,6 +170,21 @@ describe("#192 channel map through the real Slack wire", () => {
     expect((await deliver(rigMapped.qitemId)).channel).toBe("C0EXAMPLE3");
   });
 
+  it("a later notice on a card, whose payload names the human as source, follows the asking seat's rule, not the human's", async () => {
+    rewire(MAP, false, "C0DEFAULT", { "Nex9/imago": "C0EXAMPLE3" });
+    const noticeChannel = async (seat: string) => {
+      const card = await ask(seat, { humanIntent: "decision", tags: ["human-merge", `human-merge-ref:Nex9/imago#7@${"a".repeat(40)}`] });
+      await deliver(card.qitemId);
+      const before = posts.length;
+      const notice = { ...(alerts.get(card.qitemId) as object), sourceSession: human, notificationKey: `${card.qitemId}:resolved` };
+      expect(wire.dispatcher.dispatch("post_message", human, notice)).toMatchObject({ ok: true });
+      await vi.waitFor(() => expect(posts.length).toBeGreaterThan(before));
+      return posts.at(-1)!.channel;
+    };
+    expect(await noticeChannel("pr@my-rig")).not.toBe("C0EXAMPLE3");
+    expect(await noticeChannel("advisor-lead@kernel")).toBe("C0EXAMPLE3");
+  });
+
   it("without a channel map a Merge card for a repo in mergeChannels still posts to that repo's channel", async () => {
     rewire(undefined, false, "C0DEFAULT", { "Nex9/imago": "C0EXAMPLE3" });
     const card = await ask("advisor-lead@kernel", { humanIntent: "decision", tags: ["human-merge", `human-merge-ref:Nex9/imago#7@${"a".repeat(40)}`] });
