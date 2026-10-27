@@ -53,11 +53,11 @@ describe("#192 channel map through the real Slack wire", () => {
   });
   afterEach(() => { for (const stop of stops.splice(0)) stop(); db.close(); rmSync(home, { recursive: true, force: true }); });
 
-  function rewire(channelMap: ChannelMapEntry[] | undefined, inbound = false, defaultChannel = "C0DEFAULT"): void {
+  function rewire(channelMap: ChannelMapEntry[] | undefined, inbound = false, defaultChannel = "C0DEFAULT", mergeChannels?: Record<string, string>): void {
     wire?.stop();
     const secrets = join(home, "fake.env");
     writeFileSync(secrets, `SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\n${inbound ? "SLACK_APP_TOKEN=xapp-EXAMPLE-fake\n" : ""}`);
-    const cfg: SlackConnectorConfig = { ...DEFAULT_CONFIG, enabled: true, channel: defaultChannel, secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE", ...(channelMap ? { channelMap } : {}) };
+    const cfg: SlackConnectorConfig = { ...DEFAULT_CONFIG, enabled: true, channel: defaultChannel, secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE", ...(channelMap ? { channelMap } : {}), ...(mergeChannels ? { mergeChannels } : {}) };
     saveConfig(cfg, home);
     wire = buildSlackGatewayWire({
       home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle },
@@ -146,6 +146,23 @@ describe("#192 channel map through the real Slack wire", () => {
     const notice = await repo.create({ sourceSession: "daemon@kernel", destinationSession: human, humanIntent: "update", summary: "lead@my-rig is waiting at a selection prompt", body: "Prompt", nudge: false, tags: ["stuck-prompt", "stuck-prompt-session:lead@my-rig"] });
     const finding = await repo.create({ sourceSession: "daemon@kernel", destinationSession: human, summary: `Stuck sweep: undelivered-wake on ${notice.qitemId}`, body: "Finding", nudge: false, tags: ["stuck-sweep-finding", `recovery-for:${notice.qitemId}`] });
     expect((await deliver(finding.qitemId)).channel).toBe("C0EXAMPLE1");
+  });
+
+  it("a Merge card for a repo in mergeChannels posts to that repo's channel whatever seat asked; other repos follow the seat", async () => {
+    rewire(MAP, false, "C0DEFAULT", { "Nex9/imago": "C0EXAMPLE3" });
+    const card = (seat: string, repoName: string) => ask(seat, { humanIntent: "decision", tags: ["human-merge", `human-merge-ref:${repoName}#7@${"a".repeat(40)}`] });
+    const fromKernel = await card("advisor-lead@kernel", "Nex9/imago");
+    const fromMapped = await card("pr@my-rig", "Nex9/imago");
+    const otherRepo = await card("pr@my-rig", "Nex9/other");
+    expect((await deliver(fromKernel.qitemId)).channel).toBe("C0EXAMPLE3");
+    expect((await deliver(fromMapped.qitemId)).channel).toBe("C0EXAMPLE3");
+    expect((await deliver(otherRepo.qitemId)).channel).toBe("C0EXAMPLE2");
+  });
+
+  it("without a channel map a Merge card for a repo in mergeChannels still posts to that repo's channel", async () => {
+    rewire(undefined, false, "C0DEFAULT", { "Nex9/imago": "C0EXAMPLE3" });
+    const card = await ask("advisor-lead@kernel", { humanIntent: "decision", tags: ["human-merge", `human-merge-ref:Nex9/imago#7@${"a".repeat(40)}`] });
+    expect((await deliver(card.qitemId)).channel).toBe("C0EXAMPLE3");
   });
 
   it("a new root records the channel it was posted in, on the thread map and on the rebuild stamp", async () => {

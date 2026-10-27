@@ -14,6 +14,7 @@
 
 import { SlackRecovery, ownedRecoveryChannels } from "./slack-recovery.js";
 import { unansweredQuestions } from "../../human-questions.js";
+import { parseMergeRef } from "../../human-merge.js";
 import { channelStateDigest } from "../channel-operations.js";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -556,7 +557,13 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     return item && registry.ok ? resolveRegisteredHumanAddress(item.blockedOn || item.destinationSession, registry.entities) : null;
   };
   const resolveSender = makeInboundSenderResolver(registrySurface, opts.home);
-  const isConfiguredChannel = (channel: string) => channels.some((c) => c.id === channel) || (cfg.channelMap ?? []).some((e) => e.channel === channel);
+  const isConfiguredChannel = (channel: string) => channels.some((c) => c.id === channel) || (cfg.channelMap ?? []).some((e) => e.channel === channel)
+    || Object.values(cfg.mergeChannels ?? {}).includes(channel);
+  const MERGE_REF_TAG = "human-merge-ref:";
+  const mergeChannelFor = (p: OutboundPostPayload): string | undefined => {
+    const ref = p.tags?.find((t) => t.startsWith(MERGE_REF_TAG))?.slice(MERGE_REF_TAG.length);
+    return ref ? cfg.mergeChannels?.[parseMergeRef(ref)?.repo ?? ""] : undefined;
+  };
   // A new root goes to the configured channel its row names, else to the channel whose seat is
   // posting; replies stay in their thread's channel.
   const SLACK_CHANNEL_TAG = "slack-channel:";
@@ -579,6 +586,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const channelForPost = (p: OutboundPostPayload, threadTs: string | undefined): string =>
     (threadTs ? threadMap.resolveByThread(threadTs)?.channel : undefined)
       ?? sharedChannelFor(p.destinationSession, opts.home)?.channelId
+      ?? mergeChannelFor(p)
       ?? taggedChannel(p)
       ?? channels.find((c) => c.inboundDestination === p.sourceSession)?.id ?? cfg.channel!;
   // #192 — the channel a payload posts to: its seat's (or rig's) mapped channel, else the
@@ -974,7 +982,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
           const personRoot = replyTo ? personRootChannel(p) : null;
           if (cfg.channelMap?.length) {
             if (recorded) return recorded.channel ?? cfg.channel!;
-            const mapped = personRoot ?? channelFor(p);
+            const mapped = personRoot ?? mergeChannelFor(p) ?? channelFor(p);
             return notificationsChannelFor(p, replyTo, threadTs, mapped) ?? mapped;
           }
           if (recorded?.channel) return recorded.channel;

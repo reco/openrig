@@ -79,6 +79,8 @@ export interface SlackConnectorConfig {
   reactions?: SlackReactionsMode;
   /** Link and media previews on human-row posts; absent defaults to off. */
   unfurl?: "on" | "off";
+  /** Optional: a Merge card for a repo (owner/name) posts to its channel, whatever seat asked. */
+  mergeChannels?: Record<string, string>;
   /** Optional channel for pure FYI posts: an update with no buttons that is not a reply in a thread.
    *  Inbound there lands on `inboundDestination`. Absent = those post where everything else does. */
   notificationsChannel?: string | null;
@@ -185,6 +187,10 @@ function validateConfig(cfg: SlackConnectorConfig, opts: { reading?: boolean } =
   }
   if (!opts.reading && cfg.unfurl !== undefined && cfg.unfurl !== "on" && cfg.unfurl !== "off") {
     throw new Error(`unfurl must be on or off (got ${String(cfg.unfurl)})`);
+  }
+  if (cfg.mergeChannels !== undefined && (typeof cfg.mergeChannels !== "object" || cfg.mergeChannels === null || Array.isArray(cfg.mergeChannels)
+    || Object.entries(cfg.mergeChannels).some(([repo, channel]) => !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || typeof channel !== "string" || !/^[A-Z0-9-]+$/.test(channel)))) {
+    throw new Error('mergeChannels must map a repo to a Slack channel id, e.g. { "owner/repo": "C0EXAMPLE1" }');
   }
 }
 

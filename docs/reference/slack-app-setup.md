@@ -269,6 +269,10 @@ connector reads the file, and `rig slack status` names it. A private channel can
 the app has the private-channel scopes ([Using a private channel](#using-a-private-channel)).
 Direct messages are not supported targets.
 
+A Merge card (`rig queue create --human-merge owner/repo#N@sha`) can go to a channel chosen by its
+repo, whatever seat asked: `"mergeChannels": { "owner/repo": "C0EXAMPLE1" }`. Cards for other
+repos follow the seat as above. Invite the app to each of those channels.
+
 ## Named bots (optional)
 
 By default the connector drops every post made by a bot, its own included. To let another Slack

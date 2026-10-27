@@ -55,6 +55,13 @@ describe("Slice-11 config — first-class + honest unconfigured (item 5)", () =>
     expect(loadConfig(home).receipts).toEqual({ received: "eyes", picked: "thinking_face", done: "rr-check" });
   });
 
+  it("mergeChannels maps owner/repo to a channel id and refuses anything else", () => {
+    fs.writeFileSync(path.join(home, "slack-connector.json"), JSON.stringify({ ...DEFAULT_CONFIG, mergeChannels: { "Nex9/imago": "C0EXAMPLE3" } }));
+    expect(loadConfig(home).mergeChannels).toEqual({ "Nex9/imago": "C0EXAMPLE3" });
+    fs.writeFileSync(path.join(home, "slack-connector.json"), JSON.stringify({ ...DEFAULT_CONFIG, mergeChannels: { imago: "#imago" } }));
+    expect(() => loadConfig(home)).toThrow(/mergeChannels must map a repo/);
+  });
+
   it("receipts need a different emoji name for each stage", () => {
     fs.writeFileSync(path.join(home, "slack-connector.json"), JSON.stringify({ ...DEFAULT_CONFIG, receipts: { received: "rr-check", picked: "rr-working", done: "rr-check" } }));
     expect(() => loadConfig(home)).toThrow(/different emoji name for each stage/);
