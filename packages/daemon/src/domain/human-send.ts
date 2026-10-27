@@ -134,7 +134,7 @@ const wrap = (b64: string) => b64.replace(/.{1,76}/g, "$&\r\n");
 
 /** The RFC 5322 message for exactly this payload; the boundary is derived from its digest. */
 export function buildMessage(p: SendPayload): string {
-  const head = [`To: ${p.to.join(", ")}`, ...(p.cc.length ? [`Cc: ${p.cc.join(", ")}`] : []), ...(p.bcc.length ? [`Bcc: ${p.bcc.join(", ")}`] : []),
+  const head = [`To: ${p.to.join(",\r\n ")}`, ...(p.cc.length ? [`Cc: ${p.cc.join(",\r\n ")}`] : []), ...(p.bcc.length ? [`Bcc: ${p.bcc.join(",\r\n ")}`] : []),
     `Subject: ${encodeWord(p.subject)}`, "MIME-Version: 1.0"];
   const textPart = ["Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64", "", wrap(Buffer.from(p.text, "utf8").toString("base64"))];
   if (!p.attachments.length) return [...head, ...textPart].join("\r\n");
@@ -180,10 +180,14 @@ function constraintOf(raw: unknown, where: string): RecipientConstraint {
   return { domain };
 }
 
-/** Rules as auto-send-rules.schema.json allows them; anything else throws. */
+const WORD = /^[A-Za-z0-9._@-]+$/;
+
+/** Rules as auto-send-rules.schema.json allows them, written exactly as JSON.stringify(rules, null, 2) prints them
+ *  (so the file the human reads is the one the daemon parses: no duplicate keys); anything else throws. */
 export function parseRules(text: string): AutoSendRules {
   let raw: Record<string, unknown>;
   try { raw = JSON.parse(text) as Record<string, unknown>; } catch { throw new HumanSendError("rules are not valid JSON"); }
+  if (text.replace(/\n$/, "") !== JSON.stringify(raw, null, 2)) throw new HumanSendError("rules must be written exactly as JSON.stringify(rules, null, 2) prints them (2-space indent, no duplicate keys)");
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new HumanSendError("rules must be an object");
   const extra = Object.keys(raw).filter((k) => !["version", "enabled", "rules"].includes(k));
   if (extra.length) throw new HumanSendError(`unknown rules keys: ${extra.join(", ")}`);
@@ -197,11 +201,11 @@ export function parseRules(text: string): AutoSendRules {
     if (!rule || typeof rule !== "object" || Array.isArray(rule)) throw new HumanSendError(`${where} must be an object`);
     const unknown = Object.keys(rule).filter((k) => !["id", "seat", "channel", "recipient", "recipientWhitelist", "dailyCap"].includes(k));
     if (unknown.length) throw new HumanSendError(`${where} has unknown keys: ${unknown.join(", ")}`);
-    if (typeof rule.id !== "string" || !rule.id.trim() || /\s/.test(rule.id)) throw new HumanSendError(`${where}.id must be a nonempty word`);
+    if (typeof rule.id !== "string" || !WORD.test(rule.id)) throw new HumanSendError(`${where}.id must be letters, digits, dots, dashes, underscores or @`);
     if (ids.has(rule.id)) throw new HumanSendError(`${where}.id ${rule.id} is used twice`);
     ids.add(rule.id);
     for (const key of ["seat", "channel"] as const) {
-      if (rule[key] !== undefined && (typeof rule[key] !== "string" || !(rule[key] as string).trim())) throw new HumanSendError(`${where}.${key} must be a nonempty string`);
+      if (rule[key] !== undefined && (typeof rule[key] !== "string" || !WORD.test(rule[key] as string))) throw new HumanSendError(`${where}.${key} must be letters, digits, dots, dashes, underscores or @`);
     }
     if (rule.recipient === undefined && rule.recipientWhitelist === undefined) throw new HumanSendError(`${where} needs recipient or recipientWhitelist`);
     if (rule.recipientWhitelist !== undefined && (!Array.isArray(rule.recipientWhitelist) || !rule.recipientWhitelist.length)) {
@@ -243,6 +247,15 @@ export function enabledRulesDigest(repo: QueueRepository): string | null {
       ORDER BY transition_id DESC LIMIT 1`).get(DAEMON) as { transition_note: string } | undefined;
   const m = latest ? /^human-send rules enabled ([0-9a-f]{64})$/.exec(latest.transition_note) : null;
   return m ? m[1]! : null;
+}
+
+/** The auto-send's own Slack report posted: only the gateway's in-process receipt for this row's notification counts. */
+export function reportPosted(repo: QueueRepository, qitemId: string): boolean {
+  const owner = repo.transitionLog.latestOwnerNotificationForQitem(qitemId);
+  if (!owner) return false;
+  const key = `notification_key=${qitemId}:${owner.transitionId}`;
+  return repo.transitionLog.listForQitem(qitemId).some((t) => t.actorSession === DAEMON && t.identityProvenance === null
+    && t.transitionNote?.startsWith("slack-owner-notification-posted ") && t.transitionNote.split(/\s+/).includes(key));
 }
 
 export type AutoSendVerdict = { rule: AutoSendRule; rulesDigest: string } | { none: string };
@@ -292,7 +305,7 @@ export const gwsSender: Sender = async (messagePath) => {
     const id = (JSON.parse(stdout) as { id?: unknown }).id;
     return typeof id === "string" && id ? { status: "sent", id } : { status: "unknown", detail: "gws returned no message id" };
   } catch (e) {
-    const out = String((e as { stdout?: string }).stdout ?? "");
+    const out = `${(e as { stdout?: string }).stdout ?? ""}${(e as { stderr?: string }).stderr ?? ""}`;
     const code = /"code"\s*:\s*(\d{3})/.exec(out)?.[1];
     if (code && code.startsWith("4")) return { status: "failed", detail: `Gmail refused it (HTTP ${code})` };
     return { status: "unknown", detail: (e as { killed?: boolean }).killed ? "gws timed out" : `gws exited without a result${code ? ` (HTTP ${code})` : ""}` };
@@ -347,11 +360,13 @@ export async function actOnSendAnswers(repo: QueueRepository, deps: SendDeps): P
   const now = deps.now ?? Date.now;
   const rows = repo.db.prepare(`SELECT q.qitem_id FROM queue_items q WHERE q.ts_created > ?
       AND (q.tags LIKE '%"${HUMAN_SEND_TAG}"%' OR q.tags LIKE '%"${HUMAN_SEND_AUTO_TAG}"%' OR q.tags LIKE '%"${HUMAN_SEND_RULES_TAG}"%')
-      AND NOT EXISTS (SELECT 1 FROM queue_transitions t WHERE t.qitem_id = q.qitem_id AND t.actor_session = '${DAEMON}' AND t.transition_note LIKE '${RESULT_NOTE}%' AND t.transition_note NOT LIKE '% pending')`)
+      AND NOT EXISTS (SELECT 1 FROM queue_transitions t WHERE t.qitem_id = q.qitem_id AND t.actor_session = '${DAEMON}' AND t.identity_provenance IS NULL AND t.transition_note LIKE '${RESULT_NOTE}%' AND t.transition_note NOT LIKE '% pending')
+      ORDER BY CASE WHEN q.human_answers LIKE '%"${RULES_QUESTION.id}":"reject"%' THEN 1 ELSE 0 END, q.ts_created`)
     .all(new Date(now() - 7 * 24 * 3600_000).toISOString()) as Array<{ qitem_id: string }>;
   for (const { qitem_id } of rows) {
     const row = repo.getById(qitem_id);
-    if (!row || row.destinationSession !== deps.approver()) continue;
+    const approver = deps.approver();
+    if (!row || !approver) continue;
     const notes = daemonNotes(repo, qitem_id);
     if (resultOf(notes)) continue;
     const card = notes.find((n) => n.startsWith(CARD_NOTE));
@@ -362,6 +377,12 @@ export async function actOnSendAnswers(repo: QueueRepository, deps: SendDeps): P
       deps.log?.(`${qitem_id}: ${note}`);
       await report(repo, row, thread, seat);
     };
+    if (row.destinationSession !== approver) {
+      if (notes.some((n) => n.startsWith(CARD_NOTE) || n.startsWith(AUTO_NOTE) || n.startsWith(RULES_CARD_NOTE)) && !pendingOf(notes)) {
+        await finish(`refused not addressed to ${approver}`, `Not acted on: only ${approver} can approve sends.`, `Card ${qitem_id} refused: it is addressed to ${row.destinationSession}, but only ${approver} can approve sends. Nothing sent.`);
+      }
+      continue;
+    }
     if (pendingOf(notes)) {
       await finish("unknown the daemon stopped during the send", "Delivery unknown: the daemon stopped during the send. It is not retried; check the Sent folder.",
         "A send was interrupted by a daemon stop: delivery unknown, not retried. Reconcile with the Sent folder before any new card.");
@@ -408,7 +429,7 @@ export async function actOnSendAnswers(repo: QueueRepository, deps: SendDeps): P
       const m = /^human-send auto: ([0-9a-f]{64}) rule=(\S+) rules=([0-9a-f]{64})$/.exec(auto);
       if (!m) continue;
       const [, digest, ruleId, rulesDigest] = m as unknown as [string, string, string, string];
-      if (row.deliveryOutcome !== "posted") {
+      if (!reportPosted(repo, qitem_id)) {
         const waited = now() - new Date(row.tsCreated).getTime();
         if (row.deliveryOutcome === "transport-failed" || row.deliveryOutcome === "never-posted" || waited > REPORT_WAIT_MS) {
           await finish("held report not posted", "Held: this auto-send report did not reach Slack, so nothing was sent.",

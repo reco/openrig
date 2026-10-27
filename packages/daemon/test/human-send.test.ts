@@ -11,11 +11,12 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
-import { actOnSendAnswers, gwsSender, buildMessage, digestOf, normalizeAddress, parseRules, reserveSlot, ruleMatches, buildPayload, type SendResult, type AutoSendRule } from "../src/domain/human-send.js";
+import { actOnSendAnswers, gwsSender, cardFields, sha256, buildMessage, digestOf, normalizeAddress, parseRules, reserveSlot, ruleMatches, buildPayload, type SendResult, type AutoSendRule } from "../src/domain/human-send.js";
 
 const human = "human-founder@external";
 const seat = "outbox-sender@inbox";
 const registry = { ok: true as const, entities: [{ entityId: "human-founder", class: "human" as const, displayName: "Founder", address: human, connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:SLACK_BOT_TOKEN", role: "primary" as const, handle: "UFOUNDER" }], prefs: { deliveryClass: "A" as const } }] };
+const pretty = (v: unknown) => `${JSON.stringify(v, null, 2)}\n`;
 const email = { to: ["Pat@Example.com"], cc: ["ops@example.com"], bcc: ["audit@example.org"], subject: "Invoice 12", text: "Hello Pat,\nthe invoice is attached.\n" };
 
 describe("send an email from Slack", () => {
@@ -44,6 +45,8 @@ describe("send an email from Slack", () => {
   const post = (body: Record<string, unknown>, from = seat) => app.request("/api/queue/create", { method: "POST",
     headers: { "Content-Type": "application/json", "X-OpenRig-Session": from }, body: JSON.stringify({ destinationSession: human, nudge: false, ...body }) });
   const ask = async (payload: Record<string, unknown> = email, from = seat) => { const res = await post({ humanSend: payload }, from); expect(res.status).toBe(201); return (await res.json()) as { qitemId: string; tags: string[]; humanIntent: string } };
+  const forge = (id: string, transitionNote: string) => app.request(`/api/queue/${id}/update`, { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ actorSession: "daemon@kernel", transitionNote }) });
   const click = (id: string, actor: string, option: string, question = "send") => repo.recordHumanAnswer({ qitemId: id, actorSession: actor, questionId: question, optionId: option });
   const act = (approver: string | null = human) => actOnSendAnswers(repo, { send, approver: () => approver, ...paths, now: () => clock });
   const thread = (id: string) => repo.list({ limit: 200 }).filter((q) => q.replyTo === id).map((q) => q.body).join("\n");
@@ -53,7 +56,7 @@ describe("send an email from Slack", () => {
     repo.update({ qitemId: id, actorSession: "daemon@kernel", transitionNote: `slack-owner-notification-posted notification_key=${id}:${owner.transitionId}` });
   };
   const enableRules = async (rules: unknown) => {
-    writeFileSync(paths.rulesPath, JSON.stringify(rules));
+    writeFileSync(paths.rulesPath, pretty(rules));
     const res = await post({ humanSendRules: true });
     expect(res.status).toBe(201);
     const id = (await res.json()).qitemId as string;
@@ -103,15 +106,15 @@ describe("send an email from Slack", () => {
     click(otherHuman.qitemId, human, "send");
     await act("other-human@external");
     expect(sent).toEqual([]);
+    expect(thread(otherHuman.qitemId)).toContain("only other-human@external can approve sends");
     const typed = await ask();
     repo.resolveDirectHumanReply({ qitemId: typed.qitemId, actorSession: human, decision: "send" });
     const edit = await ask();
     click(edit.qitemId, human, "edit");
     const skip = await ask();
     click(skip.qitemId, human, "skip");
-    await act("nobody@external");
     await act();
-    expect(sent.length).toBe(1);
+    expect(sent).toEqual([]);
     expect(thread(edit.qitemId)).toContain("Edit asks the seat for a new version");
     expect(thread(skip.qitemId)).toContain("Skipped: nothing was sent.");
     expect(toSeat()).toContain("submit the revised payload as a new --human-send card");
@@ -128,11 +131,23 @@ describe("send an email from Slack", () => {
     expect(thread(card.qitemId)).toContain("stored payload is missing or no longer matches");
   });
 
+  it("an id the seat already used for its own row never becomes a card, so its button labels cannot be swapped", async () => {
+    const fields = cardFields(buildPayload(email), digestOf(buildPayload(email)));
+    const swapped = [{ id: "send", question: "Send?", options: [{ id: "send", label: "Skip" }, { id: "skip", label: "Send" }] }];
+    const res = await post({ qitemId: "qitem-20261027000000-aaaaaaaaaaaaaaaa", ...fields, tags: ["human-send"], humanQuestions: swapped });
+    expect(res.status).toBe(201);
+    expect((await post({ qitemId: "qitem-20261027000000-aaaaaaaaaaaaaaaa", humanSend: email })).status).toBe(409);
+    const retry = await ask();
+    expect((await post({ qitemId: retry.qitemId, humanSend: email })).status).toBe(201);
+    expect(repo.list({ limit: 50 }).filter((q) => q.tags?.includes("human-send"))).toHaveLength(2);
+  });
+
   it("a seat-written row that looks like a card is never sent", async () => {
     const res = await post({ body: "fake", summary: "fake", tags: ["human-send"], humanQuestions: [{ id: "send", question: "Send?", options: [{ id: "send", label: "Send" }, { id: "skip", label: "Skip" }] }] });
     expect(res.status, await res.clone().text()).toBe(201);
     const id = (await res.json()).qitemId as string;
-    repo.update({ qitemId: id, actorSession: seat, transitionNote: `human-send card: ${digestOf(buildPayload(email))}`, identityProvenance: "transport:v1" });
+    expect((await forge(id, `human-send card: ${digestOf(buildPayload(email))}`)).status).toBe(200);
+    expect(repo.transitionLog.listForQitem(id).some((t) => t.actorSession === "daemon@kernel" && t.identityProvenance !== null)).toBe(true);
     click(id, human, "send");
     await act();
     expect(sent).toEqual([]);
@@ -195,17 +210,17 @@ describe("send an email from Slack", () => {
 
   describe("auto-send rules", () => {
     it("parse like the schema: recipient constraints required, cap 1..20 (default 20), unknown keys refused", () => {
-      expect(parseRules('{"version":1,"enabled":false,"rules":[]}')).toEqual({ enabled: false, rules: [] });
-      expect(parseRules(JSON.stringify({ version: 1, enabled: true, rules: [rule()] })).rules[0]!.dailyCap).toBe(20);
+      expect(parseRules(pretty({ version: 1, enabled: false, rules: [] }))).toEqual({ enabled: false, rules: [] });
+      expect(parseRules(pretty({ version: 1, enabled: true, rules: [rule()] })).rules[0]!.dailyCap).toBe(20);
       for (const bad of [{ id: "a" }, { id: "a", recipientWhitelist: [] }, { ...rule(), dailyCap: 21 }, { ...rule(), dailyCap: 0 }, { ...rule(), extra: 1 },
         { id: "a", recipient: { address: "x@example.com", domain: "example.com" } }, { id: "a", recipient: { domain: "*.example.com" } }]) {
-        expect(() => parseRules(JSON.stringify({ version: 1, enabled: true, rules: [bad] }))).toThrow();
+        expect(() => parseRules(pretty({ version: 1, enabled: true, rules: [bad] }))).toThrow();
       }
     });
 
     it("every recipient including cc and bcc must match; domains match exactly, never by suffix or substring", () => {
       const p = (to: string[], cc: string[] = [], bcc: string[] = []) => buildPayload({ to, cc, bcc, subject: "s", text: "t" });
-      const r = parseRules(JSON.stringify({ version: 1, enabled: true, rules: [{ id: "d", recipientWhitelist: [{ domain: "nex9.com" }] }] })).rules[0]!;
+      const r = parseRules(pretty({ version: 1, enabled: true, rules: [{ id: "d", recipientWhitelist: [{ domain: "nex9.com" }] }] })).rules[0]!;
       expect(ruleMatches(r, seat, p(["a@nex9.com"], ["B@NEX9.com"]))).toBe(true);
       for (const evil of ["a@evil-nex9.com", "a@nex9.com.evil.test", "a@sub.nex9.com", "nex9.com@evil.test", "a@nex9.co"]) {
         expect(ruleMatches(r, seat, p([evil]))).toBe(false);
@@ -217,7 +232,7 @@ describe("send an email from Slack", () => {
 
     it("seat and channel restrictions and both recipient constraints are ANDed", () => {
       const p = buildPayload({ to: ["reco@nex9.com"], subject: "s", text: "t" });
-      const both = parseRules(JSON.stringify({ version: 1, enabled: true, rules: [{ id: "x", seat, channel: "email", recipient: { domain: "nex9.com" }, recipientWhitelist: [{ address: "reco@nex9.com" }] }] })).rules[0]!;
+      const both = parseRules(pretty({ version: 1, enabled: true, rules: [{ id: "x", seat, channel: "email", recipient: { domain: "nex9.com" }, recipientWhitelist: [{ address: "reco@nex9.com" }] }] })).rules[0]!;
       expect(ruleMatches(both, seat, p)).toBe(true);
       expect(ruleMatches(both, "other@rig", p)).toBe(false);
       expect(ruleMatches({ ...both, channel: "imessage" }, seat, p)).toBe(false);
@@ -231,21 +246,21 @@ describe("send an email from Slack", () => {
     });
 
     it("a rules file the human did not enable, or changed after enabling, never auto-sends", async () => {
-      writeFileSync(paths.rulesPath, JSON.stringify({ version: 1, enabled: true, rules: [rule()] }));
+      writeFileSync(paths.rulesPath, pretty({ version: 1, enabled: true, rules: [rule()] }));
       expect((await ask()).tags).toContain("human-send");
       await enableRules({ version: 1, enabled: true, rules: [rule()] });
       expect((await ask()).tags).toContain("human-send-auto");
-      writeFileSync(paths.rulesPath, JSON.stringify({ version: 1, enabled: true, rules: [rule({ recipientWhitelist: [{ domain: "attacker.test" }] })] }));
+      writeFileSync(paths.rulesPath, pretty({ version: 1, enabled: true, rules: [rule({ recipientWhitelist: [{ domain: "attacker.test" }] })] }));
       expect((await ask({ ...email, to: ["x@attacker.test"], cc: [], bcc: [] })).tags).toContain("human-send");
       expect((await ask()).tags).toContain("human-send");
     });
 
     it("a rules decision from a seat-written note or another user's click enables nothing", async () => {
-      writeFileSync(paths.rulesPath, JSON.stringify({ version: 1, enabled: true, rules: [rule()] }));
+      writeFileSync(paths.rulesPath, pretty({ version: 1, enabled: true, rules: [rule()] }));
       const res = await post({ humanSendRules: true });
       const id = (await res.json()).qitemId as string;
       expect(click(id, "someone@external", "enable", "rules")).toMatchObject({ status: "not-applicable" });
-      repo.update({ qitemId: id, actorSession: seat, transitionNote: `human-send rules enabled ${"0".repeat(64)}`, identityProvenance: "transport:v1" });
+      expect((await forge(id, `human-send rules enabled ${sha256(readFileSync(paths.rulesPath, "utf8"))}`)).status).toBe(200);
       await act();
       expect((await ask()).tags).toContain("human-send");
     });
@@ -277,11 +292,39 @@ describe("send an email from Slack", () => {
     it("rules changed between queueing and sending hold the auto-send", async () => {
       await enableRules({ version: 1, enabled: true, rules: [rule()] });
       const auto = await ask();
-      writeFileSync(paths.rulesPath, JSON.stringify({ version: 1, enabled: true, rules: [rule({ dailyCap: 5 })] }));
+      writeFileSync(paths.rulesPath, pretty({ version: 1, enabled: true, rules: [rule({ dailyCap: 5 })] }));
       markPosted(auto.qitemId);
       await act();
       expect(sent).toEqual([]);
       expect(thread(auto.qitemId)).toContain("Held: the rules file is not the version the human enabled");
+    });
+
+    it("a seat-written Slack receipt does not count as the report having posted", async () => {
+      await enableRules({ version: 1, enabled: true, rules: [rule()] });
+      const auto = await ask();
+      const owner = repo.transitionLog.latestOwnerNotificationForQitem(auto.qitemId)!;
+      expect((await forge(auto.qitemId, `slack-owner-notification-posted notification_key=${auto.qitemId}:${owner.transitionId}`)).status).toBe(200);
+      await act();
+      expect(sent).toEqual([]);
+    });
+
+    it("a rules file with duplicate keys, compact formatting or a backtick id is refused before any card", async () => {
+      const text = pretty({ version: 1, enabled: true, rules: [{ id: "r", recipient: { address: "boss@corp.com" } }] });
+      for (const bad of [text.replace('"address": "boss@corp.com"', '"address": "boss@corp.com", "domain": "gmail.com"'), text.replace('"enabled": true', '"enabled": false,\n  "enabled": true'),
+        JSON.stringify(JSON.parse(text)), pretty({ version: 1, enabled: true, rules: [{ id: "a`b", recipient: { address: "boss@corp.com" } }] })]) {
+        writeFileSync(paths.rulesPath, bad);
+        expect((await post({ humanSendRules: true })).status).toBe(400);
+      }
+    });
+
+    it("Enable on one rules card and Reject on another in the same pass leaves auto-send off", async () => {
+      writeFileSync(paths.rulesPath, pretty({ version: 1, enabled: true, rules: [rule()] }));
+      const a = (await (await post({ humanSendRules: true })).json()).qitemId as string;
+      const b = (await (await post({ humanSendRules: true })).json()).qitemId as string;
+      click(b, human, "enable", "rules");
+      click(a, human, "reject", "rules");
+      await act();
+      expect((await ask()).tags).toContain("human-send");
     });
 
     it("ambiguous matches build a card", async () => {
@@ -315,7 +358,7 @@ describe("send an email from Slack", () => {
       expect(thread(b)).toContain("already used its 1 sends today");
     });
 
-    it("reservations are atomic across connections to the same database and idempotent per row", () => {
+    it("reservations from two connections to the same database share one count, and are idempotent per row", () => {
       const file = join(home, "q.sqlite");
       const one = createDb(file); migrate(one, ALL_MIGRATIONS);
       const two = createDb(file);

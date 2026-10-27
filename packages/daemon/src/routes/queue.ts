@@ -856,6 +856,14 @@ export function queueRoutes(): Hono {
           ? { humanIntent: "update", humanQuestions: null, ...fields, evidenceRef: null, tags: [...extraTags, send.HUMAN_SEND_AUTO_TAG] }
           : { humanIntent: "decision", humanQuestions: [send.SEND_QUESTION], ...fields, evidenceRef: null, tags: [...extraTags, send.HUMAN_SEND_TAG] });
       }
+      // A reused id is only a retry of this same card: a row the seat wrote itself never becomes one.
+      const existing = body.qitemId ? getRepo(c).getById(body.qitemId) : null;
+      if (existing) {
+        const same = existing.sourceSession === sourceSession && getRepo(c).transitionLog.listForQitem(existing.qitemId)
+          .some((t) => t.actorSession === "daemon@kernel" && t.identityProvenance === null && t.transitionNote === sendNote);
+        return same ? c.json(existing, 201) : c.json({ error: `qitem id ${existing.qitemId} already names a different row`, code: "invalid_human_send" }, 409);
+      }
+      if (body.links?.length) return c.json({ error: "human_send cards carry no links", code: "invalid_human_send" }, 400);
     }
     const refusal = createInputRefusal(c, sourceSession, body);
     if (refusal) return refusal;
@@ -943,7 +951,8 @@ export function queueRoutes(): Hono {
       if (sendNote) {
         // An id reused for a row the seat wrote itself returns that row: it never becomes a send card.
         const built = item.body === body.body && item.summary === body.summary && item.humanDetail === (body.humanDetail ?? null) && item.destinationSession === body.destinationSession
-          && JSON.stringify([...(item.tags ?? [])].sort()) === JSON.stringify([...body.tags!].sort()) && item.sourceSession === sourceSession;
+          && JSON.stringify([...(item.tags ?? [])].sort()) === JSON.stringify([...body.tags!].sort()) && item.sourceSession === sourceSession
+          && item.humanIntent === body.humanIntent && JSON.stringify(item.humanQuestions ?? null) === JSON.stringify(body.humanQuestions ?? null) && !item.evidenceRef;
         if (!built) return c.json({ error: `qitem id ${item.qitemId} already names a different row`, code: "invalid_human_send" }, 409);
         if (!getRepo(c).transitionLog.listForQitem(item.qitemId).some((t) => t.actorSession === "daemon@kernel" && t.transitionNote === sendNote && t.identityProvenance === null)) {
           getRepo(c).update({ qitemId: item.qitemId, actorSession: "daemon@kernel", transitionNote: sendNote });
