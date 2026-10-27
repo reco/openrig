@@ -145,19 +145,25 @@ export function buildMessage(p: SendPayload): string {
 }
 
 export function cardFields(p: SendPayload, digest: string, auto?: { ruleId: string }): { summary: string; body: string; humanDetail: string } {
+  const others = recipientsOf(p).length - 1;
+  const attached = p.attachments.length ? `, ${p.attachments.length} attachment${p.attachments.length > 1 ? "s" : ""}` : "";
   const line = (label: string, list: string[]) => list.length ? [`${label}: ${list.join(", ")}`] : [];
-  const lines = [
-    `*${p.subject.replace(/[*_~`]/g, "")}*`,
+  const detail = [
     ...line("To", p.to), ...line("Cc", p.cc), ...line("Bcc", p.bcc),
-    ...(p.attachments.length ? [`Attachments: ${p.attachments.map((a) => `${a.name} (sha256 ${a.sha256.slice(0, 12)})`).join(", ")}`] : []),
-    `Payload: \`${digest}\``,
-    auto ? `Sending automatically under auto-send rule \`${auto.ruleId}\`; the result follows in this thread.`
-      : "The full text is in this thread. Send sends exactly this payload once; Edit sends nothing and asks for a new version; Skip sends nothing.",
+    `Subject: ${p.subject}`,
+    ...p.attachments.map((a) => `Attachment: ${a.name} (${a.contentType}, sha256 ${a.sha256})`),
+    `Payload sha256: ${digest}`,
+    "Text, exactly as it will be sent:",
+    p.text,
   ];
   return {
-    summary: `${auto ? "Auto-send" : "Send"} email to ${p.to[0]}${recipientsOf(p).length > 1 ? ` +${recipientsOf(p).length - 1}` : ""}: ${p.subject}`.slice(0, 200),
-    body: lines.join("\n"),
-    humanDetail: p.text,
+    summary: `${auto ? "Auto-send" : "Send"} email to ${p.to[0]}${others > 0 ? ` +${others}` : ""}: ${p.subject}`.slice(0, 200),
+    body: [
+      `Email to ${p.to[0]}${others > 0 ? ` and ${others} more` : ""}${attached}.`,
+      "Every recipient, the exact text and its digest are in this thread.",
+      auto ? `Sending now under auto-send rule ${auto.ruleId}; the result follows in this thread.` : "Send sends exactly that once; Edit or Skip sends nothing.",
+    ].join("\n"),
+    humanDetail: detail.join("\n"),
   };
 }
 

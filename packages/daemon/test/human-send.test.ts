@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Hono } from "hono";
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { queueRoutes } from "../src/routes/queue.js";
 import { createDb } from "../src/db/connection.js";
@@ -71,10 +72,31 @@ describe("send an email from Slack", () => {
     const row = repo.getById(card.qitemId)!;
     expect(row.humanIntent).toBe("decision");
     expect(row.humanQuestions?.[0]!.options.map((o) => o.label)).toEqual(["Send", "Edit", "Skip"]);
-    expect(row.humanDetail).toBe(email.text);
-    expect(row.body).toContain("To: pat@example.com");
-    expect(row.body).toContain("Bcc: audit@example.org");
-    expect(row.body).toContain(digestOf(buildPayload(email)));
+    expect(row.summary).toBe("Send email to pat@example.com +2: Invoice 12");
+    expect(row.body).toBe("Email to pat@example.com and 2 more.\nEvery recipient, the exact text and its digest are in this thread.\nSend sends exactly that once; Edit or Skip sends nothing.");
+    expect(row.humanDetail).toBe(["To: pat@example.com", "Cc: ops@example.com", "Bcc: audit@example.org", "Subject: Invoice 12",
+      `Payload sha256: ${digestOf(buildPayload(email))}`, "Text, exactly as it will be sent:", email.text].join("\n"));
+  });
+
+  it("every root (send card, auto-send report, rules card) is at most three short plain lines with no header, digest or path", async () => {
+    const roots = [repo.getById((await ask()).qitemId)!];
+    writeFileSync(paths.rulesPath, pretty({ version: 1, enabled: true, rules: [rule()] }));
+    const rulesCard = (await (await post({ humanSendRules: true })).json()).qitemId as string;
+    roots.push(repo.getById(rulesCard)!);
+    expect(repo.getById(rulesCard)!.humanDetail).toContain(sha256(readFileSync(paths.rulesPath, "utf8")));
+    expect(repo.getById(rulesCard)!.humanDetail).toContain(paths.rulesPath);
+    click(rulesCard, human, "enable", "rules");
+    await act();
+    roots.push(repo.getById((await ask({ ...email, subject: "Auto" })).qitemId)!);
+    expect(roots[2]!.tags).toContain("human-send-auto");
+    for (const row of roots) {
+      const lines = row.body.split("\n");
+      expect(lines.length).toBeLessThanOrEqual(3);
+      for (const line of lines) {
+        expect(line.length).toBeLessThanOrEqual(90);
+        expect(line).not.toMatch(/^[*#>]|`|[0-9a-f]{12}|\/|sha256/);
+      }
+    }
   });
 
   it("refuses display names, lists, header breaks and duplicates before any card exists", async () => {
@@ -173,7 +195,8 @@ describe("send an email from Slack", () => {
     const file = join(home, "invoice.pdf");
     writeFileSync(file, Buffer.from("%PDF-1.4 test"));
     const card = await ask({ ...email, attachments: [file] });
-    expect(repo.getById(card.qitemId)!.body).toContain("invoice.pdf (sha256 ");
+    expect(repo.getById(card.qitemId)!.body).toContain("1 attachment.");
+    expect(repo.getById(card.qitemId)!.humanDetail).toContain(`Attachment: invoice.pdf (application/pdf, sha256 ${createHash("sha256").update("%PDF-1.4 test").digest("hex")})`);
     writeFileSync(file, Buffer.from("changed after the card"));
     click(card.qitemId, human, "send");
     await act();

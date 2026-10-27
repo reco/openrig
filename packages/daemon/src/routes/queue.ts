@@ -838,9 +838,9 @@ export function queueRoutes(): Hono {
         }
         const digest = send.sha256(text);
         sendNote = `${send.RULES_CARD_NOTE}${digest}`;
-        Object.assign(body, { humanIntent: "decision", humanQuestions: [send.RULES_QUESTION], summary: `Enable auto-send rules ${digest.slice(0, 12)}`,
-          body: `Rules file: \`${paths.rulesPath}\`\nDigest: \`${digest}\`\nThe exact file is in this thread. Enable turns on exactly this version; any later change turns auto-send off.`,
-          humanDetail: "```\n" + text + "\n```", tags: [...extraTags, send.HUMAN_SEND_RULES_TAG] });
+        Object.assign(body, { humanIntent: "decision", humanQuestions: [send.RULES_QUESTION], summary: "Enable the proposed auto-send rules",
+          body: "The exact rules file and its digest are in this thread.\nEnable turns on exactly this version; any later change turns auto-send off.\nReject keeps auto-send off.",
+          humanDetail: `File: ${paths.rulesPath}\nRules sha256: ${digest}\n\`\`\`\n${text}\n\`\`\``, tags: [...extraTags, send.HUMAN_SEND_RULES_TAG] });
       } else {
         let payload: import("../domain/human-send.js").SendPayload;
         try { payload = send.buildPayload(body.humanSend!); } catch (e) {
