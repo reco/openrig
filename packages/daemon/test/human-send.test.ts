@@ -2,7 +2,7 @@
 // Send sends exactly that payload once, and auto-send runs only under enabled rules within a reserved daily cap.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Hono } from "hono";
-import { mkdtempSync, writeFileSync, chmodSync, rmSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { queueRoutes } from "../src/routes/queue.js";
@@ -11,7 +11,7 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
-import { actOnSendAnswers, buildMessage, digestOf, normalizeAddress, parseRules, reserveSlot, ruleMatches, buildPayload, type SendResult, type AutoSendRule } from "../src/domain/human-send.js";
+import { actOnSendAnswers, gwsSender, buildMessage, digestOf, normalizeAddress, parseRules, reserveSlot, ruleMatches, buildPayload, type SendResult, type AutoSendRule } from "../src/domain/human-send.js";
 
 const human = "human-founder@external";
 const seat = "outbox-sender@inbox";
@@ -32,7 +32,7 @@ describe("send an email from Slack", () => {
   beforeEach(() => {
     db = createDb(); migrate(db, ALL_MIGRATIONS);
     repo = new QueueRepository(db, new EventBus(db), { loadHumanRegistry: () => registry });
-    home = mkdtempSync(join(tmpdir(), "human-send-"));
+    home = realpathSync(mkdtempSync(join(tmpdir(), "human-send-")));
     paths = { storeDir: join(home, "payloads"), rulesPath: join(home, "auto-send-rules.json") };
     sent = []; results = []; clock = Date.now();
     app = new Hono();
@@ -102,6 +102,7 @@ describe("send an email from Slack", () => {
     const otherHuman = await ask();
     click(otherHuman.qitemId, human, "send");
     await act("other-human@external");
+    expect(sent).toEqual([]);
     const typed = await ask();
     repo.resolveDirectHumanReply({ qitemId: typed.qitemId, actorSession: human, decision: "send" });
     const edit = await ask();
@@ -164,6 +165,32 @@ describe("send an email from Slack", () => {
     expect(sent[0]).toContain(Buffer.from("%PDF-1.4 test").toString("base64"));
     expect(sent[0]).toContain('filename="invoice.pdf"');
     expect(readdirSync(join(paths.storeDir, "outgoing"))).toEqual([]);
+  });
+
+  it("the gws sender passes only the message file, relative to its folder; a 4xx is failed, anything else unknown", async () => {
+    const bin = join(home, "bin");
+    const log = join(home, "gws.log");
+    const fake = (body: string) => { writeFileSync(join(bin, "gws"), `#!/bin/sh\necho "$PWD $*" >> ${log}\n${body}\n`); chmodSync(join(bin, "gws"), 0o755); };
+    const message = join(home, "out", "d.eml");
+    mkdirSync(join(home, "out")); mkdirSync(bin);
+    writeFileSync(message, buildMessage(buildPayload(email)));
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path}`;
+    try {
+      fake(`echo '{"id":"g1","labelIds":["SENT"]}'`);
+      expect(await gwsSender(message)).toEqual({ status: "sent", id: "g1" });
+      fake(`echo '{"error":{"code":400,"message":"Invalid To header"}}'; exit 1`);
+      expect(await gwsSender(message)).toMatchObject({ status: "failed" });
+      fake("exit 1");
+      expect(await gwsSender(message)).toMatchObject({ status: "unknown" });
+      fake(`echo '{}'`);
+      expect(await gwsSender(message)).toMatchObject({ status: "unknown" });
+    } finally {
+      process.env.PATH = path;
+    }
+    const calls = readFileSync(log, "utf8").trim().split("\n");
+    expect(calls[0]).toBe(`${join(home, "out")} gmail users messages send --params {"userId":"me"} --upload d.eml --upload-content-type message/rfc822`);
+    expect(calls.join("\n")).not.toContain("example.com");
   });
 
   describe("auto-send rules", () => {

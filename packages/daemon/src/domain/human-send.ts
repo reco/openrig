@@ -8,7 +8,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { QueueRepository } from "./queue-repository.js";
 import type { HumanQuestion } from "./human-questions.js";
@@ -288,7 +288,7 @@ const execFileAsync = promisify(execFile);
 export const gwsSender: Sender = async (messagePath) => {
   try {
     const { stdout } = await execFileAsync("gws", ["gmail", "users", "messages", "send", "--params", '{"userId":"me"}',
-      "--upload", messagePath, "--upload-content-type", "message/rfc822"], { timeout: 120_000 });
+      "--upload", basename(messagePath), "--upload-content-type", "message/rfc822"], { cwd: dirname(messagePath), timeout: 120_000 });
     const id = (JSON.parse(stdout) as { id?: unknown }).id;
     return typeof id === "string" && id ? { status: "sent", id } : { status: "unknown", detail: "gws returned no message id" };
   } catch (e) {

@@ -1332,6 +1332,8 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--confirm <reading>", "A one-click answer that resolves with exactly this text. On a decision: the approve button's call to action, at most 75 characters (e.g. \"Build it\", \"Write the issue\"). On an update with --reply-to <decision>: your reading of their answer, shown with a Confirm button")
     .option("--human-questions-file <path>", "#193: JSON array of 1-4 questions for a decision, each {id, question, options: [{id, label, recommended?}]} with 2-4 options; Slack shows them as buttons")
     .option("--human-merge <ref>", "owner/repo#<number>@<head sha>: the daemon builds a Merge / Not now card for this pull request from GitHub; on Merge it re-checks the gates and merges exactly that head. No --body needed.")
+    .option("--human-send <payload.json>", "An email as JSON {to, cc?, bcc?, subject, text, attachments?: [absolute paths]}: the daemon stores exactly this payload and builds a Send / Edit / Skip card (or auto-sends under rules the human enabled); on Send it sends exactly that payload once. No --body needed.")
+    .option("--human-send-rules", "The daemon builds an Enable / Reject card for its auto-send rules file as it is now; only the enabled version auto-sends. No --body needed.")
     .option("--evidence-ref <path>", "OPR.0.4.4.19 FR-5: pointer to the durable artifact a human judges (e.g. a PROOF.md path). Required by the daemon when the item is human-routed; optional otherwise.")
     .option("--host <id>", QUEUE_HOST_OPTION_HELP)
     .option("--return-route <route>", "For work a person answers from their own conversation: auto (OpenRig issues this conversation an address and prints it; use it from then on), self (this session's own address, for a session that joined), or an address you were given. The work carries it through handoffs, and a seat's prompt that isn't a choice dialog, and stuck steps, are sent to that address as tasks, ahead of the person's Slack connection, for this work only. Choice prompts and a route on another host keep their usual path; the conversation sees a task on its next turn. Without it, nothing changes")
@@ -1362,6 +1364,8 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       humanQuestionsFile?: string;
       confirm?: string;
       humanMerge?: string;
+      humanSend?: string;
+      humanSendRules?: boolean;
       link?: string[];
       summary?: string;
       evidenceRef?: string;
@@ -1391,7 +1395,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
       // OPR.0.3.2.21.FR-4(a) — resolve a LOCAL body BEFORE contacting the daemon
       // so a missing/ambiguous body fails fast and locally.
       let resolvedBody = "";
-      if (opts.bodyContext === undefined && opts.humanMerge === undefined) {
+      if (opts.bodyContext === undefined && opts.humanMerge === undefined && opts.humanSend === undefined && !opts.humanSendRules) {
         try {
           resolvedBody = await resolveQueueBody({ body: opts.body, bodyFile: opts.bodyFile });
         } catch (err) {
@@ -1511,7 +1515,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
         const receipt = writeReceipt(opts.full, {
           verb: "create", nudgeSuppressed: opts.nudge === false, idGiven: opts.id !== undefined, remoteHost: remoteHostOf(hostResolved.hostId),
         });
-        if (isHumanSeatSessionRef(hostResolved.destination) && opts.humanIntent === undefined && opts.confirm === undefined && humanQuestions === undefined && opts.humanMerge === undefined) {
+        if (isHumanSeatSessionRef(hostResolved.destination) && opts.humanIntent === undefined && opts.confirm === undefined && humanQuestions === undefined && opts.humanMerge === undefined && opts.humanSend === undefined && !opts.humanSendRules) {
           console.error("Warning: no --human-intent, so this posts as a decision with a Confirm button. For information, status or an answer use --human-intent update (no buttons, no acknowledgement needed).");
         }
         const res: DaemonResponse<Record<string, unknown>> | Error = await client.post<Record<string, unknown>>("/api/queue/create", {
@@ -1526,6 +1530,8 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
           humanQuestions,
           humanConfirm: opts.confirm,
           ...(opts.humanMerge !== undefined ? { humanMerge: opts.humanMerge } : {}),
+          ...(opts.humanSend !== undefined ? { humanSend: JSON.parse(fs.readFileSync(opts.humanSend, "utf8")) as unknown } : {}),
+          ...(opts.humanSendRules ? { humanSendRules: true } : {}),
           ...(opts.link?.length ? { links: opts.link } : {}),
           summary: opts.summary,
           evidenceRef: opts.evidenceRef,
