@@ -2785,6 +2785,19 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           log: (m) => console.log(`[human-merge] ${m}`),
         }).catch((e) => console.log(`[human-merge] pass failed: ${(e as Error).message}`)).finally(() => { merging = false; });
       }, 5_000).unref();
+      // Send / Edit / Skip on an email card the daemon built, and posted auto-sends: the daemon sends with its own gws.
+      const { actOnSendAnswers, gwsSender, humanSendPaths } = await import("./domain/human-send.js");
+      let sending = false;
+      setInterval(() => {
+        if (sending || !db.open) return;
+        sending = true;
+        void actOnSendAnswers(queueRepoInstance, {
+          send: gwsSender,
+          ...humanSendPaths(OPENRIG_HOME),
+          approver: () => { const r = loadRegistryForMerge(OPENRIG_HOME); return r.ok ? r.entities.find((e) => e.role !== "requester")?.address ?? null : null; },
+          log: (m) => console.log(`[human-send] ${m}`),
+        }).catch((e) => console.log(`[human-send] pass failed: ${(e as Error).message}`)).finally(() => { sending = false; });
+      }, 5_000).unref();
     }
     const watchdogScheduler = new WatchdogScheduler({
       jobsRepo: watchdogJobsRepoInstance,

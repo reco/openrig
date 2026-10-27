@@ -18,6 +18,7 @@ import { requireSenderIdentity, resolveRecordedProvenance, resolveRecordedIdenti
 import { issuedReturnAddress, isRouteAddress, RETURN_ROUTE_BASES, RETURN_ROUTE_NOT_CARRIED, RETURN_ROUTE_NOT_CARRIED_TAG, RETURN_ROUTE_NOTE_PREFIX,
   routeIsPersonMessage, routeNotCarriedMessage, splitRoute, type ReturnRouteBasis } from "../domain/return-route.js";
 import { hostname as osHostname } from "node:os";
+import { readFileSync } from "node:fs";
 import type { InboxHandler } from "../domain/inbox-handler.js";
 import { InboxHandlerError } from "../domain/inbox-handler.js";
 import { type OutboxHandler } from "../domain/outbox-handler.js";
@@ -730,6 +731,10 @@ export function queueRoutes(): Hono {
       humanConfirm?: string | null;
       /** owner/repo#123@<40-hex head>: the daemon builds a Merge / Not now card from GitHub. */
       humanMerge?: string | null;
+      /** An email payload: the daemon stores it under its digest and builds a Send / Edit / Skip card, or auto-sends under enabled rules. */
+      humanSend?: import("../domain/human-send.js").SendRequest | null;
+      /** The daemon builds an Enable / Reject card for its auto-send rules file as it is now. */
+      humanSendRules?: boolean;
       links?: string[];
       summary?: string | null;
       evidenceRef?: string | null;
@@ -813,6 +818,45 @@ export function queueRoutes(): Hono {
       Object.assign(body, { humanIntent: "decision", humanQuestions: [merge.MERGE_QUESTION], body: card.body, summary: card.summary, evidenceRef: card.evidenceRef, humanDetail: null,
         tags: [...(body.tags ?? []).filter((t) => !t.startsWith("human-merge")), ...card.tags] });
     }
+    // A send or rules card's text, options and tags come from the payload or rules file via the daemon, never from the asking seat.
+    let sendNote: string | null = null;
+    if (body.humanSend != null || body.humanSendRules) {
+      const send = await import("../domain/human-send.js");
+      const { getOpenRigHome } = await import("../openrig-compat.js");
+      const paths = (c.get("humanSendPaths" as never) as ReturnType<typeof send.humanSendPaths> | undefined) ?? send.humanSendPaths(getOpenRigHome());
+      if (mergeRef || (body.humanSend != null && body.humanSendRules) || body.humanQuestions?.length || body.humanConfirm || body.humanIntent === "update" || body.replyTo) {
+        return c.json({ error: "human_send builds its own card: no merge, questions, confirm, update intent or reply-to", code: "invalid_human_send" }, 400);
+      }
+      if (typeof body.hostId === "string" && !resolvesToLocalHost(body.hostId, getSelfHostId())) {
+        return c.json({ error: "human_send runs on the local daemon only (its gws sends); create it without --host", code: "invalid_human_send" }, 400);
+      }
+      const extraTags = (body.tags ?? []).filter((t) => !t.startsWith("human-send"));
+      if (body.humanSendRules) {
+        let text: string;
+        try { text = readFileSync(paths.rulesPath, "utf8"); send.parseRules(text); } catch (e) {
+          return c.json({ error: `auto-send rules at ${paths.rulesPath} are not usable: ${(e as Error).message}`, code: "invalid_human_send" }, 400);
+        }
+        const digest = send.sha256(text);
+        sendNote = `${send.RULES_CARD_NOTE}${digest}`;
+        Object.assign(body, { humanIntent: "decision", humanQuestions: [send.RULES_QUESTION], summary: `Enable auto-send rules ${digest.slice(0, 12)}`,
+          body: `Rules file: \`${paths.rulesPath}\`\nDigest: \`${digest}\`\nThe exact file is in this thread. Enable turns on exactly this version; any later change turns auto-send off.`,
+          humanDetail: "```\n" + text + "\n```", tags: [...extraTags, send.HUMAN_SEND_RULES_TAG] });
+      } else {
+        let payload: import("../domain/human-send.js").SendPayload;
+        try { payload = send.buildPayload(body.humanSend!); } catch (e) {
+          if (e instanceof send.HumanSendError) return c.json({ error: e.message, code: "invalid_human_send" }, 400);
+          throw e;
+        }
+        const digest = send.storePayload(paths.storeDir, payload);
+        const verdict = send.autoSendRuleFor(getRepo(c), paths.rulesPath, sourceSession, payload);
+        const auto = "rule" in verdict ? verdict : null;
+        const fields = send.cardFields(payload, digest, auto ? { ruleId: auto.rule.id } : undefined);
+        sendNote = auto ? `${send.AUTO_NOTE}${digest} rule=${auto.rule.id} rules=${auto.rulesDigest}` : `${send.CARD_NOTE}${digest}`;
+        Object.assign(body, auto
+          ? { humanIntent: "update", humanQuestions: null, ...fields, evidenceRef: null, tags: [...extraTags, send.HUMAN_SEND_AUTO_TAG] }
+          : { humanIntent: "decision", humanQuestions: [send.SEND_QUESTION], ...fields, evidenceRef: null, tags: [...extraTags, send.HUMAN_SEND_TAG] });
+      }
+    }
     const refusal = createInputRefusal(c, sourceSession, body);
     if (refusal) return refusal;
 
@@ -894,6 +938,15 @@ export function queueRoutes(): Hono {
         if (!built) return c.json({ error: `qitem id ${item.qitemId} already names a different row`, code: "invalid_human_merge" }, 409);
         if (!getRepo(c).transitionLog.listForQitem(item.qitemId).some((t) => t.transitionNote?.startsWith(CARD_NOTE) && t.identityProvenance === null)) {
           getRepo(c).update({ qitemId: item.qitemId, actorSession: "daemon@kernel", transitionNote: `${CARD_NOTE}${formatMergeRef(mergeRef)}` });
+        }
+      }
+      if (sendNote) {
+        // An id reused for a row the seat wrote itself returns that row: it never becomes a send card.
+        const built = item.body === body.body && item.summary === body.summary && item.humanDetail === (body.humanDetail ?? null) && item.destinationSession === body.destinationSession
+          && JSON.stringify([...(item.tags ?? [])].sort()) === JSON.stringify([...body.tags!].sort()) && item.sourceSession === sourceSession;
+        if (!built) return c.json({ error: `qitem id ${item.qitemId} already names a different row`, code: "invalid_human_send" }, 409);
+        if (!getRepo(c).transitionLog.listForQitem(item.qitemId).some((t) => t.actorSession === "daemon@kernel" && t.transitionNote === sendNote && t.identityProvenance === null)) {
+          getRepo(c).update({ qitemId: item.qitemId, actorSession: "daemon@kernel", transitionNote: sendNote });
         }
       }
       const scopeAdvisory = !(body.tags ?? []).includes(CROSS_HOST_TAG) ? createScopeAdvisory(c, item.tags) : null;
