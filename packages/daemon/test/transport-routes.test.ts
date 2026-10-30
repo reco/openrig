@@ -1,3 +1,4 @@
+import { ROUTED_MESSAGE_PREFIX } from "../src/domain/session-transport.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { Hono } from "hono";
 import type Database from "better-sqlite3";
@@ -36,7 +37,7 @@ function setupDb(): Database.Database {
 
 function mockTmux(overrides?: Partial<{
   hasSession: (name: string) => Promise<boolean>;
-  sendText: (target: string, text: string) => Promise<TmuxResult>;
+  sendText: (target: string, text: string, ...rest: unknown[]) => Promise<TmuxResult>;
   sendKeys: (target: string, keys: string[]) => Promise<TmuxResult>;
   capturePaneContent: (paneId: string, lines?: number) => Promise<string | null>;
   getPaneCommand: (paneId: string) => Promise<string | null>;
@@ -47,7 +48,9 @@ function mockTmux(overrides?: Partial<{
       (await (overrides?.hasSession ?? (async () => true))(name))
         ? { state: "present" as const }
         : { state: "absent" as const },
-    sendText: overrides?.sendText ?? (async () => ({ ok: true as const })),
+    // The typed routed-work line before a Claude paste is not a message; each test's sendText sees the message.
+    sendText: async (target: string, text: string, ...rest: unknown[]) => text === ROUTED_MESSAGE_PREFIX ? { ok: true as const }
+      : (overrides?.sendText ?? (async () => ({ ok: true as const })))(target, text, ...rest),
     sendKeys: overrides?.sendKeys ?? (async () => ({ ok: true as const })),
     capturePaneContent: overrides?.capturePaneContent ?? (async () => "idle\n❯ "),
     createSession: async () => ({ ok: true as const }),
@@ -1172,6 +1175,7 @@ describe("transport routes", () => {
       const agentActivityStore = new AgentActivityStore({ db, eventBus });
       const tmux = mockTmux({
         sendText: async (target: string, text: string) => {
+          if (text === ROUTED_MESSAGE_PREFIX) return { ok: true as const };
           sentTexts.push({ target, text });
           return { ok: true as const };
         },

@@ -11,7 +11,7 @@ import { decodeStoredSnapshotData } from "./snapshot-repository.js";
 import { posix, resolve } from "node:path";
 import { ulid } from "ulid";
 import { deriveComposeProjectName } from "./compose-project-name.js";
-import type { ClaudeManagedBlockFile } from "./managed-blocks.js";
+import type { ClaudeManagedBlockFile, CodexManagedBlockFile } from "./managed-blocks.js";
 import { mergeSeatEnv, parseStoredSeatEnv, type SeatEnv } from "./seat-env.js";
 import { seatAccountHome, RUNTIME_HOME_VAR, withoutIgnoredRuntimeHomes } from "./seat-runtime-home.js";
 import { claudeSeatTokenRefProblem, parseClaudeSeatTokenRef, type ClaudeSeatTokenRef } from "./claude-seat-token.js";
@@ -532,6 +532,20 @@ export class RigRepository {
     const row = this.db.prepare("SELECT claude_managed_block_file FROM rigs WHERE id = ?")
       .get(rigId) as { claude_managed_block_file: ClaudeManagedBlockFile | null } | undefined;
     return row?.claude_managed_block_file ?? null;
+  }
+
+  /** The rig's selected Codex managed-block file (migration 104), or null for the AGENTS.md default. */
+  setRigCodexManagedBlockFile(rigId: string, file: CodexManagedBlockFile | null): void {
+    if (!this.hasRigColumn("codex_managed_block_file")) return;
+    this.db.prepare("UPDATE rigs SET codex_managed_block_file = ?, updated_at = ? WHERE id = ?")
+      .run(file ?? null, new Date().toISOString(), rigId);
+  }
+
+  getRigCodexManagedBlockFile(rigId: string): CodexManagedBlockFile | null {
+    if (!this.hasRigColumn("codex_managed_block_file")) return null;
+    const row = this.db.prepare("SELECT codex_managed_block_file FROM rigs WHERE id = ?")
+      .get(rigId) as { codex_managed_block_file: CodexManagedBlockFile | null } | undefined;
+    return row?.codex_managed_block_file ?? null;
   }
 
   /** Seam B Guard-F1 — persist the RIG-level resolved attachment provenance (migration 058).

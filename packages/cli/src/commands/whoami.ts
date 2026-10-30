@@ -111,6 +111,7 @@ function projectCompactWhoami(data: Record<string, unknown>, bounded?: BoundedPe
     // edges already carry only kind + to/from {logicalId, sessionName}.
     edges: data["edges"],
     transcript: { path: transcript["path"], tailCommand: transcript["tailCommand"] },
+    occupancy: data["occupancy"],
   };
 }
 
@@ -423,6 +424,13 @@ left out. --all-peers lists every one (today's compact output).`)
       console.log(`Runtime:    ${id.runtime}`);
       console.log(`Transport:  ${id.attachmentType === "external_cli" ? "external_cli (outbound only)" : id.attachmentType}`);
       console.log(`Resolved:   via ${data.resolvedBy.replace(/_/g, " ")}`);
+      const occ = (data as { occupancy?: { nativeSessionId: string | null; generation: string | null; generationOrdinal: number | null; launchProcess: { pid: number; startedAt: string } | null; appliedLaunch: { value: string | null; approvalPolicy: string | null } | null } }).occupancy;
+      if (occ) {
+        console.log(`Native:     ${occ.nativeSessionId ?? "—"}`);
+        console.log(`Generation: ${occ.generation ?? "—"}${occ.generationOrdinal !== null ? ` (#${occ.generationOrdinal})` : ""}`);
+        if (occ.launchProcess) console.log(`Launched:   pid ${occ.launchProcess.pid} started ${occ.launchProcess.startedAt}`);
+        if (occ.appliedLaunch) console.log(`Policy:     ${occ.appliedLaunch.value ?? "unknown"}${occ.appliedLaunch.approvalPolicy ? ` / ${occ.appliedLaunch.approvalPolicy}` : ""}`);
+      }
 
       if (data.rosterState === "building") {
         console.log("");

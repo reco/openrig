@@ -1,4 +1,5 @@
 import type { CodexPermissionEnvelope, CodexPermissionContinuity, CodexRebuildPermissions } from "./codex-rebuild-permissions.js";
+import { sendToSeat } from "./session-transport.js";
 import { parseSqliteUtcMs } from "./sqlite-time.js";
 import { lstartToMinTs } from "./codex-thread-id.js";
 import type Database from "better-sqlite3";
@@ -1338,7 +1339,7 @@ export class SeatHandoverService {
     try { startupCtx = readNodeStartupSnapshot(this.db, nodeId); }
     catch (err) { return { notes: [`could not read the saved startup context: ${(err as Error).message}`], startedWithoutRequired: [] }; }
     return putBackSeatGuidance({
-      startupCtx, cwd, claudeManagedBlockFile: this.rigRepo.getRigClaudeManagedBlockFile(rigId), seatSkillsLineYes, linkInfo: lstatLinkInfo,
+      startupCtx, cwd, managedBlockFiles: { claude: this.rigRepo.getRigClaudeManagedBlockFile(rigId), codex: this.rigRepo.getRigCodexManagedBlockFile(rigId) }, seatSkillsLineYes, linkInfo: lstatLinkInfo,
       records: managedBlockRecords(this.db),
       fs: { exists: existsSync, readFile: (file) => readFileSync(file, "utf-8"), writeFile: (file, content) => writeFileSync(file, content, "utf-8"),
         mkdirp: (dir) => mkdirSync(dir, { recursive: true }) },
@@ -1701,7 +1702,7 @@ export class SeatHandoverService {
     },
   ): Promise<RestorePacketDelivery> {
     const packet = buildRestorePacket({ ...info, handoverAt: this.now().toISOString() });
-    const sent = await this.tmuxAdapter.sendText(successorSession, packet);
+    const sent = await sendToSeat(this.tmuxAdapter, successorSession, packet, info.runtime);
     if (!sent.ok) {
       return { ok: false, message: (sent as { message?: string }).message ?? "send_text failed" };
     }

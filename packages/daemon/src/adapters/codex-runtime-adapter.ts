@@ -36,11 +36,13 @@ import {
   type ResolveHomeDirByPid,
 } from "../domain/codex-thread-id.js";
 import { assessNativeResumeProbe, buildCodexResumeCore, codexNonLoginShellArg, hasCodexUpdateHeader, type NativeResumeProbeResult } from "../domain/native-resume-probe.js";
-import { unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
+import { legacyCodexWithSharedDaemonMessage, unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
 import { CODEX_NETWORK_DEFAULT_OVERRIDE, codexNetworkDefaultArg, type CodexNetworkDefaultReader } from "../domain/codex-network-default.js";
 import { resolveCodexGitAddDirs, type CodexGitAddDirResolver } from "../domain/codex-git-add-dirs.js";
-import { isPerSeatRoleGuidance, managedBlockText, perSeatRoleSkipWarning } from "../domain/managed-blocks.js";
+import { CODEX_REPOSITORY_COPY_BLOCK, DEFAULT_CODEX_MANAGED_BLOCK_FILE, codexRepositoryCopy, isPerSeatRoleGuidance, managedBlockText, mergeManagedBlock, perSeatRoleSkipWarning, type CodexManagedBlockFile } from "../domain/managed-blocks.js";
 import { writeManagedGuidanceBlock, type ManagedBlockRecords } from "../domain/managed-block-records.js";
+import { durableLaunchAsset } from "./durable-launch-asset.js";
+import { getOpenRigHome } from "../openrig-compat.js";
 import { excludeNewGeneratedFiles } from "../domain/generated-file-hygiene.js";
 import { codexQueueStateRoot, codexTeamWorkspaceArg, type PrepareCodexSeatFolder, type PrepareCodexTeamWorkspace } from "../domain/codex-team-workspace.js";
 import { shellQuote } from "./shell-quote.js";
@@ -153,6 +155,10 @@ const RESUME_EXTENDED_SLEEP_MS = 500;
  * Codex runtime adapter. Projects resources to .agents/ targets (preserving
  * existing Codex filesystem contract) and delivers startup files.
  */
+const PROBE_MIN_COLS = 80;
+const PROBE_MIN_ROWS = 24;
+const PROBE_REDRAW_MS = 500;
+
 export class CodexRuntimeAdapter implements RuntimeAdapter {
   readonly runtime = "codex";
   private tmux: TmuxAdapter;
@@ -166,6 +172,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   private resumeProofWindowMs: number;
   private readinessSettings?: Pick<SettingsStore, "resolveOne">;
   private sleep: (ms: number) => Promise<void>;
+  private revealing = new Set<string>();
   private resolveHomeDirByPid: ResolveHomeDirByPid;
   private codexHome?: string;
   /** A seat's own CODEX_HOME from its member or rig `env:`, when it declares one. */
@@ -188,6 +195,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   // #69: whether the installed Codex supports --no-daemon. Startup wires the real probe;
   // absent (unit tests, other embedders) keeps the existing invocation unchanged.
   private detectDaemonSupport?: CodexDaemonSupportDetector;
+  private sharedDaemonRunning?: (codexHome?: string) => boolean;
   // #275: Codex's own answer on whether the plain floor may get network access. Startup wires the
   // real reader; absent keeps every invocation unchanged.
   private readNetworkDefault?: CodexNetworkDefaultReader;
@@ -249,6 +257,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     profileFingerprint?: (path: string) => Promise<ProfileFingerprint>;
     verifyFilesystemPolicy?: CodexFilesystemVerifier;
     detectDaemonSupport?: CodexDaemonSupportDetector;
+    /** A shared Codex app-server daemon is running for that Codex home (a Codex without --no-daemon may attach to it). */
+    sharedDaemonRunning?: (codexHome?: string) => boolean;
     readNetworkDefault?: CodexNetworkDefaultReader;
     codexLoginShell?: () => boolean;
     resolveGitAddDirs?: CodexGitAddDirResolver;
@@ -288,6 +298,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     this.verifyFilesystemPolicy = deps.verifyFilesystemPolicy ?? verifyCodexFilesystemPolicy;
     this.launchPath = deps.launchPath;
     this.detectDaemonSupport = deps.detectDaemonSupport;
+    this.sharedDaemonRunning = deps.sharedDaemonRunning;
     this.readNetworkDefault = deps.readNetworkDefault;
     this.codexLoginShell = deps.codexLoginShell;
     this.resolveGitAddDirs = deps.resolveGitAddDirs ?? resolveCodexGitAddDirs;
@@ -633,13 +644,14 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
    * launches seats.)
    */
   ensureCodexActivityHooks(home?: string): void {
-    const relay = this.activityRelayPath;
-    if (!relay || !this.fs.exists(relay)) {
-      if (relay) {
-        console.error(`[openrig] codex activity hooks skipped: relay asset not found at ${relay}`);
+    const packagedRelay = this.activityRelayPath;
+    if (!packagedRelay || !this.fs.exists(packagedRelay)) {
+      if (packagedRelay) {
+        console.error(`[openrig] codex activity hooks skipped: relay asset not found at ${packagedRelay}`);
       }
       return;
     }
+    const relay = durableLaunchAsset(packagedRelay, getOpenRigHome());
     const configPath = this.resolveCodexConfigPath(home);
     const existing = this.fs.exists(configPath) ? this.fs.readFile(configPath) : "";
     // A Codex home that keeps its hooks in hooks.json gets OpenRig's there too: Codex warns when one layer mixes both
@@ -783,7 +795,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     const configPath = this.resolveCodexConfigPath(home);
     const hooksPath = nodePath.join(nodePath.dirname(configPath), "hooks.json");
     const existing = this.fs.exists(configPath) ? this.fs.readFile(configPath) : null;
-    const current = this.activityRelayPath ? `node "${this.activityRelayPath}"` : undefined;
+    const current = this.activityRelayPath ? `node "${durableLaunchAsset(this.activityRelayPath, getOpenRigHome())}"` : undefined;
     let updated = existing === null ? null : stripCodexActivityHooks(existing, current);
     if (existing !== null && updated !== existing && !changesOnlyOpenRigActivityHooks(existing, updated!, current)) {
       console.error(`[openrig] codex activity hook removal skipped for ${configPath}: it can't be read as TOML, or removing OpenRig's hooks would change anything else; left untouched`);
@@ -1219,6 +1231,9 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     if (daemonSupport?.kind === "unknown") {
       return { ok: false, error: unknownDaemonSupportMessage(daemonSupport.detail) };
     }
+    if (daemonSupport?.kind === "legacy" && this.sharedDaemonRunning?.(own ?? this.codexHome)) {
+      return { ok: false, error: legacyCodexWithSharedDaemonMessage() };
+    }
     const daemonOptOut = daemonSupport?.kind === "supported";
     const daemonArg = daemonOptOut ? " --no-daemon" : "";
     // #275: on the plain floor, network access unless Codex reports an opt-out or policy. An envelope states its own.
@@ -1321,7 +1336,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     return await this.tmux.capturePaneContent(target, 40) ?? "";
   }
 
-  async checkReady(binding: NodeBinding, options?: ReadinessOptions): Promise<ReadinessResult> {
+  async checkReady(binding: NodeBinding, options: ReadinessOptions = {}): Promise<ReadinessResult> {
     if (!binding.tmuxSession) {
       return { ready: false, reason: "No tmux session bound" };
     }
@@ -1349,6 +1364,11 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         const currentPaneContent = await this.captureProbeScreen(binding.tmuxSession);
         probe = assessNativeResumeProbe({ runtime: "codex", paneCommand: currentPaneCommand,
           paneContent: currentPaneContent, codexProcessVerified: true });
+        const enlarged = probe.status !== "resumed" && options.revealNarrowScreen
+          ? await this.captureEnlargedScreen(binding.tmuxPane ?? binding.tmuxSession) : null;
+        if (enlarged !== null) {
+          probe = assessNativeResumeProbe({ runtime: "codex", paneCommand: currentPaneCommand, paneContent: enlarged, codexProcessVerified: true });
+        }
       }
     }
 
@@ -1388,6 +1408,31 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       const user = layers.find((layer) => layer.name === "user config")?.content ?? null;
       return userLayerEnablesCorePlugin(user) && !layers.some((layer) => holdsOwnHookChoice(parseToml(layer.content)));
     } catch { return false; } // An unreadable layer may hold a choice.
+  }
+
+  private async captureEnlargedScreen(target: string): Promise<string | null> {
+    if (this.revealing.has(target)) return null;
+    this.revealing.add(target);
+    try {
+      const panes = await this.tmux.listPanes(target);
+      const pane = panes.length === 1 ? panes[0]! : null;
+      if (!pane || (pane.width >= PROBE_MIN_COLS && pane.height >= PROBE_MIN_ROWS)) return null;
+      const priorSize = await this.tmux.getWindowLocalOption(target, "window-size");
+      if (priorSize === undefined) return null;
+      const resized = await this.tmux.resizeWindow(target, Math.max(pane.width, PROBE_MIN_COLS), Math.max(pane.height, PROBE_MIN_ROWS));
+      if (!resized.ok) return null;
+      try {
+        await this.sleep(PROBE_REDRAW_MS);
+        return await this.captureProbeScreen(pane.id);
+      } finally {
+        await this.tmux.resizeWindow(target, pane.width, pane.height);
+        await this.tmux.restoreWindowOption(target, "window-size", priorSize);
+      }
+    } catch {
+      return null;
+    } finally {
+      this.revealing.delete(target);
+    }
   }
 
   async captureForkIdentity(binding: NodeBinding, parentToken: string): Promise<{ resumeToken: string; resumeType: string } | null> {
@@ -1652,10 +1697,11 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
    * report honest counts.
    */
   /** #875: a block goes in with the launch's developer instructions when this fresh launch chose them (guidanceFileFor),
-   *  else into the repository AGENTS.md as before. A seat's role is skipped either way, and the seat-skills line keeps its
-   *  AGENTS.md merge: the person's yes was for that file. */
+   *  else into the rig's Codex managed-block file (AGENTS.md by default) as before. A seat's role is skipped either way, and
+   *  the seat-skills line keeps its file merge: the person's yes was for that file. */
   private placeGuidance(cwd: string, binding: NodeBinding | undefined, blockId: string, content: string, warnings: string[], sourcePath?: string): boolean {
-    const targetPath = nodePath.join(cwd, "AGENTS.md");
+    const file = binding?.codexManagedBlockFile;
+    const targetPath = nodePath.join(cwd, file ?? DEFAULT_CODEX_MANAGED_BLOCK_FILE);
     const queued = binding?.guidanceLaunchInstructions && binding.tmuxSession ? this.launchInstructions.get(binding.tmuxSession) : undefined;
     if (!queued || blockId === SEAT_SKILLS_BOOTSTRAP_BLOCK_ID || isPerSeatRoleGuidance(blockId, sourcePath)) {
       // A seat folder this machine doesn't have isn't recreated to hold it (insideMissingFolder). Guidance queued for the
@@ -1664,7 +1710,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
         warnings.push(`${blockId}: not written, because ${cwd} doesn't exist on this machine`);
         return false;
       }
-      return this.mergeGuidance(targetPath, blockId, content, warnings, sourcePath);
+      return this.mergeGuidance(cwd, file, blockId, content, warnings, sourcePath);
     }
     if (blockId === "openrig-start.md") queued.delete("using-openrig.md");
     queued.set(blockId, content);
@@ -1737,7 +1783,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     return null;
   }
 
-  private mergeGuidance(targetPath: string, blockId: string, content: string, warnings: string[], sourcePath?: string): boolean {
+  private mergeGuidance(cwd: string, file: CodexManagedBlockFile | undefined, blockId: string, content: string, warnings: string[], sourcePath?: string): boolean {
+    const targetPath = nodePath.join(cwd, file ?? DEFAULT_CODEX_MANAGED_BLOCK_FILE);
     // Mirrors Claude Code adapter: the `rig-role` managed block collides across
     // pod-mates because the regenerator pairs (target-file × spec) without
     // seat correlation. Per-seat role content is delivered through `send_text`
@@ -1751,6 +1798,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       if (warning) warnings.push(warning);
       return false;
     }
+    const repositoryCopy = codexRepositoryCopy(this.fs, cwd, file);
+    if (repositoryCopy !== null) mergeManagedBlock(this.fs, targetPath, CODEX_REPOSITORY_COPY_BLOCK, repositoryCopy, { warnings });
     // #2456: a block a person edited since OpenRig wrote it is kept and named, not counted as merged.
     return writeManagedGuidanceBlock(this.fs, targetPath, blockId, content, {
       records: this.managedBlockRecords, sourcePath, warnings,

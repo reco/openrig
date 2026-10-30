@@ -46,6 +46,8 @@ const CLEAR_ROTATION_ON_TOKEN_CHANGE =
   "resume_rotated_process = CASE WHEN resume_token IS ? THEN resume_rotated_process ELSE NULL END";
 
 /** The columns `claudeResumeRotation` reads. */
+export type RecordedLaunchProcess = ClaudeLaunchedProcess & { token: string };
+
 export const CLAUDE_RESUME_ROTATION_COLUMNS = "resume_token, resume_provenance, resume_rotated_from, resume_rotated_process, resume_launch_process";
 
 function launchedProcess(json: string | null | undefined): (ClaudeLaunchedProcess & { token?: unknown }) | null {
@@ -687,6 +689,14 @@ export class SessionRegistry {
   recordResumeLaunchProcess(sessionId: string, token: string, process: ClaudeLaunchedProcess): void {
     this.db.prepare("UPDATE sessions SET resume_launch_process = ? WHERE id = ?")
       .run(JSON.stringify({ token: token.trim(), pid: process.pid, startedAt: process.startedAt }), sessionId);
+  }
+
+  /** The process the launch path recorded for this row's current launch, with the token its argv names. */
+  recordedLaunchProcess(sessionId: string): RecordedLaunchProcess | null {
+    const process = launchedProcess((this.db.prepare("SELECT resume_launch_process FROM sessions WHERE id = ?").get(sessionId) as
+      { resume_launch_process: string | null } | undefined)?.resume_launch_process);
+    return process && typeof process.token === "string" && process.token
+      ? { pid: process.pid, startedAt: process.startedAt, token: process.token } : null;
   }
 
   /** True when this row's hook-recorded resume rotation started from `token`. */

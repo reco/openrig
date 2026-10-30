@@ -180,6 +180,7 @@ import { queueDelegatedDecisionSchema } from "./migrations/123_queue_delegated_d
 import { contextUsageWatchdogUnitsSchema } from "./migrations/124_context_usage_watchdog_units.js";
 import { nodeAdvisorSchema } from "./migrations/125_node_advisor.js";
 import { operationCorrelationSchema } from "./migrations/127_operation_correlation.js";
+import { rigCodexManagedBlockFileSchema } from "./migrations/104_rig_codex_managed_block_file.js";
 
 /** Ordered migrations; numbers may be reserved by independent changes. */
 
@@ -359,4 +360,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   seatHookBridgeSchema,
   sessionLaunchedCwdSchema,
   coreAppAccessSchema,
+  rigCodexManagedBlockFileSchema,
 ];

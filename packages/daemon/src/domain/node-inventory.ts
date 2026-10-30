@@ -1327,7 +1327,7 @@ export function getNodeDetail(
   const guidanceEvidence = (): { file: string | null; content: string | null } => {
     const runtime = (ctxRow as { runtime?: string | null } | undefined)?.runtime ?? entry.runtime;
     const recorded = (ctxRow as { guidance_file?: string | null } | undefined)?.guidance_file;
-    const file = entry.cwd ? seatGuidanceFile(runtime, entry.cwd, new RigRepository(db).getRigClaudeManagedBlockFile(rigId), recorded) : null;
+    const file = entry.cwd ? seatGuidanceFile(runtime, entry.cwd, { claude: new RigRepository(db).getRigClaudeManagedBlockFile(rigId), codex: new RigRepository(db).getRigCodexManagedBlockFile(rigId) }, recorded) : null;
     let content: string | null = null;
     if (file) {
       try { content = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null; } catch { content = null; }

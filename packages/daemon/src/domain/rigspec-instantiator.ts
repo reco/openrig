@@ -726,6 +726,7 @@ export class PodRigInstantiator {
         if (rigSpec.managedBlocks?.["claude-code"]) {
           this.deps.rigRepo.setRigClaudeManagedBlockFile(materializedRigId, rigSpec.managedBlocks["claude-code"]);
         }
+        if (rigSpec.managedBlocks?.codex) this.deps.rigRepo.setRigCodexManagedBlockFile(materializedRigId, rigSpec.managedBlocks.codex);
         // The rig's culture and startup layers, for seats added later (both rig-create sites; an expansion keeps them).
         if (!opts?.targetRigId) this.persistRigStartupLayers(materializedRigId, rigSpec, rigRoot);
 
@@ -1576,6 +1577,7 @@ export class PodRigInstantiator {
       if (rigSpec.managedBlocks?.["claude-code"]) {
         this.deps.rigRepo.setRigClaudeManagedBlockFile(rigId, rigSpec.managedBlocks["claude-code"]);
       }
+      if (rigSpec.managedBlocks?.codex) this.deps.rigRepo.setRigCodexManagedBlockFile(rigId, rigSpec.managedBlocks.codex);
       this.persistRigStartupLayers(rigId, rigSpec, rigRoot);
       // OPR.0.4.8.3 Seam B: the SECOND rig-persist site (bootstrap instantiate path) —
       // both sites must write or the rig ref silently drops on one instantiate path.

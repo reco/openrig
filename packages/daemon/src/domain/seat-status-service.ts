@@ -221,7 +221,7 @@ export class SeatStatusService {
     const db = this.rigRepo.db;
     let recorded: string | null = null;
     try { recorded = readNodeStartupSnapshot(db, entry.nodeId)?.guidanceFile ?? null; } catch { /* the runtime's default file */ }
-    const file = seatGuidanceFile(entry.runtime, entry.cwd, this.rigRepo.getRigClaudeManagedBlockFile(entry.rigId), recorded);
+    const file = seatGuidanceFile(entry.runtime, entry.cwd, { claude: this.rigRepo.getRigClaudeManagedBlockFile(entry.rigId), codex: this.rigRepo.getRigCodexManagedBlockFile(entry.rigId) }, recorded);
     if (!file) return {};
     let session: GuidanceSession | null = null;
     try {

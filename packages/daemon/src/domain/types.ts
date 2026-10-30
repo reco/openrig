@@ -1502,7 +1502,7 @@ export interface RigSpec {
   /** Non-secret launch environment for every seat in the rig; a member's `env` overrides it. */
   env?: Record<string, string>;
   /** #25: per-runtime managed-block destination. Absent = CLAUDE.md. */
-  managedBlocks?: { "claude-code"?: import("./managed-blocks.js").ClaudeManagedBlockFile };
+  managedBlocks?: { "claude-code"?: import("./managed-blocks.js").ClaudeManagedBlockFile; codex?: import("./managed-blocks.js").CodexManagedBlockFile };
   docs?: RigSpecDoc[];
   startup?: StartupBlock;
   services?: RigServicesSpec;

@@ -620,7 +620,7 @@ export class RigTeardownOrchestrator {
       return null;
     }
     // #25: clean only the rig's selected Claude file; the other file is never touched.
-    return seatGuidanceFile(runtime, cwd, this.deps.rigRepo.getRigClaudeManagedBlockFile(rigId), recordedGuidanceFile(this.db, nodeId));
+    return seatGuidanceFile(runtime, cwd, { claude: this.deps.rigRepo.getRigClaudeManagedBlockFile(rigId), codex: this.deps.rigRepo.getRigCodexManagedBlockFile(rigId) }, recordedGuidanceFile(this.db, nodeId));
   }
 
   private guidancePathKey(path: string): string {

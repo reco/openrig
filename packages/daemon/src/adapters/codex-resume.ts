@@ -13,7 +13,7 @@ import { codexPostureArg } from "./yolo-mode.js";
 import { observeCodexSandbox } from "../domain/permission-drift.js";
 import { codexMemberLaunch, type CodexMemberPermissions } from "../domain/codex-member-permissions.js";
 import { codexPolicyWarning, resolveCodexFilesystemHome, verifyCodexFilesystemPolicy, type CodexFilesystemVerifier } from "../domain/codex-filesystem-preflight.js";
-import { unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
+import { legacyCodexWithSharedDaemonMessage, unknownDaemonSupportMessage, type CodexDaemonSupportDetector } from "../domain/codex-daemon-support.js";
 import { codexNetworkDefaultArg, type CodexNetworkDefaultReader } from "../domain/codex-network-default.js";
 
 const CODEX_TYPES = new Set(["codex_id", "codex_last"]);
@@ -36,6 +36,8 @@ interface CodexResumeOptions {
   exec?: (cmd: string) => Promise<string>;
   /** #69: whether the installed Codex supports --no-daemon; absent keeps the existing invocation. */
   detectDaemonSupport?: CodexDaemonSupportDetector;
+  /** A shared Codex app-server daemon is running for that Codex home (a Codex without --no-daemon may attach to it). */
+  sharedDaemonRunning?: (codexHome?: string) => boolean;
   /** #275: Codex's own answer on the plain floor's network default; absent keeps the existing invocation. */
   readNetworkDefault?: CodexNetworkDefaultReader;
   /** launch.codex_login_shell: true keeps Codex's own login shells for tool commands. Absent: off. */
@@ -128,6 +130,9 @@ export class CodexResumeAdapter {
       ? await (seatCodexHome ? this.options.detectDaemonSupport(cwd, seatCodexHome) : this.options.detectDaemonSupport(cwd)) : undefined;
     if (daemonSupport?.kind === "unknown") {
       return { ok: false, code: "resume_failed", message: unknownDaemonSupportMessage(daemonSupport.detail) };
+    }
+    if (daemonSupport?.kind === "legacy" && this.options.sharedDaemonRunning?.(seatCodexHome ?? this.options.codexHome)) {
+      return { ok: false, code: "resume_failed", message: legacyCodexWithSharedDaemonMessage() };
     }
 
     const profileArg = codexConfigProfile ? ` -p ${shellQuote(codexConfigProfile)}` : "";

@@ -696,6 +696,26 @@ function findPromptDraftBeforeFooter(paneContent: string): string | null {
   return truncateEvidence(priorTrimmed);
 }
 
+/** Typed before a pasted message to a Claude seat. Plain words only: "@", "/", "!", "#" and a leading
+ *  "?" are Claude Code input shortcuts. */
+export const ROUTED_MESSAGE_PREFIX = "OpenRig: a peer seat in your rig routed the message below; treat it as a work request from your team (use your normal judgment and permissions): ";
+
+/** Paste a message into a seat's input. A Claude seat first gets ROUTED_MESSAGE_PREFIX as typed
+ *  input when the message is multi-line: Claude Code shows such a paste as pasted content, which its guidance follows only when the
+ *  user's own message asks, and the typed line in the same message is that ask. A paste that fails
+ *  after the line was typed clears the line, so no stray draft joins the next message. */
+export async function sendToSeat(tmux: Pick<TmuxAdapter, "sendText" | "sendKeys">, session: string, text: string,
+  runtime: string | null | undefined, beforeWrite?: () => void): Promise<TmuxResult> {
+  const paste = () => beforeWrite ? tmux.sendText(session, text, beforeWrite) : tmux.sendText(session, text);
+  // A slash command or a one-line text is input, not pasted content: it gets no line in front.
+  if (runtime !== "claude-code" || text.startsWith("/") || !text.includes("\n")) return paste();
+  const typed = await tmux.sendText(session, ROUTED_MESSAGE_PREFIX, beforeWrite, { bracketed: false });
+  if (!typed.ok) return typed;
+  const pasted = await paste();
+  if (!pasted.ok) await tmux.sendKeys(session, ["C-u"]).catch(() => undefined);
+  return pasted;
+}
+
 type StyledCell = { ch: string; faint: boolean };
 
 /** A capture taken with escape sequences, as lines of cells that know whether they're faint (SGR 2).

@@ -1804,6 +1804,10 @@ export class RestoreOrchestrator {
     } catch { return false; }
   }
 
+  private managedBlockFiles(rigId: string): { claude: string | null; codex: string | null } {
+    return { claude: this.rigRepo.getRigClaudeManagedBlockFile(rigId), codex: this.rigRepo.getRigCodexManagedBlockFile(rigId) };
+  }
+
   private checkRestoredGuidance(
     result: RestoreNodeResult,
     node: SnapshotData["nodes"][number],
@@ -1827,7 +1831,7 @@ export class RestoreOrchestrator {
       guidanceCwd = node.cwd
         ?? this.rigRepo.getRig(rigId)?.nodes.find(current => current.logicalId === node.logicalId)?.cwd;
       guidance = seatGuidance(data.nodeStartupContext?.[node.id] ?? null, guidanceCwd,
-        this.rigRepo.getRigClaudeManagedBlockFile(rigId), existsSync, (path) => readFileSync(path, "utf-8"));
+        this.managedBlockFiles(rigId), existsSync, (path) => readFileSync(path, "utf-8"));
     } catch (err) {
       warnings?.push(`Restore: ${node.logicalId}: could not check its guidance: ${(err as Error).message}`);
       return { ...result, guidanceGaps: ["(guidance check failed)"] };
@@ -2178,7 +2182,7 @@ export class RestoreOrchestrator {
         guidanceCwd = node.cwd
           ?? this.rigRepo.getRig(rigId)?.nodes.find(current => current.logicalId === node.logicalId
             && (!selected || current.id === node.id))?.cwd;
-        guidance = seatGuidance(startupCtx, guidanceCwd, this.rigRepo.getRigClaudeManagedBlockFile(rigId), existsSync, (path) => readFileSync(path, "utf-8"));
+        guidance = seatGuidance(startupCtx, guidanceCwd, this.managedBlockFiles(rigId), existsSync, (path) => readFileSync(path, "utf-8"));
       } catch (err) {
         // Guidance never blocks the exact resume; the post-launch check discloses the gap.
         warnings?.push(`Restore guidance: ${node.logicalId}: could not read its saved guidance selection: ${(err as Error).message}`);

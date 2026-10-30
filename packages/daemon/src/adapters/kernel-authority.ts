@@ -5,6 +5,8 @@ import { nonInterruptiveArgs } from "./non-interruptive.js";
 import { isValidThresholdPercent } from "../domain/claude-compaction-enforcer.js";
 import { SettingsStore } from "../domain/user-settings/settings-store.js";
 import { shellQuote } from "./shell-quote.js";
+import { durableLaunchAssets } from "./durable-launch-asset.js";
+import { getOpenRigHome } from "../openrig-compat.js";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { HOOK_BRIDGE_TIMEOUT_SECONDS } from "../domain/hook-bridge.js";
@@ -67,9 +69,11 @@ function claudeCommandSettings(kind: "kernel" | "team"): string[] {
   const allow = kind === "kernel" ? KERNEL_CLAUDE_ALLOW : TEAM_CLAUDE_ALLOW;
   const ask = kind === "kernel" ? [] : TEAM_CLAUDE_ASK;
   const permissions = { allow, ...(ask.length ? { ask } : {}) };
-  const hook = fileURLToPath(new URL("../../assets/claude-team-permissions.cjs", import.meta.url));
-  if (!existsSync(hook)) return ["--settings", JSON.stringify({ permissions })];
-  const command = [process.execPath, hook, kind].map(shellQuote).join(" ");
+  const packaged = fileURLToPath(new URL("../../assets/claude-team-permissions.cjs", import.meta.url));
+  if (!existsSync(packaged)) return ["--settings", JSON.stringify({ permissions })];
+  const policies = fileURLToPath(new URL("../../assets/claude-permission-policies.cjs", import.meta.url));
+  const [hook] = durableLaunchAssets([packaged, policies], getOpenRigHome());
+  const command = [process.execPath, hook!, kind].map(shellQuote).join(" ");
   return ["--settings", JSON.stringify({
     permissions: { allow },
     hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command, timeout: 5 }] }] },

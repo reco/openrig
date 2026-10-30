@@ -251,7 +251,7 @@ After the files, OpenRig sends a session-identity message (rig, pod, member, log
 | Delivery Hint | When | How | Use For |
 |---------------|------|-----|---------|
 | `auto` | Depends on the file | Resolved per file: a `SKILL.md` (or content starting `# SKILL`) is `skill_install`, any other `.md` is `guidance_merge`, and any other file is `send_text` | Default — let OpenRig decide |
-| `guidance_merge` | Before harness boot | Merged as a managed block into the repository `AGENTS.md` (Codex, OMP), a fresh Pi seat's own agent-directory `AGENTS.md` (see [Runtime Differences](#runtime-differences)), or `CLAUDE.md` (Claude; `CLAUDE.local.md` with the rig's `managed_blocks: { claude-code: CLAUDE.local.md }`). A fresh launch of Codex 0.164.0 or later can carry it as launch developer instructions instead (see [Codex guidance at launch](#codex-guidance-at-launch)) | Role guidance, culture, project context |
+| `guidance_merge` | Before harness boot | Merged as a managed block into the repository `AGENTS.md` (OMP; Codex uses `AGENTS.override.md` with the rig's `managed_blocks: { codex: AGENTS.override.md }`), a fresh Pi seat's own agent-directory `AGENTS.md` (see [Runtime Differences](#runtime-differences)), or `CLAUDE.md` (Claude; `CLAUDE.local.md` with the rig's `managed_blocks: { claude-code: CLAUDE.local.md }`). A fresh launch of Codex 0.164.0 or later can carry it as launch developer instructions instead (see [Codex guidance at launch](#codex-guidance-at-launch)) | Role guidance, culture, project context |
 | `skill_install` | Before harness boot | Copied to runtime's skill directory | Skills |
 | `send_text` | After harness is ready | Sent as text to agent's terminal via tmux | Boot-time grounding, identity hints, instructions to read skills |
 

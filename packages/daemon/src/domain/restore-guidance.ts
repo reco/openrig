@@ -19,6 +19,9 @@ import type Database from "better-sqlite3";
 import {
   DEFAULT_CLAUDE_MANAGED_BLOCK_FILE,
   findManagedBlocks,
+  DEFAULT_CODEX_MANAGED_BLOCK_FILE,
+  CODEX_REPOSITORY_COPY_BLOCK,
+  codexRepositoryCopy,
   mergeManagedBlock,
   stripManagedBlocks,
   type ManagedBlockMergeFsOps,
@@ -41,6 +44,8 @@ export interface GuidanceItem {
   unresolved?: boolean;
   /** A start fails without it: a projected guidance file, or a startup file marked required. */
   required?: boolean;
+  /** The AGENTS.md copy an AGENTS.override.md target carries: written without AGENTS.md's own managed blocks. */
+  repositoryCopy?: boolean;
 }
 
 export interface SeatGuidance {
@@ -55,13 +60,14 @@ export interface SeatGuidance {
 export function seatGuidanceFile(
   runtime: string | null | undefined,
   cwd: string,
-  claudeManagedBlockFile: string | null | undefined,
+  managedBlockFiles: { claude?: string | null; codex?: string | null },
   recorded?: string | null,
 ): string | null {
   if (recorded) return recorded;
   const fileName = runtime === "claude-code"
-    ? (claudeManagedBlockFile ?? DEFAULT_CLAUDE_MANAGED_BLOCK_FILE)
-    : runtime === "codex" || runtime === "pi" || runtime === "omp" ? "AGENTS.md" : null;
+    ? (managedBlockFiles.claude ?? DEFAULT_CLAUDE_MANAGED_BLOCK_FILE)
+    : runtime === "codex" ? (managedBlockFiles.codex ?? DEFAULT_CODEX_MANAGED_BLOCK_FILE)
+    : runtime === "pi" || runtime === "omp" ? "AGENTS.md" : null;
   return fileName ? nodePath.join(cwd, fileName) : null;
 }
 
@@ -103,14 +109,18 @@ export function hasCompleteGuidanceBlock(content: string, blockId: string): bool
 export function seatGuidance(
   startupCtx: NodeStartupSnapshot | null,
   cwd: string | null | undefined,
-  claudeManagedBlockFile: string | null | undefined,
+  managedBlockFiles: { claude?: string | null; codex?: string | null },
   exists: (path: string) => boolean,
   readFile: (path: string) => string,
 ): SeatGuidance | null {
   if (!startupCtx || !cwd) return null;
-  const targetPath = seatGuidanceFile(startupCtx.runtime, cwd, claudeManagedBlockFile, startupCtx.guidanceFile);
+  const targetPath = seatGuidanceFile(startupCtx.runtime, cwd, managedBlockFiles, startupCtx.guidanceFile);
   if (!targetPath) return null;
+  const fileName = nodePath.basename(targetPath);
   const items = new Map<string, GuidanceItem>();
+  if (startupCtx.runtime === "codex" && codexRepositoryCopy({ exists, readFile }, cwd, fileName) !== null) {
+    items.set(CODEX_REPOSITORY_COPY_BLOCK, { blockId: CODEX_REPOSITORY_COPY_BLOCK, sourcePath: nodePath.join(cwd, DEFAULT_CODEX_MANAGED_BLOCK_FILE), repositoryCopy: true });
+  }
   for (const saved of startupCtx.projectionEntries) {
     if (saved.category !== "guidance" || saved.mergeStrategy !== "managed_block") continue;
     const e = reanchorShippedProjectionEntry(saved, undefined, exists);
@@ -314,7 +324,8 @@ export function restoreMissingGuidance(guidance: SeatGuidance, fs: ManagedBlockM
         repair.gaps.push(`${item.blockId}: its source ${item.sourcePath} no longer exists`);
         continue;
       }
-      toWrite.push({ blockId: item.blockId, content: fs.readFile(item.sourcePath) });
+      const source = fs.readFile(item.sourcePath);
+      toWrite.push({ blockId: item.blockId, content: item.repositoryCopy ? stripManagedBlocks(source) : source });
     } catch (err) {
       repair.gaps.push(`${item.blockId}: ${(err as Error).message}`);
     }
@@ -366,7 +377,7 @@ export function readNodeStartupSnapshot(db: Pick<Database.Database, "prepare">, 
 export function putBackSeatGuidance(input: {
   startupCtx: NodeStartupSnapshot | null;
   cwd: string | null | undefined;
-  claudeManagedBlockFile: string | null | undefined;
+  managedBlockFiles: { claude?: string | null; codex?: string | null };
   seatSkillsLineYes: boolean;
   fs: ManagedBlockMergeFsOps;
   linkInfo: LinkInfo;
@@ -374,7 +385,7 @@ export function putBackSeatGuidance(input: {
 }): { notes: string[]; startedWithoutRequired: string[] } {
   let guidance: SeatGuidance | null;
   try {
-    guidance = seatGuidance(input.startupCtx, input.cwd, input.claudeManagedBlockFile, input.fs.exists, input.fs.readFile);
+    guidance = seatGuidance(input.startupCtx, input.cwd, input.managedBlockFiles, input.fs.exists, input.fs.readFile);
   } catch (err) {
     return { notes: [`could not read the saved guidance selection: ${(err as Error).message}`], startedWithoutRequired: [] };
   }

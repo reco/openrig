@@ -381,6 +381,8 @@ export class StartupOrchestrator {
     input = { ...input, binding: { ...input.binding, nonInterruptive: rigRepo.getRigNonInterruptive(input.rigId) } };
     const claudeManagedBlockFile = rigRepo.getRigClaudeManagedBlockFile(input.rigId);
     if (claudeManagedBlockFile) input = { ...input, binding: { ...input.binding, claudeManagedBlockFile } };
+    const codexManagedBlockFile = rigRepo.getRigCodexManagedBlockFile(input.rigId);
+    if (codexManagedBlockFile) input = { ...input, binding: { ...input.binding, codexManagedBlockFile } };
     // OPR.0.7.0.13: a Claude seat whose plugin OpenRig keeps (already on its CLAUDE_CODE_PLUGIN_DIRS) gets every skill
     // there, profile resources and startup skill files too. A seat without one keeps the project, as before, so a
     // skill never lands where nothing points.
@@ -1099,7 +1101,7 @@ export class StartupOrchestrator {
     const maxDelay = 16_000;
 
     while (true) {
-      const result = await adapter.checkReady(binding);
+      const result = await adapter.checkReady(binding, { revealNarrowScreen: true });
       if (result.ready) return result;
       if (isAttentionRequiredReadinessCode(result.code)) {
         return result;

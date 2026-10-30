@@ -64,6 +64,8 @@ export interface NodeBinding extends Binding {
   launchAdditions?: import("./seat-launch-additions.js").SeatLaunchAdditions;
   /** #25: the rig's `managed_blocks.claude-code` file. Absent = CLAUDE.md. Only the Claude adapter reads it. */
   claudeManagedBlockFile?: import("./managed-blocks.js").ClaudeManagedBlockFile;
+  /** The rig's `managed_blocks.codex` file. Absent = AGENTS.md. Only the Codex adapter reads it. */
+  codexManagedBlockFile?: import("./managed-blocks.js").CodexManagedBlockFile;
 }
 
 // -- Resolved startup file with source-root provenance --
@@ -138,6 +140,7 @@ export function isAttentionRequiredReadinessCode(code: string | undefined): bool
 export interface ReadinessOptions {
   resumeToken?: string | null;
   resumeRotation?: ClaudeResumeRotation | null;
+  revealNarrowScreen?: boolean;
   /** The poll this check belongs to. An adapter that honours it takes its process listings from the pass, so the
    *  agents checked in one poll share them; an adapter that doesn't reads for itself, as before. */
   observationPass?: import("./process-observation-pass.js").ObservationPass;
