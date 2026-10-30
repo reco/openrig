@@ -1,5 +1,4 @@
 import type { CodexPermissionEnvelope, CodexPermissionContinuity, CodexRebuildPermissions } from "./codex-rebuild-permissions.js";
-import { sendToSeat } from "./session-transport.js";
 import { parseSqliteUtcMs } from "./sqlite-time.js";
 import { lstartToMinTs } from "./codex-thread-id.js";
 import type Database from "better-sqlite3";
@@ -841,7 +840,6 @@ export class SeatHandoverService {
         ...(node.runtime === "codex" ? { model: { requested: node.model?.trim() || null, predecessorCompared: false as const } } : {}),
         ...(emptyChainReason ? { emptyChainReason } : {}) };
       const delivered = await this.deliverRebuildPrimingPacket(launch.tmuxSession, {
-        runtime: node.runtime,
         seatRef: input.seatRef,
         reason,
         departingSession: latestSession.session_name,
@@ -1610,7 +1608,6 @@ export class SeatHandoverService {
   private async deliverRebuildPrimingPacket(
     successorSession: string,
     info: {
-      runtime: string | null;
       seatRef: string;
       reason: string;
       departingSession: string;
@@ -1702,7 +1699,7 @@ export class SeatHandoverService {
     },
   ): Promise<RestorePacketDelivery> {
     const packet = buildRestorePacket({ ...info, handoverAt: this.now().toISOString() });
-    const sent = await sendToSeat(this.tmuxAdapter, successorSession, packet, info.runtime);
+    const sent = await this.tmuxAdapter.sendText(successorSession, packet);
     if (!sent.ok) {
       return { ok: false, message: (sent as { message?: string }).message ?? "send_text failed" };
     }

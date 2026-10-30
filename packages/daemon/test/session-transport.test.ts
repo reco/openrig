@@ -526,8 +526,6 @@ function setupDb(): Database.Database {
   return createFullTestDb();
 }
 
-const typedPrefixes: Array<{ target: string; rest: unknown[] }> = [];
-
 function mockTmux(overrides?: Partial<{
   hasSession: (name: string) => Promise<boolean>;
   sendText: (target: string, text: string) => Promise<TmuxResult>;
@@ -545,11 +543,7 @@ function mockTmux(overrides?: Partial<{
     // hasSession; a throwing hasSession propagates (the fail-closed class).
     probeSession: async (name: string) =>
       (await hasSession(name)) ? { state: "present" as const } : { state: "absent" as const },
-    // The typed routed-work line before a Claude paste is recorded apart; each test's sendText sees the message.
-    sendText: async (target: string, text: string, ...rest: unknown[]) => {
-      if (text === ROUTED_MESSAGE_PREFIX) { typedPrefixes.push({ target, rest }); return { ok: true as const }; }
-      return (overrides?.sendText ?? (async () => ({ ok: true as const })))(target, text);
-    },
+    sendText: overrides?.sendText ?? (async () => ({ ok: true as const })),
     sendKeys: overrides?.sendKeys ?? (async () => ({ ok: true as const })),
     capturePaneContent: overrides?.capturePaneContent ?? (async () => "idle prompt\n❯ "),
     createSession: async () => ({ ok: true as const }),
@@ -994,26 +988,10 @@ describe("SessionTransport", () => {
     });
   });
 
-  it("a Claude seat gets one typed routed-work line before the pasted message, in the same input", async () => {
+  it("a message still in a Claude seat's input after Enter gets one more Enter; one that stays is reported", async () => {
     seedCanonicalRig();
-    typedPrefixes.length = 0;
-    const order: string[] = [];
-    const tmux = mockTmux({ sendText: async () => { order.push("paste"); return { ok: true }; }, sendKeys: async () => { order.push("Enter"); return { ok: true }; } });
-    expect((await createTransport(tmux).send("dev-impl@my-rig", "From: lead@rig\n---\nDo the thing\n---")).ok).toBe(true);
-    expect(typedPrefixes).toHaveLength(1);
-    expect(typedPrefixes[0]!.rest).toContainEqual({ bracketed: false });
-    expect(order).toEqual(["paste", "Enter"]);
-    expect(ROUTED_MESSAGE_PREFIX).not.toMatch(/[@\/!#\n]|^\?/);
-    typedPrefixes.length = 0;
-    await createTransport(tmux).send("dev-impl@my-rig", "/rename impl");
-    await createTransport(tmux).send("dev-impl@my-rig", "one line");
-    expect(typedPrefixes).toEqual([]);
-  });
-
-  it("a routed message still in a Claude seat's input after Enter gets one more Enter; one that stays is reported", async () => {
-    seedCanonicalRig();
-    const staged = `history\n❯ earlier message\n⏺ reply\n❯ ${ROUTED_MESSAGE_PREFIX}From: lead@rig\n  Do the thing\n────────────`;
-    const cleared = `history\n❯ ${ROUTED_MESSAGE_PREFIX}From: lead@rig\n  Do the thing\n⏺ working\n────────────\n❯ \n────────────`;
+    const staged = `history\n❯ earlier message\n⏺ reply\n❯ From: lead@rig\n  Do the thing\n────────────`;
+    const cleared = `history\n❯ From: lead@rig\n  Do the thing\n⏺ working\n────────────\n❯ \n────────────`;
     const run = async (afterEnters: string[]) => {
       let enters = 0;
       const tmux = mockTmux({
@@ -1032,7 +1010,7 @@ describe("SessionTransport", () => {
     const stuck = await run([staged, staged]);
     expect(stuck.enters).toBe(2);
     expect(stuck.result).toMatchObject({ ok: true, verified: false, outcome: "rendered-unconfirmed", warning: expect.stringContaining("still in its input") });
-    const atPrompt = await run([`history\n❯ ${ROUTED_MESSAGE_PREFIX}From: lead@rig\n  Do the thing\n⏺ Bash(rm -rf build)\n Do you want to proceed?\n ❯ 1. Yes\n   2. No`]);
+    const atPrompt = await run([`history\n❯ From: lead@rig\n  Do the thing\n⏺ Bash(rm -rf build)\n Do you want to proceed?\n ❯ 1. Yes\n   2. No`]);
     expect(atPrompt.enters).toBe(1);
   });
 
@@ -1041,7 +1019,7 @@ describe("SessionTransport", () => {
     let enters = 0;
     const tmux = mockTmux({
       sendKeys: async () => (++enters === 1 ? { ok: true } : { ok: false, code: "tmux_error", message: "boom" }) as TmuxResult,
-      capturePaneContent: async () => enters === 0 ? "idle prompt\n❯ " : `❯ ${ROUTED_MESSAGE_PREFIX}From: lead@rig\n  Do the thing`,
+      capturePaneContent: async () => enters === 0 ? "idle prompt\n❯ " : `❯ From: lead@rig\n  Do the thing`,
     });
     const result = await createTransport(tmux, { sleep: async () => {} }).send("dev-impl@my-rig", "From: lead@rig\nDo the thing");
     expect(enters).toBe(2);

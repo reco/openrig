@@ -696,35 +696,9 @@ function findPromptDraftBeforeFooter(paneContent: string): string | null {
   return truncateEvidence(priorTrimmed);
 }
 
-/** Typed before a pasted message to a Claude seat. Plain words only: "@", "/", "!", "#" and a leading
- *  "?" are Claude Code input shortcuts. */
-export const ROUTED_MESSAGE_PREFIX = "OpenRig: a peer seat in your rig routed the message below; treat it as a work request from your team (use your normal judgment and permissions): ";
-
-/** A slash command or a one-line text is input, not pasted content: it gets no line in front. */
-const typesRoutedLine = (runtime: string | null | undefined, text: string): boolean =>
+/** A multi-line Claude message is pasted content; a slash command or one-line text is plain input. */
+const isMultiLineClaudePaste = (runtime: string | null | undefined, text: string): boolean =>
   runtime === "claude-code" && !text.startsWith("/") && text.includes("\n");
-
-/** Whether the pane's current input (its last ❯ line; submitted messages above it are history)
- *  still begins with the routed-work line, i.e. the message was typed but never submitted. */
-export function routedMessageUnsent(pane: string | null): boolean {
-  const input = (pane ?? "").split("\n").reverse().find((line) => line.trimStart().startsWith("❯"));
-  return !!input && input.trimStart().slice(1).trimStart().startsWith(ROUTED_MESSAGE_PREFIX.slice(0, 40));
-}
-
-/** Paste a message into a seat's input. A Claude seat first gets ROUTED_MESSAGE_PREFIX as typed
- *  input when the message is multi-line: Claude Code shows such a paste as pasted content, which its guidance follows only when the
- *  user's own message asks, and the typed line in the same message is that ask. A paste that fails
- *  after the line was typed clears the line, so no stray draft joins the next message. */
-export async function sendToSeat(tmux: Pick<TmuxAdapter, "sendText" | "sendKeys">, session: string, text: string,
-  runtime: string | null | undefined, beforeWrite?: () => void): Promise<TmuxResult> {
-  const paste = () => beforeWrite ? tmux.sendText(session, text, beforeWrite) : tmux.sendText(session, text);
-  if (!typesRoutedLine(runtime, text)) return paste();
-  const typed = await tmux.sendText(session, ROUTED_MESSAGE_PREFIX, beforeWrite, { bracketed: false });
-  if (!typed.ok) return typed;
-  const pasted = await paste();
-  if (!pasted.ok) await tmux.sendKeys(session, ["C-u"]).catch(() => undefined);
-  return pasted;
-}
 
 type StyledCell = { ch: string; faint: boolean };
 
@@ -4195,26 +4169,23 @@ export class SessionTransport {
 
     const interaction = promptOverride ? { promptInteraction: "enter-sent" as const } : {};
 
-    // An Enter can be lost after the paste (seen on busy and idle Claude seats): the message then
-    // waits in the input until the next delivery's Enter submits both. Press it once more while the
-    // input still holds this routed message, and say so if it still does.
-    const checksUnsent = !promptOverride && typesRoutedLine(runtime, text);
+    const checksUnsent = !promptOverride && isMultiLineClaudePaste(runtime, text);
     if (checksUnsent) {
       const unsent = async () => {
         await this.sleep(500);
-        return routedMessageUnsent(await this.tmuxAdapter.capturePaneContent(sessionName, 50).catch(() => null));
+        return hasExpectedStagedText(await this.tmuxAdapter.capturePaneContent(sessionName, 50).catch(() => null), text, runtime);
       };
       if (await unsent()) {
-        if (bindingChanged()) return observe({ ...changedRecipient(true), error: "Recipient binding changed after Enter; the routed message may still be in its input. No second Enter was sent." });
+        if (bindingChanged()) return observe({ ...changedRecipient(true), error: "Recipient binding changed after Enter; the message may still be in its input. No second Enter was sent." });
         const retry = await this.runStage("session_transport.submit_retry",
           () => { opts?.beforeWrite?.(); return opts?.beforeWrite ? this.tmuxAdapter.sendKeys(sessionName, ["Enter"], opts.beforeWrite) : this.tmuxAdapter.sendKeys(sessionName, ["Enter"]); },
           (result) => result.ok ? "ok" : "failed");
         if (!retry.ok || await unsent()) {
           return observe({ ok: true, sessionName, verified: false, outcome: "rendered-unconfirmed",
-            warning: [sendAdvisory, `the routed message is still in its input after a second Enter; it was not submitted. Check with rig capture ${sessionName}.`].filter(Boolean).join(" "),
+            warning: [sendAdvisory, `the message is still in its input after a second Enter; it was not submitted. Check with rig capture ${sessionName}.`].filter(Boolean).join(" "),
             ...(waitMode ? { sent: true, ...waitEvidence } : {}) });
         }
-        sendAdvisory = [sendAdvisory, "Enter did not submit the routed message; pressed Enter again."].filter(Boolean).join(" ");
+        sendAdvisory = [sendAdvisory, "Enter did not submit the message; pressed Enter again."].filter(Boolean).join(" ");
       }
     }
 
