@@ -146,7 +146,7 @@ will do nothing.
 
 How a decision is answered depends on `explicitAnswersOnly` in `slack-connector.json`:
 
-- **On (this build's default):** a typed reply in the decision's thread is conversation. It goes
+- **On:** a typed reply in the decision's thread is conversation. It goes
   to the asking seat, which can answer in the same thread (`rig queue create --human-intent update
   --reply-to <decision>`), and it resolves nothing. Every decision shows buttons: the seat's
   action (or "Confirm"), or option buttons; typing is always possible and reaches the seat. Information
@@ -161,7 +161,7 @@ How a decision is answered depends on `explicitAnswersOnly` in `slack-connector.
   (`rig queue update --link pr:<url>|issue:<url>|qitem:<id>`) is finished, or the asked human
   replies `cancel`. After `staleReminderDays` (default 3) without activity, an unanswered request
   reminds its human in the thread and an answered one reminds its seat. Reminders close nothing.
-- **Off:** any typed reply in the thread answers the decision.
+- **Off (the default):** any typed reply in the thread answers the decision.
 
 Each click gets one short reply in the decision's thread: what was recorded, or, when OpenRig
 refuses the click or can't record it, why and what to do instead (the sender isn't registered, the

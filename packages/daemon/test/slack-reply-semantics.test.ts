@@ -111,11 +111,11 @@ describe("phase 1 reply semantics through the real Slack wire", () => {
   const toSeat = () => repo.list({ limit: 100 }).filter((q) => q.destinationSession === "author@rig");
   const resolutions = () => repo.transitionLog.listForQitem(decisionId).filter((t) => t.ownerNotificationKind === "human-decision-resolved");
 
-  describe("explicitAnswersOnly (the default)", () => {
+  describe("explicitAnswersOnly on", () => {
     beforeEach(() => start(true));
 
-    it("is on by default, with 3-day stale reminders", () => {
-      expect(DEFAULT_CONFIG.explicitAnswersOnly).toBe(true);
+    it("is off by default, with 3-day stale reminders", () => {
+      expect(DEFAULT_CONFIG.explicitAnswersOnly).toBe(false);
       expect(DEFAULT_CONFIG.staleReminderDays).toBe(3);
     });
 

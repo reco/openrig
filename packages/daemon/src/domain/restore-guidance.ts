@@ -60,13 +60,13 @@ export interface SeatGuidance {
 export function seatGuidanceFile(
   runtime: string | null | undefined,
   cwd: string,
-  managedBlockFiles: { claude?: string | null; codex?: string | null },
+  managedBlockFiles: { claude?: string | null; codex?: string | null } | null,
   recorded?: string | null,
 ): string | null {
   if (recorded) return recorded;
   const fileName = runtime === "claude-code"
-    ? (managedBlockFiles.claude ?? DEFAULT_CLAUDE_MANAGED_BLOCK_FILE)
-    : runtime === "codex" ? (managedBlockFiles.codex ?? DEFAULT_CODEX_MANAGED_BLOCK_FILE)
+    ? (managedBlockFiles?.claude ?? DEFAULT_CLAUDE_MANAGED_BLOCK_FILE)
+    : runtime === "codex" ? (managedBlockFiles?.codex ?? DEFAULT_CODEX_MANAGED_BLOCK_FILE)
     : runtime === "pi" || runtime === "omp" ? "AGENTS.md" : null;
   return fileName ? nodePath.join(cwd, fileName) : null;
 }
@@ -109,7 +109,7 @@ export function hasCompleteGuidanceBlock(content: string, blockId: string): bool
 export function seatGuidance(
   startupCtx: NodeStartupSnapshot | null,
   cwd: string | null | undefined,
-  managedBlockFiles: { claude?: string | null; codex?: string | null },
+  managedBlockFiles: { claude?: string | null; codex?: string | null } | null,
   exists: (path: string) => boolean,
   readFile: (path: string) => string,
 ): SeatGuidance | null {

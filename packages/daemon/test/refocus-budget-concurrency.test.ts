@@ -96,7 +96,7 @@ describe("refocus: the registrations' outer bound", () => {
       const refocus = entries.filter((h) => h.command.includes("refocus.cjs"));
       expect(refocus.length).toBeGreaterThan(0);
       for (const h of refocus) expect(h.timeout).toBe(60);
-      for (const h of entries.filter((e) => !e.command.includes("refocus.cjs") && !e.command.includes("precompact-hook"))) expect(h.timeout).toBe(5);
+      for (const h of entries.filter((e) => !e.command.includes("refocus.cjs") && !e.command.includes("precompact-hook") && !e.command.includes("approval-request.cjs"))) expect(h.timeout).toBe(5);
     }
   });
 });

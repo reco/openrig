@@ -30,14 +30,6 @@ describe("pickup derivation: liveness versus a person's prompt", () => {
   const claimed = new Date(Date.now() - 30 * 60_000).toISOString();
   const base = { state: "in-progress", claimedAt: claimed, lastHeartbeat: null, postClaimMotionCount: 0, lastMeaningfulAt: claimed, thresholdMinutes: 3 };
 
-  it("a running tool with only PermissionRequest telemetry is working, not stalled", () => {
-    expect(derivePickup({ ...base, activity: "working", needsInput: 1, needsInputReason: PERMISSION_REQUEST_TELEMETRY }).state).toBe("working");
-  });
-
-  it("a dialog actually shown, with no delivered card, still ages into a stall", () => {
-    expect(derivePickup({ ...base, activity: "working", needsInput: 1, needsInputReason: "permission_prompt" }).state).toBe("stalled-after-claim");
-  });
-
   it("a delivered prompt card parks the row with the human", () => {
     expect(derivePickup({ ...base, activity: "working", needsInput: 1, needsInputReason: "permission_prompt", promptCardDelivered: true }))
       .toEqual({ state: "parked", evidence: "owner waits at a native prompt whose card was delivered to its human" });

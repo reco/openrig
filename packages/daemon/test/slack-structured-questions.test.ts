@@ -299,11 +299,11 @@ describe("structured human questions (#193)", () => {
       }
     });
 
-    it("a row without a summary has no headline: the body starts the message", () => {
+    it("a row without a summary has no headline: the body follows the sender line", () => {
       const m = buildOutboundMessage({ qitemId: "q1", summary: null, body: "Status: all green." }, { sourceLabel: "rig" });
       expect(m.text).not.toContain("(no summary)");
-      expect(m.text.startsWith("Status: all green.")).toBe(true);
-      expect((m.blocks[0] as { text: { text: string } }).text.text).toBe("Status: all green.");
+      expect(m.text.startsWith("From rig\nStatus: all green.")).toBe(true);
+      expect((m.blocks[1] as { text: { text: string } }).text.text).toBe("Status: all green.");
     });
 
     it("keeps Slack formatting characters in agent text: only & < > are escaped", () => {

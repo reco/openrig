@@ -257,7 +257,6 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     profileFingerprint?: (path: string) => Promise<ProfileFingerprint>;
     verifyFilesystemPolicy?: CodexFilesystemVerifier;
     detectDaemonSupport?: CodexDaemonSupportDetector;
-    /** A shared Codex app-server daemon is running for that Codex home (a Codex without --no-daemon may attach to it). */
     sharedDaemonRunning?: (codexHome?: string) => boolean;
     readNetworkDefault?: CodexNetworkDefaultReader;
     codexLoginShell?: () => boolean;

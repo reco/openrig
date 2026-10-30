@@ -804,10 +804,10 @@ export class InboundRouter {
     if (who.requester) return { status: "refused", reason: "requester-cannot-answer" };
     const rootTs = clickedRootTs(payload);
     if (!rootTs) return { status: "ignored", reason: "unmapped-message" };
-    return this.confirm(who.source, offerQitemId, rootTs, payload.channel?.id, live, payload.container?.message_ts ?? payload.message?.ts);
+    return this.confirm(who.source, offerQitemId, rootTs, payload.channel?.id, live, payload.container?.message_ts ?? payload.message?.ts, payload.actions?.[0]?.action_ts);
   }
 
-  private async confirm(actorSession: string, offerQitemId: string, rootTs: string, channel: string | undefined, live: boolean, offerTs?: string): Promise<{ status: InboundDisposition; reason?: string }> {
+  private async confirm(actorSession: string, offerQitemId: string, rootTs: string, channel: string | undefined, live: boolean, offerTs?: string, actedTs?: string): Promise<{ status: InboundDisposition; reason?: string }> {
     const route = this.deps.resolveRoute?.({ type: "message", thread_ts: rootTs, channel });
     if (!route) return { status: "ignored", reason: "unmapped-message" };
     const offer = this.deps.confirmOffer?.({ offerQitemId, actorSession });
@@ -815,7 +815,7 @@ export class InboundRouter {
     const ownPostInThread = !!offerTs && this.deps.postedQitem?.(offerTs) === offerQitemId;
     if (offer.decisionQitemId !== route.correlationQitemId && !ownPostInThread) return { status: "ignored", reason: "offer-not-in-this-thread" };
     const previous = this.confirmChains.get(offer.decisionQitemId) ?? Promise.resolve();
-    const run = previous.catch(() => {}).then(() => this.confirmInTurn(actorSession, offerQitemId, route, channel, offerTs));
+    const run = previous.catch(() => {}).then(() => this.confirmInTurn(actorSession, offerQitemId, route, channel, offerTs, actedTs));
     this.confirmChains.set(offer.decisionQitemId, run);
     try {
       return await run;
@@ -826,7 +826,7 @@ export class InboundRouter {
 
   /** Runs only after any earlier Confirm on the same decision finished, so `decided` and `won`
    *  are read after that click's resolve and mark. */
-  private async confirmInTurn(actorSession: string, offerQitemId: string, route: { destination: string; tags?: string[] }, channel: string | undefined, offerTs: string | undefined): Promise<{ status: InboundDisposition; reason?: string }> {
+  private async confirmInTurn(actorSession: string, offerQitemId: string, route: { destination: string; tags?: string[] }, channel: string | undefined, offerTs: string | undefined, actedTs?: string): Promise<{ status: InboundDisposition; reason?: string }> {
     // A thread whose seat is the clicking human has no agent to tell: the answer would be a row to
     // themselves (posted back with a new Confirm). Nothing is created.
     if (route.destination.split("@")[0] === actorSession.split("@")[0]) {
@@ -858,7 +858,7 @@ export class InboundRouter {
         summary: "Founder via Slack: confirmed your reading",
         body: `Confirmed: ${offer.reading}\n\n---\nIn reply to: ${offer.decisionQitemId} (offer ${offerQitemId})\nRouted by openrig slack-inbound (Confirm click).`,
       });
-      resolution = settled(await this.deps.resolveHumanReply?.({ qitemId: offer.decisionQitemId, actorSession, decision: offer.reading }));
+      resolution = settled(await this.deps.resolveHumanReply?.({ qitemId: offer.decisionQitemId, actorSession, decision: offer.reading, messageTs: actedTs }));
     } catch (e) {
       this.deps.log?.(`confirm continuation failed offer=${offerQitemId}: ${(e as Error).message}`);
       return { status: "handler-failed", reason: "confirm-continuation-failed" };
@@ -904,8 +904,8 @@ export class InboundRouter {
     this.inflight.add(key);
     try {
       const r = target.kind === "confirm"
-        ? await this.confirm(who.source, target.offerQitemId, target.threadTs, channel, live, messageTs)
-        : await this.answerByReaction(who.source, target, channel, key, messageTs);
+        ? await this.confirm(who.source, target.offerQitemId, target.threadTs, channel, live, messageTs, ev.event_ts)
+        : await this.answerByReaction(who.source, target, channel, key, messageTs, ev.event_ts);
       // A reaction left to upstream's reaction row is not handled here: its own retry must still reach that path.
       if (r.status !== "handler-failed" && !UNCLAIMED_REACTION.has(r.reason ?? "")) this.deps.seen.mark(key, r.status);
       return r;
@@ -915,7 +915,7 @@ export class InboundRouter {
   }
 
 
-  private async answerByReaction(actorSession: string, target: Extract<ReactionTarget, { kind: "answer" }>, channel: string, key: string, messageTs: string): Promise<{ status: InboundDisposition; reason?: string }> {
+  private async answerByReaction(actorSession: string, target: Extract<ReactionTarget, { kind: "answer" }>, channel: string, key: string, messageTs: string, reactedTs?: string): Promise<{ status: InboundDisposition; reason?: string }> {
     const route = this.deps.resolveRoute?.({ type: "message", thread_ts: target.threadTs, channel });
     if (route?.correlationQitemId !== target.decisionQitemId) return { status: "ignored", reason: "not-the-current-decision" };
     let resolution: "resolved" | "already-resolved" | "not-applicable" | undefined;
@@ -929,7 +929,7 @@ export class InboundRouter {
         summary: `Founder via Slack: ✅ ${target.text.slice(0, 80)}`,
         body: `${target.text}\n\n---\nIn reply to: ${target.decisionQitemId}\nRouted by openrig slack-inbound (✅ reaction).`,
       });
-      resolution = settled(await this.deps.resolveHumanReply?.({ qitemId: target.decisionQitemId, actorSession, decision: target.text }));
+      resolution = settled(await this.deps.resolveHumanReply?.({ qitemId: target.decisionQitemId, actorSession, decision: target.text, messageTs: reactedTs }));
     } catch (e) {
       this.deps.log?.(`reaction continuation failed qitem=${target.decisionQitemId}: ${(e as Error).message}`);
       return { status: "handler-failed", reason: "reaction-continuation-failed" };

@@ -88,9 +88,8 @@ export function makeThreadRouteResolver(opts: {
           routeClass: "existing-thread",
         };
       }
-      // A thread with no agent behind it (the daemon's own alerts, other machinery, or a seat that is
-      // its own human, left by the Confirm self-loop): its replies go where an unrouted message goes.
-      if (mapping && sameMessage && ((opts.isAgentSeat && !opts.isAgentSeat(mapping.seat)) || (mapping.human && mapping.seat.split("@")[0] === mapping.human.split("@")[0]))) {
+      // A thread with no agent behind it (the daemon's own alerts, other machinery): its replies go where an unrouted message goes.
+      if (mapping && sameMessage && opts.isAgentSeat && !opts.isAgentSeat(mapping.seat)) {
         log(`inbound thread_ts=${threadTs} has no agent seat (${mapping.seat}) -> unrouted-signal to ${unrouted}`);
         return { destination: unrouted, tags: [...BASE_TAGS, "unrouted-signal", `thread-ts:${threadTs}`], routeClass: "unmapped-thread" };
       }

@@ -299,7 +299,7 @@ Examples:
       for (const h of humans) {
         const inbound = h.bindings.inboundResolvable || !h.bindings.primary ? "" : "  [outbound-only]";
         const primary = h.bindings.primary ? `primary ${h.bindings.primary.kind}:${h.bindings.primary.connectorRef}` : "no connector: Feed and Steering only";
-        console.log(`${h.entityId}  "${h.displayName}"  role=${h.role}  class=${h.deliveryClass}  ${h.availability}  bindings=${h.bindings.count} (${primary})  delivery=${h.deliveryReadiness.state}${inbound}`);
+        console.log(`${h.entityId}  "${h.displayName}"  ${h.role === "requester" ? "role=requester  " : ""}class=${h.deliveryClass}  ${h.availability}  bindings=${h.bindings.count} (${primary})  delivery=${h.deliveryReadiness.state}${inbound}`);
         if (!h.deliveryReadiness.ready) console.log(`  delivery: ${h.deliveryReadiness.reason}${h.deliveryReadiness.nextAction ? `; next: ${h.deliveryReadiness.nextAction}` : ""}`);
         console.log(`  ${"unknown" in h.quiet ? `quiet: unknown (${h.quiet.unknown})` : describeQuiet(h.quiet)}`);
       }

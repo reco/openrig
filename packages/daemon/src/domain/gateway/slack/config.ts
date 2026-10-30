@@ -126,7 +126,7 @@ export const DEFAULT_CONFIG: SlackConnectorConfig = {
   queueUrl: null,
   minimumLevelThatPosts: "NOTICE",
   minimumLevelThatInterrupts: "ALERT",
-  explicitAnswersOnly: true,
+  explicitAnswersOnly: false,
   staleReminderDays: 3,
   receipts: { received: "eyes", picked: "thinking_face", done: "white_check_mark" },
   extraChannels: [],

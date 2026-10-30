@@ -36,7 +36,6 @@ interface CodexResumeOptions {
   exec?: (cmd: string) => Promise<string>;
   /** #69: whether the installed Codex supports --no-daemon; absent keeps the existing invocation. */
   detectDaemonSupport?: CodexDaemonSupportDetector;
-  /** A shared Codex app-server daemon is running for that Codex home (a Codex without --no-daemon may attach to it). */
   sharedDaemonRunning?: (codexHome?: string) => boolean;
   /** #275: Codex's own answer on the plain floor's network default; absent keeps the existing invocation. */
   readNetworkDefault?: CodexNetworkDefaultReader;

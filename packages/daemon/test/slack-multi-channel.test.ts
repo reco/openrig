@@ -37,7 +37,7 @@ describe("several Slack channels", () => {
     repo = new QueueRepository(db, bus, { loadHumanRegistry: () => registry });
     const secrets = join(home, "fake.env");
     writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
-    saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-MAIN", inboundDestination: "advisor@kernel", extraChannels: [{ id: "C-PSA", inboundDestination: "psa-dev@psa" }], secretsEnvFile: secrets }, home);
+    saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-MAIN", inboundDestination: "advisor@kernel", extraChannels: [{ id: "C-PSA", inboundDestination: "psa-dev@psa" }], secretsEnvFile: secrets, explicitAnswersOnly: true }, home);
     posts = [];
     reactions = [];
     counted = [];

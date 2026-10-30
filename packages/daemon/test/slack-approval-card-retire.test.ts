@@ -36,7 +36,7 @@ describe("an expired or canceled approval card loses its buttons", () => {
     db = createDb(); migrate(db, ALL_MIGRATIONS);
     repo = new QueueRepository(db, new EventBus(db), { loadHumanRegistry: () => registry });
     const secrets = join(home, "fake.env"); writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\n");
-    saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-MAIN", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE" }, home);
+    saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-MAIN", secretsEnvFile: secrets, minimumLevelThatInterrupts: "NOTICE", explicitAnswersOnly: true }, home);
     posts = []; updates = []; failUpdates = 0; failWith = "ratelimited";
     const wire = buildSlackGatewayWire({
       home, queueRepo: repo, registry: { loadHumanRegistry: () => registry, resolveSlackHandle }, requestSweepIntervalMs: 50,
