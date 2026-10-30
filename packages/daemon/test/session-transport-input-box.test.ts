@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
-import { SessionTransport, type SendOpts, type SendResult } from "../src/domain/session-transport.js";
+import { ROUTED_MESSAGE_PREFIX, SessionTransport, type SendOpts, type SendResult } from "../src/domain/session-transport.js";
 import { AgentActivityStore } from "../src/domain/agent-activity-store.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
@@ -174,7 +174,10 @@ function phasedTmux(script: Script) {
   const tmux = {
     hasSession: async () => true,
     probeSession: async () => ({ state: "present" as const }),
-    sendText: async (): Promise<TmuxResult> => { log.push("sendText"); phase = "afterPaste"; script.onPaste?.(); return { ok: true }; },
+    sendText: async (_target: string, text: string): Promise<TmuxResult> => {
+      if (text === ROUTED_MESSAGE_PREFIX) return { ok: true };
+      log.push("sendText"); phase = "afterPaste"; script.onPaste?.(); return { ok: true };
+    },
     sendKeys: async (_target: string, keys: string[]): Promise<TmuxResult> => {
       log.push(`sendKeys:${keys.join(",")}`);
       phase = "afterEnter";
