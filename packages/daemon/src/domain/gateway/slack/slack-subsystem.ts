@@ -22,7 +22,7 @@ import fs from "node:fs";
 import { buildInProcessWire, type GatewayWire, type SubsystemDeliverFn } from "../gateway-subsystem.js";
 import { DispatchBuffer } from "../dispatch-buffer.js";
 import { botInboxProblems } from "./bot-inbox.js";
-import { addReaction, callWebApi, countChannelHumans, downloadPrivateFile, isSlackHost, lookupBotApp, postChatMessage, removeReaction, updateChatMessage } from "./slack-api.js";
+import { addReaction, callWebApi, countChannelHumans, downloadPrivateFile, isSlackHost, lookupBotApp, lookupUserName, postChatMessage, removeReaction, updateChatMessage } from "./slack-api.js";
 import { channelsOf, effectiveInboundDestination, inboundDestinationNote, loadConfig } from "./config.js";
 import { resolveDefaultReceiver } from "../../default-receiver.js";
 import { resolveSecret } from "./secrets.js";
@@ -335,6 +335,17 @@ function lifecycleFloorMs(home: string): number {
     fs.writeFileSync(file, `${now}\n`);
     return now;
   }
+}
+
+function cachedUserName(token: string, fetchImpl?: FetchImpl): (user: string) => Promise<string | null> {
+  const names = new Map<string, string>();
+  return async (user) => {
+    const known = names.get(user);
+    if (known) return known;
+    const name = await lookupUserName(token, user, fetchImpl);
+    if (name) names.set(user, name);
+    return name;
+  };
 }
 
 function stateDir(home: string): string {
@@ -1779,6 +1790,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       destination: inbound.destination,
       reactions: cfg.reactions === "off" ? "off" : "route",
       resolveSender,
+      ...(bot ? { userName: cachedUserName(bot, opts.fetchImpl) } : {}),
       // S10 — deterministic thread routing: mapped thread → exactly the mapped seat; unmapped
       // or human-initiated → the configured orchestrator slot as an unrouted-signal row.
       resolveRoute: makeThreadRouteResolver({

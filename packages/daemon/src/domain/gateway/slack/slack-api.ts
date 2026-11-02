@@ -185,6 +185,14 @@ export async function getGrantedScopes(
 
 /** Named-bot delivery: the app a bot's posts belong to (`bots.info`, needs `users:read`). A transport,
  *  rate-limit or server failure is retryable; Slack's own refusal (`missing_scope`, `bot_not_found`) is not. */
+/** A Slack user's display name (else real name, else handle) from users.info; null when Slack cannot say. */
+export async function lookupUserName(token: string, user: string, fetchImpl: FetchImpl = defaultFetch): Promise<string | null> {
+  const r = await callWebApi("users.info", token, { user }, fetchImpl, undefined, "get-query");
+  if (!r.ok) return null;
+  const u = (r.json.user ?? {}) as { name?: string; profile?: { display_name?: string; real_name?: string } };
+  return u.profile?.display_name || u.profile?.real_name || u.name || null;
+}
+
 export async function lookupBotApp(
   token: string,
   botId: string,

@@ -840,6 +840,7 @@ export class SeatHandoverService {
         ...(node.runtime === "codex" ? { model: { requested: node.model?.trim() || null, predecessorCompared: false as const } } : {}),
         ...(emptyChainReason ? { emptyChainReason } : {}) };
       const delivered = await this.deliverRebuildPrimingPacket(launch.tmuxSession, {
+        runtime: node.runtime,
         seatRef: input.seatRef,
         reason,
         departingSession: latestSession.session_name,
@@ -1608,6 +1609,7 @@ export class SeatHandoverService {
   private async deliverRebuildPrimingPacket(
     successorSession: string,
     info: {
+      runtime: string | null;
       seatRef: string;
       reason: string;
       departingSession: string;

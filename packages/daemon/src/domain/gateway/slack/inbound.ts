@@ -199,6 +199,28 @@ export function shortReply(text: string | undefined): string | null {
   return SHORT_REPLY.exec(text ?? "")?.[1]?.toLowerCase() ?? null;
 }
 
+const SLACK_TOKEN = /<([^<>|]*)(?:\|([^<>]*))?>/g;
+const unescapeSlack = (text: string) => text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+
+/** The user ids a Slack message mentions, in `<@U…>` or `<@U…|label>` form. */
+export function mentionedUsers(text: string): string[] {
+  return [...new Set([...text.matchAll(SLACK_TOKEN)].map(([, target]) => target!).filter((t) => t.startsWith("@")).map((t) => t.slice(1)))];
+}
+
+/** Slack mrkdwn as a person reads it: mentions as @name (else their label, else the id), channels as #name, links as
+ *  `text (url)`, special mentions as @here, and Slack's &lt; &gt; &amp; as the characters typed. */
+export function readableSlackText(text: string, names: ReadonlyMap<string, string>): string {
+  const readable = text.replace(SLACK_TOKEN, (_, target: string, label?: string) => {
+    if (target.startsWith("@")) return `@${names.get(target.slice(1)) ?? label ?? target.slice(1)}`;
+    if (target.startsWith("#")) return `#${label ?? target.slice(1)}`;
+    if (/^!(here|channel|everyone)$/.test(target)) return `@${target.slice(1)}`;
+    if (target.startsWith("!")) return label ?? target.slice(1);
+    if (!label || label === target || `mailto:${label}` === target) return label ?? target;
+    return `${label} (${target})`;
+  });
+  return unescapeSlack(readable);
+}
+
 export function shouldIngest(ev: SlackEvent): boolean {
   return ingestDecision(ev).ingest;
 }
@@ -239,6 +261,9 @@ export interface InboundDeps {
   /** A6 v3 registration gate. Resolves ev.user -> a registered human (or refuses). Injected so
    *  this core stays pure/testable; the subsystem wires it via the daemon human-registry resolver. */
   resolveSender: (slackUserId: string, channel?: string) => InboundSenderResolution;
+  /** A Slack user's display name for a mention in a stored message; null when Slack cannot say. Absent: mentions keep
+   *  their label or id. */
+  userName?: (slackUserId: string) => Promise<string | null>;
   /** S10 thread routing (deterministic, zero inference): resolve the destination + tags for an
    *  admitted event. Absent → every event lands on the static `destination` (the pre-routing
    *  shape, and the fallback the tests pin). */
@@ -326,6 +351,15 @@ export class InboundRouter {
     this.relayAttemptsInFlight++;
     try { return await this.deps.forward!.send(host, env); }
     finally { this.relayAttemptsInFlight--; }
+  }
+
+  private async userNames(users: string[]): Promise<Map<string, string>> {
+    const names = new Map<string, string>();
+    for (const user of users) {
+      const name = await this.deps.userName?.(user).catch(() => null);
+      if (name) names.set(user, name);
+    }
+    return names;
   }
 
   /** The row's summary names the person who actually wrote (their registered address); its tags stay as they were. */
@@ -464,7 +498,10 @@ export class InboundRouter {
       const cancel = acts ? this.replyCancel(ev, route.correlationQitemId) : null;
       const replyTags = this.replyTags(route.correlationQitemId, decision, cancel);
       const sender = who.requester ? `Requester ${who.source} (untrusted)` : who.source;
-      const { summary, body: incomingBody, attachmentsChars } = this.summaryOf(ev, sender, transfer, route.correlationQitemId, who.sharedChannel?.envelope, replyTags.includes("conversation"));
+      const mentions = mentionedUsers(ev.text ?? "");
+      const names = mentions.length && this.deps.userName ? await this.userNames(mentions) : new Map<string, string>();
+      const readable = ev.text ? { ...ev, text: readableSlackText(ev.text, names) } : ev;
+      const { summary, body: incomingBody, attachmentsChars } = this.summaryOf(readable, sender, transfer, route.correlationQitemId, who.sharedChannel?.envelope, replyTags.includes("conversation"));
       // A person's top-level message (not a reply in a thread) becomes the root its answer lands under.
       const mintsRoot = Boolean(this.deps.mintThread && ev.channel && (!ev.thread_ts || ev.thread_ts === ev.ts));
       const correlated = route.correlationQitemId ? this.deps.queue.getQitem?.(route.correlationQitemId) : null;
