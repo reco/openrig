@@ -211,11 +211,11 @@ export function mentionedUsers(text: string): string[] {
  *  `text (url)`, special mentions as @here, and Slack's &lt; &gt; &amp; as the characters typed. */
 export function readableSlackText(text: string, names: ReadonlyMap<string, string>): string {
   const readable = text.replace(SLACK_TOKEN, (_, target: string, label?: string) => {
-    if (target.startsWith("@")) return `@${names.get(target.slice(1)) ?? label ?? target.slice(1)}`;
-    if (target.startsWith("#")) return `#${label ?? target.slice(1)}`;
+    if (target.startsWith("@")) return `@${names.get(target.slice(1)) || label || target.slice(1)}`;
+    if (target.startsWith("#")) return `#${label || target.slice(1)}`;
     if (/^!(here|channel|everyone)$/.test(target)) return `@${target.slice(1)}`;
-    if (target.startsWith("!")) return label ?? target.slice(1);
-    if (!label || label === target || `mailto:${label}` === target) return label ?? target;
+    if (target.startsWith("!")) return label || target.slice(1);
+    if (!label || label === target || `mailto:${label}` === target) return label || target;
     return `${label} (${target})`;
   });
   return unescapeSlack(readable);

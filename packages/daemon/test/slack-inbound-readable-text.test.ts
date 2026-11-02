@@ -15,7 +15,7 @@ import { lookupUserName } from "../src/domain/gateway/slack/slack-api.js";
 it("turns Slack mrkdwn tokens into plain readable text", () => {
   const names = new Map([["U0AVB6WR230", "Reco"]]);
   expect(readableSlackText("hey <@U0AVB6WR230> and <@U0OTHER|sam>, also <@U0GONE>", names)).toBe("hey @Reco and @sam, also @U0GONE");
-  expect(readableSlackText("see <#C0C76TB8R2M|psa> and <#C0NONAME>", names)).toBe("see #psa and #C0NONAME");
+  expect(readableSlackText("see <#C0C76TB8R2M|psa> and <#C0NONAME> and <#C0EMPTY|>, <@U0EMPTY|>", names)).toBe("see #psa and #C0NONAME and #C0EMPTY, @U0EMPTY");
   expect(readableSlackText("docs <https://example.com/a?b=1&amp;c=2|the guide> or <https://x.dev>", names))
     .toBe("docs the guide (https://example.com/a?b=1&c=2) or https://x.dev");
   expect(readableSlackText("mail <mailto:a@b.co|a@b.co>, <!here> <!subteam^S01|@devs>", names)).toBe("mail a@b.co, @here @devs");
