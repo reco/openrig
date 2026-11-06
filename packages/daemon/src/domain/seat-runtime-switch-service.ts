@@ -284,10 +284,10 @@ export class SeatRuntimeSwitchService {
     const binding = sessionRegistry.getBindingForNode(node.id);
     const sessionName = binding?.tmuxSession ?? null;
     const base = { seat: { ref: seatRef, nodeId: node.id, rigId: node.rigId, session: sessionName ?? "" }, from: node.runtime, to: target, ...(input.clearAccountHome ? { accountHome: null } : {}) };
+    if (node.runtime === target && input.cwd !== undefined) {
+      return refuse("runtime_unchanged", `${seatRef} already runs ${target}.`, "Move a seat within one runtime with rig seat set-cwd.");
+    }
     if (node.runtime === target && input.accountHome === undefined && !(input.clearAccountHome && node.accountHome)) {
-      if (input.cwd !== undefined) {
-        return refuse("runtime_unchanged", `${seatRef} already runs ${target}.`, "Move a seat within one runtime with rig seat set-cwd.");
-      }
       if (explicit.model || explicit.effort || explicit.codexConfigProfile || explicit.permissionMode) {
         return refuse("runtime_unchanged", `${seatRef} already runs ${target}.`,
           "Change settings within one runtime with rig seat set-model, rig seat set-effort or rig seat set-permissions.");
@@ -368,7 +368,7 @@ export class SeatRuntimeSwitchService {
       ...base,
       ...(input.accountHome !== undefined ? { accountHome: input.accountHome } : {}),
       ...(input.accountToken ? { accountToken: input.accountToken } : {}),
-      ...(placed !== node ? { cwd: { from: node.cwd ?? null, to: placed.cwd! } } : {}),
+      ...(input.cwd !== undefined ? { cwd: { from: node.cwd ?? null, to: placed.cwd! } } : {}),
       settings: materials.settings,
       permission: selection ? { mode: selection.mode, source: "explicit" } : { mode: "inherit", source: "member_or_rig_policy" },
       dropped,

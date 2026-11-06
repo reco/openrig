@@ -944,6 +944,14 @@ describe("live seat runtime switch", () => {
     expect(db.prepare("SELECT 1 FROM events WHERE type = 'node.cwd_changed'").get()).toBeUndefined();
   });
 
+  it("refuses a working directory on the same runtime, even with an account home, in favour of set-cwd", async () => {
+    const accountHome = path.join(home, "api-account");
+    fs.mkdirSync(accountHome);
+    const result = await service().setRuntime({ seatRef: SEAT, runtime: "codex", reason: "QA", accountHome, cwd: path.join(home, "imago") });
+    expect(result).toMatchObject({ ok: false, code: "runtime_unchanged", guidance: expect.stringMatching(/set-cwd/) });
+    expect(fs.existsSync(path.join(home, "imago"))).toBe(false);
+  });
+
   it("refuses a relative or root working directory before anything starts", async () => {
     for (const cwd of ["relative/dir", "/"]) {
       const result = await service().setRuntime({ seatRef: SEAT, runtime: "claude-code", reason: "QA", cwd });

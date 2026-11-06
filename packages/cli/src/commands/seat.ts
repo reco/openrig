@@ -1466,8 +1466,10 @@ A seat can switch itself (its CLI may end when it retires; the daemon finishes).
                 { timeoutMs: opts.dryRun ? 30_000 : ((confirmTimeoutSeconds ?? 180) + 120) * 1000 });
             })();
       } catch (err) {
-        if ((opts.accountHome !== undefined || opts.clearAccountHome) && !switchRequested) {
-          const refusal = { ok: false, code: "account_home_preflight_failed", message: "The read-only account-home preflight failed; no switch was requested." };
+        if ((opts.accountHome !== undefined || opts.clearAccountHome || opts.cwd !== undefined) && !switchRequested) {
+          const refusal = opts.accountHome !== undefined || opts.clearAccountHome
+            ? { ok: false, code: "account_home_preflight_failed", message: "The read-only account-home preflight failed; no switch was requested." }
+            : { ok: false, code: "cwd_preflight_failed", message: "The read-only working-directory preview failed; no switch was requested." };
           if (opts.json) console.log(JSON.stringify(refusal)); else console.error(refusal.message);
           process.exitCode = 1; return;
         }
