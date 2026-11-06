@@ -1360,6 +1360,7 @@ resume/successor launch reads it at call time. Examples:
     .option("--token-file <path>", "With a Claude account home, its required subscription token reference")
     .option("--account-label <label>", "With --token-file, the selected account's label")
     .option("--permission-mode <mode>", "Target native permission choice; default: inherit the seat's member and rig policy")
+    .option("--cwd <directory>", "Absolute working directory the successor starts in; the seat keeps it once the switch commits")
     .option("--confirm-timeout <seconds>", "How long the successor has to confirm the handover (default 180)")
     .option("--dry-run", "Show the plan (settings, what is cleared, costs) without changing anything")
     .option("--confirm <switch-id>", "For the staged successor only: confirm the handover (with --note)")
@@ -1393,7 +1394,7 @@ A seat can switch itself (its CLI may end when it retires; the daemon finishes).
   rig seat status dev-impl@my-rig            # an open or interrupted switch shows here
   rig seat set-runtime dev-impl@my-rig --recover`)
     .action(async (seat: string, opts: { runtime?: string; reason?: string; model?: string; effort?: string; codexConfigProfile?: string;
-      permissionMode?: string; accountHome?: string; clearAccountHome?: boolean; tokenFile?: string; accountLabel?: string; confirmTimeout?: string; dryRun?: boolean; confirm?: string; note?: string; recover?: boolean; json?: boolean }) => {
+      permissionMode?: string; accountHome?: string; clearAccountHome?: boolean; tokenFile?: string; accountLabel?: string; cwd?: string; confirmTimeout?: string; dryRun?: boolean; confirm?: string; note?: string; recover?: boolean; json?: boolean }) => {
       if (opts.clearAccountHome && (opts.accountHome !== undefined || opts.tokenFile !== undefined || opts.accountLabel !== undefined || opts.runtime === undefined)) {
         console.error("Use --clear-account-home with --runtime and without --account-home, --token-file or --account-label.");
         process.exitCode = 1; return;
@@ -1444,16 +1445,21 @@ A seat can switch itself (its CLI may end when it retires; the daemon finishes).
                 ...(opts.accountHome !== undefined ? { accountHome: opts.accountHome } : {}),
                 ...(opts.clearAccountHome ? { clearAccountHome: true } : {}),
                 ...(opts.tokenFile !== undefined ? { tokenFile: opts.tokenFile, accountLabel: opts.accountLabel ?? "selected-account" } : {}),
+                ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
                 ...(confirmTimeoutSeconds !== undefined ? { confirmTimeoutSeconds } : {}),
               };
-              if (opts.accountHome !== undefined || opts.clearAccountHome) {
+              if (opts.accountHome !== undefined || opts.clearAccountHome || opts.cwd !== undefined) {
                 const preview = await client.post<Record<string, unknown>>(base, { ...body, dryRun: true }, { timeoutMs: 30_000 });
                 const token = opts.tokenFile ? { label: opts.accountLabel ?? "selected-account", tokenFile: opts.tokenFile } : undefined;
-                if (!accountHomePlanMatches(preview.data, opts.clearAccountHome ? null : opts.accountHome!, token)) {
+                if ((opts.accountHome !== undefined || opts.clearAccountHome) && !accountHomePlanMatches(preview.data, opts.clearAccountHome ? null : opts.accountHome!, token)) {
                   return { status: 409, data: { ok: false, code: "account_home_switch_unavailable",
                     message: preview.data["message"] ?? "The daemon did not acknowledge the selected account home and token. No switch was requested." } };
                 }
-                if (opts.dryRun) return preview;
+                if (opts.cwd !== undefined && preview.status < 400 && typeof (preview.data["cwd"] as { to?: unknown } | undefined)?.to !== "string") {
+                  return { status: 409, data: { ok: false, code: "cwd_switch_unavailable",
+                    message: "The daemon did not acknowledge the new working directory. No switch was requested." } };
+                }
+                if (opts.dryRun || preview.status >= 400) return preview;
               }
               switchRequested = true;
               return client.post<Record<string, unknown>>(base, body,
@@ -1502,6 +1508,8 @@ A seat can switch itself (its CLI may end when it retires; the daemon finishes).
       else console.log(`Switched ${name} from ${String(data["from"])} to ${String(data["to"])} (switch ${String(data["switchId"])}).`);
       if (data["accountHome"] === null) console.log("Selected account home: configured defaults (member/rig, then daemon, then native)");
       else if (data["accountHome"]) console.log(`Selected account home: ${String(data["accountHome"])}`);
+      const cwd = data["cwd"] as { from: string | null; to: string } | undefined;
+      if (cwd) console.log(`Working directory: ${cwd.from ?? "none"} -> ${cwd.to} (the successor starts there; the seat keeps it once the switch commits)`);
       const accountToken = data["accountToken"] as { label: string; tokenFile: string } | undefined;
       if (accountToken) console.log(`Claude token reference: ${accountToken.label}, read from ${accountToken.tokenFile} at launch`);
       console.log(`Settings on ${String(data["to"])}:`);

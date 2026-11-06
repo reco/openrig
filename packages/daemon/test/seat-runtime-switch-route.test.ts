@@ -38,6 +38,7 @@ describe("the runtime switch routes", () => {
     [{ runtime: 7, reason: "x" }, /runtime must be a string/],
     [{ runtime: "claude-code", reason: "x", dryRun: "yes" }, /dryRun must be true or false/],
     [{ runtime: "claude-code", reason: "x", confirmTimeoutSeconds: 5 }, /from 10 to 3600/],
+    [{ runtime: "claude-code", reason: "x", cwd: 3 }, /cwd must be a string/],
     [[], /must be a JSON object/],
   ])("a malformed request %j is refused with the field named, before the seat is looked at", async (body, message) => {
     const { status, body: result } = await post(`set-runtime/${encodeURIComponent(SEAT)}`, body);

@@ -82,6 +82,19 @@ describe("rig seat set-runtime", () => {
     expect(calls[0]!.body).toMatchObject({ dryRun: true });
   });
 
+  it("moves the working directory with the switch only when the daemon's preview acknowledges it", async () => {
+    const old = await run({ status: 200, data: plan }, ["dev.impl@my-rig", "--runtime", "claude-code", "--cwd", "/work/imago", "--reason", "QA", "--json"]);
+    expect(old.exitCode).toBe(1);
+    expect(old.calls).toHaveLength(1);
+    expect(old.calls[0]!.body).toMatchObject({ cwd: "/work/imago", dryRun: true });
+    expect(JSON.parse(old.logs[0]!)).toMatchObject({ code: "cwd_switch_unavailable" });
+
+    const placed = { ...plan, cwd: { from: "/work/browser-jobs", to: "/work/imago" } };
+    const human = await run({ status: 200, data: placed }, ["dev.impl@my-rig", "--runtime", "claude-code", "--cwd", "/work/imago", "--reason", "QA", "--dry-run"]);
+    expect(human.calls).toHaveLength(1);
+    expect(human.logs.join("\n")).toContain("Working directory: /work/browser-jobs -> /work/imago");
+  });
+
   it("selects the successor's account home in the same runtime-switch request", async () => {
     const { calls, exitCode } = await run({ status: 200, data: { ...plan, accountHome: "/accounts/claude-api" } }, ["dev.impl@my-rig", "--runtime", "claude-code",
       "--account-home", "/accounts/claude-api", "--reason", "Use API budget", "--json", "--dry-run"]);

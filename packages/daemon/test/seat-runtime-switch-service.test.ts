@@ -918,6 +918,40 @@ describe("live seat runtime switch", () => {
     expect(grants.standing(old.grantId)).toBe("current");
   });
 
+  it("a switch with a new working directory starts the successor there and moves the seat's cwd only at commit", async () => {
+    const project = path.join(fs.realpathSync(home), "imago");
+    const svc = service();
+    successorConfirms(svc);
+    const preview = await svc.setRuntime({ seatRef: SEAT, runtime: "claude-code", reason: "QA on Claude", cwd: project, dryRun: true });
+    expect(preview).toMatchObject({ ok: true, dryRun: true, cwd: { from: "/project", to: project } });
+    expect((db.prepare("SELECT cwd FROM nodes WHERE id = ?").get(nodeId) as { cwd: string }).cwd).toBe("/project");
+
+    const result = await svc.setRuntime({ seatRef: SEAT, runtime: "claude-code", reason: "QA on Claude", cwd: project });
+
+    expect(result).toMatchObject({ ok: true, changed: true, to: "claude-code", cwd: { from: "/project", to: project } });
+    const claude = svc["deps"].runtimeAdapters!["claude-code"]!;
+    expect((claude.launchHarness as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toMatchObject({ cwd: project });
+    expect((db.prepare("SELECT cwd FROM nodes WHERE id = ?").get(nodeId) as { cwd: string }).cwd).toBe(project);
+    const moved = db.prepare("SELECT payload FROM events WHERE type = 'node.cwd_changed'").get() as { payload: string };
+    expect(JSON.parse(moved.payload)).toMatchObject({ nodeId, from: "/project", to: project, reason: "QA on Claude" });
+  });
+
+  it("an unconfirmed switch with a new working directory keeps the seat's cwd", async () => {
+    const project = path.join(home, "imago");
+    const result = await service().setRuntime({ seatRef: SEAT, runtime: "claude-code", reason: "QA on Claude", cwd: project, confirmTimeoutMs: 10_000 });
+    expect(result).toMatchObject({ ok: false, code: "runtime_switch_failed", committed: false });
+    expect((db.prepare("SELECT cwd FROM nodes WHERE id = ?").get(nodeId) as { cwd: string }).cwd).toBe("/project");
+    expect(db.prepare("SELECT 1 FROM events WHERE type = 'node.cwd_changed'").get()).toBeUndefined();
+  });
+
+  it("refuses a relative or root working directory before anything starts", async () => {
+    for (const cwd of ["relative/dir", "/"]) {
+      const result = await service().setRuntime({ seatRef: SEAT, runtime: "claude-code", reason: "QA", cwd });
+      expect(result).toMatchObject({ ok: false, code: "invalid_runtime_settings" });
+    }
+    expect(fakeTmux.createSession).not.toHaveBeenCalled();
+  });
+
   it("without a confirmation in time nothing changes: the current occupant keeps the seat and its claim, and the staged successor is retired", async () => {
     const claimed = await queueRepo.create({ sourceSession: "orch-lead@seat-rig", destinationSession: SEAT, body: "review" });
     queueRepo.claim({ qitemId: claimed.qitemId, destinationSession: SEAT });

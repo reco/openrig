@@ -354,7 +354,7 @@ seatRoutes.post("/set-runtime/:seatRef", async (c) => {
   const body = parsed as Record<string, unknown>;
   const text = (key: string): string | undefined | null => body[key] === undefined ? undefined : typeof body[key] === "string" ? body[key] as string : null;
   const fields = { runtime: text("runtime"), reason: text("reason"), model: text("model"), effort: text("effort"),
-    codexConfigProfile: text("codexConfigProfile"), permissionMode: text("permissionMode"), accountHome: text("accountHome"), accountLabel: text("accountLabel"), tokenFile: text("tokenFile") };
+    codexConfigProfile: text("codexConfigProfile"), permissionMode: text("permissionMode"), accountHome: text("accountHome"), accountLabel: text("accountLabel"), tokenFile: text("tokenFile"), cwd: text("cwd") };
   const wrong = Object.entries(fields).find(([, value]) => value === null);
   if (wrong) return c.json({ ok: false, code: "invalid_runtime_settings", message: `${wrong[0]} must be a string.` }, 400);
   if (body["dryRun"] !== undefined && typeof body["dryRun"] !== "boolean") {
@@ -377,6 +377,7 @@ seatRoutes.post("/set-runtime/:seatRef", async (c) => {
     ...(body["clearAccountHome"] === true ? { clearAccountHome: true } : {}),
     ...(fields.tokenFile !== undefined ? { accountToken: { label: fields.accountLabel ?? "selected-account", tokenFile: fields.tokenFile! } } : {}),
     ...(typeof timeout === "number" ? { confirmTimeoutMs: timeout * 1000 } : {}),
+    ...(fields.cwd !== undefined ? { cwd: fields.cwd! } : {}),
   });
   if (result.ok) return c.json(result, "recoveryPending" in result && result.recoveryPending ? 202 : 200);
   return c.json(result, (RUNTIME_SWITCH_STATUS[result.code] ?? 409) as 400);

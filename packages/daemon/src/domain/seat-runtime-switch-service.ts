@@ -100,6 +100,8 @@ export interface SetRuntimeInput {
   permissionMode?: string;
   /** How long the successor has to confirm the handover. */
   confirmTimeoutMs?: number;
+  /** The seat's new working directory: the successor starts there and the seat keeps it once the switch commits. */
+  cwd?: string;
 }
 
 export interface RuntimeSwitchRefusal {
@@ -122,6 +124,7 @@ export interface RuntimeSwitchPlan {
   to: string;
   accountHome?: string | null;
   accountToken?: ClaudeSeatTokenRef;
+  cwd?: { from: string | null; to: string };
   settings: RuntimeSwitchMaterials["settings"];
   permission: { mode: string; source: "explicit" | "member_or_rig_policy" };
   dropped: RuntimeSwitchMaterials["dropped"];
@@ -233,6 +236,10 @@ export class SeatRuntimeSwitchService {
     if (target !== "codex" && explicit.codexConfigProfile) {
       return refuse("invalid_runtime_settings", "--codex-config-profile applies only when switching to Codex.");
     }
+    if (input.cwd !== undefined && (typeof input.cwd !== "string" || !nodePath.isAbsolute(input.cwd) || /[\0\r\n]/.test(input.cwd)
+      || nodePath.resolve(input.cwd) === nodePath.parse(nodePath.resolve(input.cwd)).root)) {
+      return refuse("invalid_runtime_settings", "cwd must be an absolute project directory on one line, not a filesystem root.");
+    }
 
     const { db, rigRepo, sessionRegistry, tmuxAdapter: tmux } = this.deps;
     const status = new SeatStatusService({ rigRepo }).getStatus(input.seatRef);
@@ -278,14 +285,27 @@ export class SeatRuntimeSwitchService {
     const sessionName = binding?.tmuxSession ?? null;
     const base = { seat: { ref: seatRef, nodeId: node.id, rigId: node.rigId, session: sessionName ?? "" }, from: node.runtime, to: target, ...(input.clearAccountHome ? { accountHome: null } : {}) };
     if (node.runtime === target && input.accountHome === undefined && !(input.clearAccountHome && node.accountHome)) {
+      if (input.cwd !== undefined) {
+        return refuse("runtime_unchanged", `${seatRef} already runs ${target}.`, "Move a seat within one runtime with rig seat set-cwd.");
+      }
       if (explicit.model || explicit.effort || explicit.codexConfigProfile || explicit.permissionMode) {
         return refuse("runtime_unchanged", `${seatRef} already runs ${target}.`,
           "Change settings within one runtime with rig seat set-model, rig seat set-effort or rig seat set-permissions.");
       }
       return { ok: true, dryRun: !!input.dryRun, changed: false, ...base };
     }
-    if (input.accountHome !== undefined && target === "claude-code" && node.cwd) {
-      const problem = isolatedClaudeAccountProblem(input.accountHome, node.cwd, !!input.accountToken, input.accountToken?.kind === "api-key");
+    let cwd = node.cwd;
+    if (input.cwd !== undefined) {
+      try {
+        cwd = nodePath.resolve(input.cwd);
+        if (!input.dryRun) fs.mkdirSync(cwd, { recursive: true });
+        if (fs.existsSync(cwd)) cwd = fs.realpathSync(cwd);
+        if (fs.existsSync(cwd) && !fs.statSync(cwd).isDirectory()) throw new Error("it isn't a directory");
+      } catch (error) { return refuse("invalid_runtime_settings", `The working directory can't be used: ${(error as Error).message}; nothing changed.`); }
+    }
+    const placed = cwd === node.cwd ? node : { ...node, cwd };
+    if (input.accountHome !== undefined && target === "claude-code" && placed.cwd) {
+      const problem = isolatedClaudeAccountProblem(input.accountHome, placed.cwd, !!input.accountToken, input.accountToken?.kind === "api-key");
       if (problem) return refuse("invalid_runtime_settings", problem);
     }
     // An account change keeps this Pi seat's current model and effort unless explicitly changed.
@@ -331,9 +351,9 @@ export class SeatRuntimeSwitchService {
 
     let materials: RuntimeSwitchMaterials;
     try {
-      const saved = new SeatLifecycleService({ db, rigRepo, sessionRegistry, eventBus: this.deps.eventBus, tmuxAdapter: tmux }).readStartupContext(node.id, node.cwd!);
+      const saved = new SeatLifecycleService({ db, rigRepo, sessionRegistry, eventBus: this.deps.eventBus, tmuxAdapter: tmux }).readStartupContext(node.id, placed.cwd!);
       if (!saved.ok && node.agentRef) return refuse("runtime_target_unavailable", saved.refusal.message);
-      materials = planRuntimeSwitchMaterials({ db, node, rigName: status.status.rig_name, canonicalSession: sessionName!, runtime: target,
+      materials = planRuntimeSwitchMaterials({ db, node: placed, rigName: status.status.rig_name, canonicalSession: sessionName!, runtime: target,
         explicit, saved: saved.ok ? saved.context : null, claudeManagedBlockFile: rigRepo.getRigClaudeManagedBlockFile(node.rigId) ?? undefined,
         resolution: this.deps.materialResolution, openrigHome: this.deps.openrigHome });
     } catch (error) { return refuse("runtime_target_unavailable", (error as Error).message); }
@@ -348,6 +368,7 @@ export class SeatRuntimeSwitchService {
       ...base,
       ...(input.accountHome !== undefined ? { accountHome: input.accountHome } : {}),
       ...(input.accountToken ? { accountToken: input.accountToken } : {}),
+      ...(placed !== node ? { cwd: { from: node.cwd ?? null, to: placed.cwd! } } : {}),
       settings: materials.settings,
       permission: selection ? { mode: selection.mode, source: "explicit" } : { mode: "inherit", source: "member_or_rig_policy" },
       dropped,
@@ -356,7 +377,7 @@ export class SeatRuntimeSwitchService {
       warnings: materials.warnings,
     };
     if (input.dryRun) return { ok: true, dryRun: true, changed: true, ...plan };
-    return this.execute({ input: { ...input, reason }, node, seatRef, sessionName: sessionName!, predecessorPane: binding!.tmuxPane!,
+    return this.execute({ input: { ...input, reason }, node: placed, fromCwd: node.cwd ?? null, seatRef, sessionName: sessionName!, predecessorPane: binding!.tmuxPane!,
       predecessorGeneration: predecessorGeneration!, target, materials, selection, plan, restorePolicy: running[0]!.restorePolicy ?? node.restorePolicy ?? null });
   }
 
@@ -379,7 +400,7 @@ export class SeatRuntimeSwitchService {
 
   /** Stage and confirm the successor before commit; failed preparation retains the predecessor and records cleanup needs. */
   private async execute(ctx: {
-    input: SetRuntimeInput & { reason: string }; node: NonNullable<ReturnType<RigRepository["getRig"]>>["nodes"][number]; seatRef: string; sessionName: string;
+    input: SetRuntimeInput & { reason: string }; node: NonNullable<ReturnType<RigRepository["getRig"]>>["nodes"][number]; fromCwd: string | null; seatRef: string; sessionName: string;
     predecessorPane: string; predecessorGeneration: string; target: SwitchRuntime; materials: RuntimeSwitchMaterials;
     selection: NativePermissionSelection | null; plan: RuntimeSwitchPlan; restorePolicy: string | null;
   }): Promise<SetRuntimeResult> {
@@ -588,7 +609,7 @@ export class SeatRuntimeSwitchService {
 
   /** Atomically move runtime, account references and queue custody to the confirmed successor; pane recovery follows separately. */
   private commit(ctx: {
-    input: SetRuntimeInput & { reason: string }; node: NonNullable<ReturnType<RigRepository["getRig"]>>["nodes"][number]; sessionName: string;
+    input: SetRuntimeInput & { reason: string }; node: NonNullable<ReturnType<RigRepository["getRig"]>>["nodes"][number]; fromCwd: string | null; sessionName: string;
     predecessorPane: string; predecessorGeneration: string; target: SwitchRuntime; materials: RuntimeSwitchMaterials;
     selection: NativePermissionSelection | null; plan: RuntimeSwitchPlan; restorePolicy: string | null;
     id: string; successorGeneration: string; successorPane: string;
@@ -615,6 +636,11 @@ export class SeatRuntimeSwitchService {
         .run(target, materials.settings.model.value, target === "pi" && node.runtime === "pi" && ctx.input.effort === undefined ? node.effort ?? null : materials.settings.effort.value,
           target === "pi" && node.runtime === "pi" && ctx.input.effort === undefined ? readSeatEffort(db, node.id)?.choice ?? null : null, materials.settings.advisor.value, materials.settings.codexConfigProfile.value,
           ...(spec ? [spec.name, spec.version, spec.hash, spec.restorePolicy] : []), ctx.sessionName, at, node.id);
+      if (node.cwd !== ctx.fromCwd) {
+        if (!rigRepo.setNodeCwd(node.id, node.cwd!, ctx.fromCwd)) throw new Error("the seat's saved working directory changed during the switch");
+        notifications.push(eventBus.persistWithinTransaction({ type: "node.cwd_changed", rigId: node.rigId, nodeId: node.id, logicalId: node.logicalId,
+          from: ctx.fromCwd, to: node.cwd!, reason: ctx.input.reason, operator: ctx.input.requestedBy ?? null }));
+      }
       db.prepare("UPDATE nodes SET account_home = ?, claude_token_ref = CASE WHEN ? THEN ? ELSE claude_token_ref END WHERE id = ?")
         .run(ctx.input.accountHome ?? null, ctx.input.accountHome !== undefined || node.accountHome || (target !== node.runtime && (target === "pi" || node.runtime === "pi")) ? 1 : 0,
           ctx.input.accountToken ? JSON.stringify(ctx.input.accountToken) : null, node.id);
