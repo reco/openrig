@@ -8,6 +8,7 @@ import { callWebApi, type FetchImpl, type WebApiResult } from "./slack-api.js";
 import { budgetLeft, HISTORY, REPLIES, MethodBackoff, newRecoveryBudget } from "./recovery-budget.js";
 import { parsePostedStamp } from "./thread-seat-map.js";
 import { TYPED_REPLY_HINT, CHANNEL_REPLY_HINT, HUMAN_REQUIRED_REPLY_HINT, QUESTION_BLOCK_PREFIX, recommendationLabel, escapeSlackText, redactSecrets } from "./message.js";
+import { CARD_CLOSED_PREFIX, CARD_CLOSE_FAILED_PREFIX, REQUEST_CLOSED_PREFIX } from "./request-lifecycle.js";
 
 const UPDATE = "chat.update";
 const EDITED = "slack-ask-settled";
@@ -168,6 +169,7 @@ export class SlackAskSettlement {
     if (!item) return undefined;
     const after = transitions.filter((t) => t.transitionId > episode.transitionId && ![
       "slack-posted ", "slack-owner-notification-posted ", EDITED + " ", RATE_LIMIT + " ", UNAVAILABLE + " ",
+      REQUEST_CLOSED_PREFIX + " ", CARD_CLOSED_PREFIX + " ", CARD_CLOSE_FAILED_PREFIX + " ",
     ].some((prefix) => (t.transitionNote ?? "").startsWith(prefix)));
     const make = (t: QueueTransition, label?: string) => {
       const status = statusLine(t, label);

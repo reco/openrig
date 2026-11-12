@@ -529,7 +529,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
 
   // S10 thread routing — the map shares the daemon DB (queue rows carry the rebuild stamps).
   const threadMap = new ThreadSeatMap(opts.queueRepo.db);
-  const channels = channelsOf(cfg);
+  const channels = channelsOf({ ...cfg, inboundDestination: inbound.destination });
   // The addressed-only rule: a channel with more than one human answers only messages that
   // @mention the app. A message waits for its channel's first count; later counts refresh every
   // 10 minutes in the background, and at once on member_joined/left_channel. When Slack cannot

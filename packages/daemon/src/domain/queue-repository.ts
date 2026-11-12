@@ -2803,7 +2803,9 @@ export class QueueRepository {
     if (item.destinationSession === actorSession) return true;
     if (this.isSharedChannel(actorSession)) return false;
     const registry = this.loadHumanRegistryFn();
-    return registry.ok && resolveRegisteredHumanAddress(actorSession, registry.entities) !== null;
+    if (!registry.ok) return false;
+    const address = resolveRegisteredHumanAddress(actorSession, registry.entities);
+    return address !== null && registry.entities.find((e) => e.address === address)?.role !== "requester";
   }
 
   /** A registered shared channel. It takes correspondence, so it never answers, approves, resolves or denies (0.7.3). */

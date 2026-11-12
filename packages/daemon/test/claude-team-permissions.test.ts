@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { KERNEL_CLAUDE_ALLOW, TEAM_CLAUDE_ALLOW, TEAM_CLAUDE_ASK, operationalLaunchArgs } from "../src/adapters/kernel-authority.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
+import { durableLaunchAssets } from "../src/adapters/durable-launch-asset.js";
+import { getOpenRigHome } from "../src/openrig-compat.js";
 
 const asset = fileURLToPath(new URL("../assets/claude-team-permissions.cjs", import.meta.url));
 const { decide } = createRequire(import.meta.url)(asset);
@@ -48,7 +50,8 @@ describe("Claude kernel inspection permissions", () => {
     const settings = JSON.parse(operationalLaunchArgs("claude-code", kind === "kernel"
       ? { kernelAuthority: true } : { teamPermissionDefault: true })[1]);
     const hook = settings.hooks.PreToolUse[0].hooks[0];
-    expect(hook.command).toBe([process.execPath, asset, kind].map(shellQuote).join(" "));
+    const [durable] = durableLaunchAssets([asset, fileURLToPath(new URL("../assets/claude-permission-policies.cjs", import.meta.url))], getOpenRigHome());
+    expect(hook.command).toBe([process.execPath, durable!, kind].map(shellQuote).join(" "));
     const legacy = Buffer.from(JSON.stringify(kind === "kernel"
       ? { allow: ["Bash(rig:*)"], ask: [] } : { allow: ["Bash(rig:*)"], ask: ["Bash(rig down:*)"] })).toString("base64");
     for (const [command, expected] of [["rig down demo", kind === "kernel" ? "allow" : "ask"],

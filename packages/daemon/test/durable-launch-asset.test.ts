@@ -10,6 +10,7 @@ import { durableLaunchAsset, durableLaunchAssets } from "../src/adapters/durable
 import { operationalLaunchArgs } from "../src/adapters/kernel-authority.js";
 
 const HELPER = resolve(__dirname, "../assets/claude-team-permissions.cjs");
+const POLICIES = resolve(__dirname, "../assets/claude-permission-policies.cjs");
 const SCRIPTS = resolve(__dirname, "../assets/plugins/openrig-core/hooks/scripts");
 const sha = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
 const run = (helper: string, command: string) => spawnSync(process.execPath, [helper, Buffer.from(JSON.stringify({ allow: ["Bash(pwd:*)"], ask: [] })).toString("base64")],
@@ -64,12 +65,12 @@ describe("durable launch asset", () => {
     expect(logs).toHaveLength(1);
   });
 
-  it("a team Claude seat's launch settings name the durable copy, with its policy unchanged", () => {
+  it("a team Claude seat's launch settings name the durable copy, beside the policies it requires", () => {
     const home = mkdtempSync(join(tmpdir(), "launch-asset-team-"));
     vi.stubEnv("OPENRIG_HOME", home);
     const args = operationalLaunchArgs("claude-code", { teamPermissionDefault: true, launchPosture: "floor" });
     const command = JSON.parse(args[1]!).hooks.PreToolUse[0].hooks[0].command as string;
-    const durable = durableLaunchAsset(HELPER, home);
+    const [durable] = durableLaunchAssets([HELPER, POLICIES], home) as [string];
     expect(durable).not.toBe(HELPER);
     expect(command).toContain(durable);
     expect(command).not.toContain(HELPER);

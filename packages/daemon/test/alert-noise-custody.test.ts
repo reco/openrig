@@ -12,9 +12,6 @@ import { derivePickup, PERMISSION_REQUEST_TELEMETRY } from "../src/domain/queue-
 import { createStuckSweepStatus, runStuckSweep, STUCK_SWEEP_FINDING_TAG } from "../src/domain/queue-stuck-sweep.js";
 import { makeParkedOwnerConsumerPolicy, makeRigAnchor, PARKED_OWNER_POLICY_NAME } from "../src/domain/policies/parked-owner-consumer.js";
 import { runWakeLadderTick, queueRecoveryOwnsWake } from "../src/domain/queue-wake-ladder.js";
-import { readClaudeSelfReportEvidence } from "../src/adapters/claude-code-adapter.js";
-import { SeatActivityService } from "../src/domain/seat-activity-service.js";
-import { CLAUDE_ACTIVITY_RUNG_INVENTORY } from "../src/domain/activity-taxonomy.js";
 import type { HumanFragment } from "../src/domain/gateway/human-registry.js";
 import type { PolicyJob } from "../src/domain/policies/types.js";
 import type { WatchdogHistoryEntry } from "../src/domain/watchdog-history-log.js";
@@ -24,7 +21,7 @@ const LEAD = "product-lead@device-io";
 const HUMAN = { entityId: "human-owner", class: "human", displayName: "Owner", address: "human-owner@external",
   connectorBindings: [{ connector: "slack", ref: "U0OWNER", primary: true }], prefs: {} } as unknown as HumanFragment;
 
-type Owner = { activity: "working" | "idle-at-prompt" | "unknown"; needsInput?: { count: number; reason: string | null }; backgroundShell?: boolean; generation?: string };
+type Owner = { activity: "working" | "idle-at-prompt" | "unknown"; needsInput?: { count: number; reason: string | null }; generation?: string };
 
 describe("pickup derivation: liveness versus a person's prompt", () => {
   const claimed = new Date(Date.now() - 30 * 60_000).toISOString();
@@ -37,35 +34,6 @@ describe("pickup derivation: liveness versus a person's prompt", () => {
 
   it("an unknown owner stays a stall even with a delivered card", () => {
     expect(derivePickup({ ...base, activity: "unknown", promptCardDelivered: true }).state).toBe("stalled-after-claim");
-  });
-
-  it("idle at the prompt with a background shell (a CI watch) is working; without one it is a stall", () => {
-    expect(derivePickup({ ...base, activity: "idle-at-prompt", backgroundShell: true }).state).toBe("working");
-    expect(derivePickup({ ...base, activity: "idle-at-prompt" }).state).toBe("stalled-after-claim");
-  });
-
-  it("a background shell that never resumes the seat (a dev server) still ages into a stall after the grace", () => {
-    const old = new Date(Date.now() - 61 * 60_000).toISOString();
-    expect(derivePickup({ ...base, claimedAt: old, lastMeaningfulAt: old, activity: "idle-at-prompt", backgroundShell: true }).state).toBe("stalled-after-claim");
-  });
-});
-
-describe("Claude self-report: status shell is a background shell, carried to the arbitrated state", () => {
-  const read = (status: string) => ({ listFiles: () => ["1.json"], readFile: () => JSON.stringify({ name: SEAT, status, statusUpdatedAt: Date.now() }) });
-
-  it("maps shell to idle-at-prompt with backgroundShell, idle without it", () => {
-    expect(readClaudeSelfReportEvidence({ sessionsDir: "/x", sessionName: SEAT, seatNodeId: "n1", read: read("shell") }))
-      .toMatchObject({ activity: "idle-at-prompt", backgroundShell: true });
-    expect(readClaudeSelfReportEvidence({ sessionsDir: "/x", sessionName: SEAT, seatNodeId: "n1", read: read("idle") })?.backgroundShell).toBeUndefined();
-  });
-
-  it("the arbitrated state reports backgroundShell only while the self-report says shell", () => {
-    const service = new SeatActivityService({ tmux: { readPaneLastActivity: async () => null }, defaultWindowSeconds: 3, now: () => new Date() });
-    service.declareRungInventory({ seatNodeId: "n1", sessionName: SEAT }, CLAUDE_ACTIVITY_RUNG_INVENTORY);
-    service.reportEvidence(readClaudeSelfReportEvidence({ sessionsDir: "/x", sessionName: SEAT, seatNodeId: "n1", read: read("shell") })!);
-    expect(service.getSeatState("n1")).toMatchObject({ activity: "idle-at-prompt", backgroundShell: true });
-    service.reportEvidence({ ...readClaudeSelfReportEvidence({ sessionsDir: "/x", sessionName: SEAT, seatNodeId: "n1", read: read("idle") })!, seq: Date.now() + 1 });
-    expect(service.getSeatState("n1")?.backgroundShell).toBe(false);
   });
 });
 
@@ -84,7 +52,7 @@ describe("stuck sweep and wake ladder against the prompt card's custody", () => 
     });
     owner = { activity: "idle-at-prompt" };
     repo.attachActivityReader(() => ({ activity: owner.activity, needsInput: owner.needsInput ?? { count: 0, reason: null }, decidedBy: "self-report",
-      backgroundShell: owner.backgroundShell, lastSwap: owner.generation ? { generation: owner.generation, at: new Date().toISOString() } : null }));
+      lastSwap: owner.generation ? { generation: owner.generation, at: new Date().toISOString() } : null }));
   });
   afterEach(() => { db.close(); });
 
@@ -140,13 +108,6 @@ describe("stuck sweep and wake ladder against the prompt card's custody", () => 
   it("working tool with unrelated needsInput telemetry raises no stall", async () => {
     const row = await claimedRow();
     owner = { activity: "working", needsInput: { count: 1, reason: PERMISSION_REQUEST_TELEMETRY } };
-    await sweep();
-    expect(findings(row.qitemId)).toEqual([]);
-  });
-
-  it("background CI watch: idle at the prompt with a live background shell raises no stall", async () => {
-    const row = await claimedRow();
-    owner = { activity: "idle-at-prompt", backgroundShell: true };
     await sweep();
     expect(findings(row.qitemId)).toEqual([]);
   });
