@@ -43,12 +43,17 @@ export const RULES_QUESTION: HumanQuestion = {
 export class HumanSendError extends Error {}
 
 export interface Attachment { name: string; contentType: string; sha256: string; base64: string }
-export interface SendPayload { channel: "email"; to: string[]; cc: string[]; bcc: string[]; subject: string; text: string; attachments: Attachment[] }
-export interface SendRequest { channel?: unknown; to?: unknown; cc?: unknown; bcc?: unknown; subject?: unknown; text?: unknown; attachments?: unknown }
+export interface ReplyHeaders { gmailId: string; threadId: string; inReplyTo: string; references: string[] }
+export interface SendPayload { channel: "email"; to: string[]; cc: string[]; bcc: string[]; subject: string; text: string; attachments: Attachment[]; reply?: ReplyHeaders }
+export interface SendRequest { channel?: unknown; to?: unknown; cc?: unknown; bcc?: unknown; subject?: unknown; text?: unknown; attachments?: unknown; replyToGmailId?: unknown; threadId?: unknown }
+export interface OriginalMessage { id: string; threadId: string; messageId?: string; references?: string; subject?: string }
+export type MessageLookup = (gmailId: string) => Promise<OriginalMessage>;
 
 const ADDRESS = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 const DOMAIN = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 const FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,120}$/;
+const GMAIL_ID = /^[0-9a-f]{8,32}$/;
+const MESSAGE_ID = /^<[\x21-\x3b\x3d\x3f-\x7e]{1,900}>$/;
 
 /** A bare address, lower-cased; null for anything else (display names, lists, quotes, header breaks). */
 export function normalizeAddress(raw: unknown): string | null {
@@ -76,11 +81,52 @@ function addressList(raw: unknown, field: string): string[] {
   });
 }
 
+function gmailIdOf(raw: unknown, field: string): string {
+  if (typeof raw === "string" && (raw.includes("@") || raw.includes("<"))) {
+    throw new HumanSendError(`${field} takes the Gmail id (hex, as gws gmail users messages list prints it), not the RFC Message-ID header`);
+  }
+  if (typeof raw !== "string" || !GMAIL_ID.test(raw)) throw new HumanSendError(`${field} must be a Gmail id: 8 to 32 lower-case hex characters`);
+  return raw;
+}
+
+/** The message a reply answers, read with the daemon's own credentials; undefined for a new email. */
+export async function originalFor(input: SendRequest, lookup: MessageLookup): Promise<OriginalMessage | undefined> {
+  if (input.replyToGmailId === undefined) {
+    if (input.threadId !== undefined) throw new HumanSendError("threadId needs replyToGmailId: a reply names the message it answers");
+    return undefined;
+  }
+  const id = gmailIdOf(input.replyToGmailId, "replyToGmailId");
+  try { return await lookup(id); } catch (e) { throw new HumanSendError(`could not read Gmail message ${id}: ${(e as Error).message.slice(0, 200)}`); }
+}
+
+const bareSubject = (s: string) => s.replace(/^\s*((re|fwd?)\s*:\s*)+/i, "").trim();
+
+function threadSubject(given: unknown, original: string): string {
+  const expected = /^\s*re\s*:/i.test(original) ? original.trim() : `Re: ${original.trim()}`;
+  if (given === undefined) return expected;
+  if (typeof given === "string" && bareSubject(given) === bareSubject(original)) return given;
+  throw new HumanSendError(`a reply must keep the thread's subject (${JSON.stringify(expected)}) or leave subject out; Gmail starts a new thread otherwise`);
+}
+
+function replyOf(input: SendRequest, original: OriginalMessage | undefined): { reply: ReplyHeaders; subject: string } {
+  const gmailId = gmailIdOf(input.replyToGmailId, "replyToGmailId");
+  if (!original || original.id !== gmailId || !GMAIL_ID.test(original.threadId)) throw new HumanSendError(`Gmail returned a different message or no thread for ${gmailId}`);
+  if (input.threadId !== undefined && gmailIdOf(input.threadId, "threadId") !== original.threadId) {
+    throw new HumanSendError(`Gmail message ${gmailId} is in thread ${original.threadId}, not ${input.threadId as string}`);
+  }
+  const inReplyTo = original.messageId?.trim() ?? "";
+  if (!MESSAGE_ID.test(inReplyTo)) throw new HumanSendError(`Gmail message ${gmailId} has no usable Message-ID header, so a reply to it can't thread`);
+  const earlier = (original.references ?? "").split(/\s+/).filter((r) => MESSAGE_ID.test(r) && r !== inReplyTo);
+  return { reply: { gmailId, threadId: original.threadId, inReplyTo, references: [...new Set(earlier), inReplyTo] }, subject: threadSubject(input.subject, original.subject ?? "") };
+}
+
 const contentTypeOf = (name: string) => ({ pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", txt: "text/plain", csv: "text/csv" })[name.split(".").pop()!.toLowerCase()] ?? "application/octet-stream";
 
 /** The exact payload a card approves: addresses checked and normalized, attachments read in by bytes. */
-export function buildPayload(input: SendRequest, readFile: (path: string) => Buffer = readFileSync): SendPayload {
+export function buildPayload(input: SendRequest, readFile: (path: string) => Buffer = readFileSync, original?: OriginalMessage): SendPayload {
   if ((input.channel ?? "email") !== "email") throw new HumanSendError("channel must be email (the only channel this gate sends on)");
+  const threaded = input.replyToGmailId === undefined && input.threadId === undefined ? null : replyOf(input, original);
+  if (threaded) input = { ...input, subject: threaded.subject };
   const to = addressList(input.to, "to");
   const cc = addressList(input.cc, "cc");
   const bcc = addressList(input.bcc, "bcc");
@@ -100,11 +146,12 @@ export function buildPayload(input: SendRequest, readFile: (path: string) => Buf
     if (bytes.length > MAX_ATTACHMENT_BYTES) throw new HumanSendError(`attachment ${name} is over 10 MB`);
     return { name, contentType: contentTypeOf(name), sha256: createHash("sha256").update(bytes).digest("hex"), base64: bytes.toString("base64") };
   });
-  return { channel: "email", to, cc, bcc, subject: input.subject, text: input.text, attachments };
+  return { channel: "email", to, cc, bcc, subject: input.subject, text: input.text, attachments, ...(threaded ? { reply: threaded.reply } : {}) };
 }
 
 const canonical = (p: SendPayload) => JSON.stringify({ channel: p.channel, to: p.to, cc: p.cc, bcc: p.bcc, subject: p.subject, text: p.text,
-  attachments: p.attachments.map((a) => ({ name: a.name, contentType: a.contentType, sha256: a.sha256, base64: a.base64 })) });
+  attachments: p.attachments.map((a) => ({ name: a.name, contentType: a.contentType, sha256: a.sha256, base64: a.base64 })),
+  ...(p.reply ? { reply: { gmailId: p.reply.gmailId, threadId: p.reply.threadId, inReplyTo: p.reply.inReplyTo, references: p.reply.references } } : {}) });
 
 export const digestOf = (p: SendPayload) => createHash("sha256").update(canonical(p)).digest("hex");
 
@@ -135,7 +182,7 @@ const wrap = (b64: string) => b64.replace(/.{1,76}/g, "$&\r\n");
 /** The RFC 5322 message for exactly this payload; the boundary is derived from its digest. */
 export function buildMessage(p: SendPayload): string {
   const head = [`To: ${p.to.join(",\r\n ")}`, ...(p.cc.length ? [`Cc: ${p.cc.join(",\r\n ")}`] : []), ...(p.bcc.length ? [`Bcc: ${p.bcc.join(",\r\n ")}`] : []),
-    `Subject: ${encodeWord(p.subject)}`, "MIME-Version: 1.0"];
+    `Subject: ${encodeWord(p.subject)}`, ...(p.reply ? [`In-Reply-To: ${p.reply.inReplyTo}`, `References: ${p.reply.references.join("\r\n ")}`] : []), "MIME-Version: 1.0"];
   const textPart = ["Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: base64", "", wrap(Buffer.from(p.text, "utf8").toString("base64"))];
   if (!p.attachments.length) return [...head, ...textPart].join("\r\n");
   const boundary = `openrig-${digestOf(p).slice(0, 32)}`;
@@ -151,15 +198,16 @@ export function cardFields(p: SendPayload, digest: string, auto?: { ruleId: stri
   const detail = [
     ...line("To", p.to), ...line("Cc", p.cc), ...line("Bcc", p.bcc),
     `Subject: ${p.subject}`,
+    ...(p.reply ? [`Reply in Gmail thread ${p.reply.threadId} to Gmail message ${p.reply.gmailId} (In-Reply-To ${p.reply.inReplyTo})`] : []),
     ...p.attachments.map((a) => `Attachment: ${a.name} (${a.contentType}, sha256 ${a.sha256})`),
     `Payload sha256: ${digest}`,
     "Text, exactly as it will be sent:",
     p.text,
   ];
   return {
-    summary: `${auto ? "Auto-send" : "Send"} email to ${p.to[0]}${others > 0 ? ` +${others}` : ""}: ${p.subject}`.slice(0, 200),
+    summary: `${auto ? "Auto-send" : "Send"} ${p.reply ? "reply" : "email"} to ${p.to[0]}${others > 0 ? ` +${others}` : ""}: ${p.subject}`.slice(0, 200),
     body: [
-      `Email to ${p.to[0]}${others > 0 ? ` and ${others} more` : ""}${attached}.`,
+      `${p.reply ? "Reply" : "Email"} to ${p.to[0]}${others > 0 ? ` and ${others} more` : ""}${attached}${p.reply ? ", in its existing Gmail thread" : ""}.`,
       "Every recipient, the exact text and its digest are in this thread.",
       auto ? `Sending now under auto-send rule ${auto.ruleId}; the result follows in this thread.` : "Send sends exactly that once; Edit or Skip sends nothing.",
     ].join("\n"),
@@ -298,15 +346,28 @@ export function reserveSlot(repo: QueueRepository, qitemId: string, rule: AutoSe
 }
 
 export type SendResult = { status: "sent"; id: string } | { status: "failed"; detail: string } | { status: "unknown"; detail: string };
-export type Sender = (messagePath: string) => Promise<SendResult>;
+export type Sender = (messagePath: string, threadId?: string) => Promise<SendResult>;
 
 const execFileAsync = promisify(execFile);
 
-/** gws sends the stored message file as media: no address, subject or text is ever on its command line. A definite
- *  API refusal is failed; anything else that is not a message id is unknown, never retried. */
-export const gwsSender: Sender = async (messagePath) => {
+/** Only the original's id, thread and threading headers: no body is read. */
+export const gwsLookup: MessageLookup = async (id) => {
+  const { stdout } = await execFileAsync("gws", ["gmail", "users", "messages", "get", "--params",
+    JSON.stringify({ userId: "me", id, format: "metadata", metadataHeaders: ["Message-ID", "References", "Subject"] })], { timeout: 30_000 });
+  const message = JSON.parse(stdout) as { id?: unknown; threadId?: unknown; payload?: { headers?: Array<{ name?: unknown; value?: unknown }> } };
+  const header = (name: string) => {
+    const value = message.payload?.headers?.find((h) => typeof h.name === "string" && h.name.toLowerCase() === name)?.value;
+    return typeof value === "string" ? value : undefined;
+  };
+  return { id: String(message.id ?? ""), threadId: String(message.threadId ?? ""), messageId: header("message-id"), references: header("references"), subject: header("subject") };
+};
+
+/** gws sends the stored message file as media, with only the thread id as metadata: no address, subject or text is
+ *  ever on its command line. A definite API refusal is failed; anything else that is not a message id is unknown, never retried. */
+export const gwsSender: Sender = async (messagePath, threadId) => {
   try {
     const { stdout } = await execFileAsync("gws", ["gmail", "users", "messages", "send", "--params", '{"userId":"me"}',
+      ...(threadId ? ["--json", JSON.stringify({ threadId })] : []),
       "--upload", basename(messagePath), "--upload-content-type", "message/rfc822"], { cwd: dirname(messagePath), timeout: 120_000 });
     const id = (JSON.parse(stdout) as { id?: unknown }).id;
     return typeof id === "string" && id ? { status: "sent", id } : { status: "unknown", detail: "gws returned no message id" };
@@ -344,7 +405,7 @@ async function sendOnce(repo: QueueRepository, deps: SendDeps, qitemId: string, 
   const path = join(dir, `${digest}.eml`);
   writeFileSync(path, buildMessage(payload), { mode: 0o600 });
   try {
-    return await deps.send(path);
+    return await deps.send(path, payload.reply?.threadId);
   } catch (e) {
     return { status: "unknown", detail: (e as Error).message.slice(0, 200) };
   } finally {

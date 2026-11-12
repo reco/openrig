@@ -12,7 +12,7 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
-import { actOnSendAnswers, gwsSender, cardFields, sha256, buildMessage, digestOf, normalizeAddress, parseRules, reserveSlot, ruleMatches, buildPayload, type SendResult, type AutoSendRule } from "../src/domain/human-send.js";
+import { actOnSendAnswers, gwsSender, gwsLookup, cardFields, sha256, buildMessage, digestOf, normalizeAddress, parseRules, reserveSlot, ruleMatches, buildPayload, type SendResult, type AutoSendRule } from "../src/domain/human-send.js";
 
 const human = "human-founder@external";
 const seat = "outbox-sender@inbox";
@@ -27,16 +27,17 @@ describe("send an email from Slack", () => {
   let home: string;
   let paths: { storeDir: string; rulesPath: string };
   let sent: string[];
+  let threads: Array<string | undefined>;
   let results: SendResult[];
   let clock: number;
-  const send = async (path: string): Promise<SendResult> => { sent.push(readFileSync(path, "utf8")); return results.shift() ?? { status: "sent", id: `m${sent.length}` }; };
+  const send = async (path: string, threadId?: string): Promise<SendResult> => { sent.push(readFileSync(path, "utf8")); threads.push(threadId); return results.shift() ?? { status: "sent", id: `m${sent.length}` }; };
 
   beforeEach(() => {
     db = createDb(); migrate(db, ALL_MIGRATIONS);
     repo = new QueueRepository(db, new EventBus(db), { loadHumanRegistry: () => registry });
     home = realpathSync(mkdtempSync(join(tmpdir(), "human-send-")));
     paths = { storeDir: join(home, "payloads"), rulesPath: join(home, "auto-send-rules.json") };
-    sent = []; results = []; clock = Date.now();
+    sent = []; threads = []; results = []; clock = Date.now();
     app = new Hono();
     app.use("*", async (c, next) => { const set = c.set as (k: string, v: unknown) => void; set("queueRepo", repo); set("humanSendPaths", paths); await next(); });
     app.route("/api/queue", queueRoutes());
@@ -223,12 +224,111 @@ describe("send an email from Slack", () => {
       expect(await gwsSender(message)).toMatchObject({ status: "unknown" });
       fake(`echo '{}'`);
       expect(await gwsSender(message)).toMatchObject({ status: "unknown" });
+      fake(`echo '{"id":"g2","threadId":"1a15a2e4aeb6fdcc"}'`);
+      expect(await gwsSender(message, "1a15a2e4aeb6fdcc")).toEqual({ status: "sent", id: "g2" });
     } finally {
       process.env.PATH = path;
     }
     const calls = readFileSync(log, "utf8").trim().split("\n");
     expect(calls[0]).toBe(`${join(home, "out")} gmail users messages send --params {"userId":"me"} --upload d.eml --upload-content-type message/rfc822`);
+    expect(calls[4]).toBe(`${join(home, "out")} gmail users messages send --params {"userId":"me"} --json {"threadId":"1a15a2e4aeb6fdcc"} --upload d.eml --upload-content-type message/rfc822`);
     expect(calls.join("\n")).not.toContain("example.com");
+  });
+
+  it("the gws lookup reads only the original's metadata and its headers whatever their case", async () => {
+    const bin = join(home, "bin");
+    const log = join(home, "gws.log");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "gws"), `#!/bin/sh\necho "$*" >> ${log}\necho '{"id":"1a169783c408881c","threadId":"1a15a2e4aeb6fdcc","payload":{"headers":[{"name":"Subject","value":"Hi"},{"name":"Message-Id","value":"<a.1@x.example>"},{"name":"REFERENCES","value":"<z.0@x.example>"}]}}'\n`);
+    chmodSync(join(bin, "gws"), 0o755);
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path}`;
+    try {
+      expect(await gwsLookup("1a169783c408881c")).toEqual({ id: "1a169783c408881c", threadId: "1a15a2e4aeb6fdcc", messageId: "<a.1@x.example>", references: "<z.0@x.example>", subject: "Hi" });
+    } finally {
+      process.env.PATH = path;
+    }
+    expect(readFileSync(log, "utf8").trim()).toBe('gmail users messages get --params {"userId":"me","id":"1a169783c408881c","format":"metadata","metadataHeaders":["Message-ID","References","Subject"]}');
+  });
+
+  describe("a reply in an existing Gmail thread", () => {
+    const original = { id: "1a169783c408881c", threadId: "1a15a2e4aeb6fdcc", messageId: "<CAOrig.42@mail.example.com>",
+      references: "<CAFirst.1@mail.example.com>\r\n <CAOrig.42@mail.example.com>", subject: "NY collection case – missed RFI" };
+    let lookups: string[];
+    let found: Record<string, unknown> | null;
+    const reply = { ...email, subject: undefined, replyToGmailId: original.id, threadId: original.threadId };
+    beforeEach(() => {
+      lookups = []; found = original;
+      app = new Hono();
+      app.use("*", async (c, next) => { const set = c.set as (k: string, v: unknown) => void; set("queueRepo", repo); set("humanSendPaths", paths);
+        set("humanSendLookup", async (id: string) => { lookups.push(id); if (!found) throw new Error("Requested entity was not found"); return found; }); await next(); });
+      app.route("/api/queue", queueRoutes());
+    });
+
+    it("the daemon reads the original by its Gmail id and binds thread, In-Reply-To and References into the payload the card approves", async () => {
+      const card = await ask(reply);
+      expect(lookups).toEqual([original.id]);
+      const payload = JSON.parse(readdirSync(paths.storeDir).map((f) => readFileSync(join(paths.storeDir, f), "utf8"))[0]!);
+      expect(payload.subject).toBe("Re: NY collection case – missed RFI");
+      expect(payload.reply).toEqual({ gmailId: original.id, threadId: original.threadId, inReplyTo: "<CAOrig.42@mail.example.com>",
+        references: ["<CAFirst.1@mail.example.com>", "<CAOrig.42@mail.example.com>"] });
+      const row = repo.getById(card.qitemId)!;
+      expect(row.summary).toBe("Send reply to pat@example.com +2: Re: NY collection case – missed RFI");
+      expect(row.humanDetail).toContain(`Reply in Gmail thread ${original.threadId} to Gmail message ${original.id} (In-Reply-To <CAOrig.42@mail.example.com>)`);
+    });
+
+    it("Send sends the threaded message with the thread id beside it, never a new standalone email", async () => {
+      const card = await ask(reply);
+      click(card.qitemId, human, "send");
+      await act();
+      expect(threads).toEqual([original.threadId]);
+      expect(sent[0]).toContain("\r\nIn-Reply-To: <CAOrig.42@mail.example.com>\r\nReferences: <CAFirst.1@mail.example.com>\r\n <CAOrig.42@mail.example.com>\r\n");
+      expect(sent[0]).toContain(`Subject: =?UTF-8?B?${Buffer.from("Re: NY collection case – missed RFI").toString("base64")}?=`);
+    });
+
+    it("a plain email keeps its digest and sends with no thread id", async () => {
+      const plain = buildPayload(email);
+      const { channel, to, cc, bcc, subject, text, attachments } = plain;
+      expect(digestOf(plain)).toBe(sha256(JSON.stringify({ channel, to, cc, bcc, subject, text, attachments })));
+      click((await ask()).qitemId, human, "send");
+      await act();
+      expect(threads).toEqual([undefined]);
+      expect(sent[0]).not.toContain("In-Reply-To");
+    });
+
+    it("the digest covers the thread binding: a stored reply moved to another thread is refused", async () => {
+      const card = await ask(reply);
+      const file = join(paths.storeDir, readdirSync(paths.storeDir)[0]!);
+      chmodSync(file, 0o600);
+      writeFileSync(file, readFileSync(file, "utf8").replace(original.threadId, "1a15a2e4aeb6ffff"));
+      click(card.qitemId, human, "send");
+      await act();
+      expect(sent).toEqual([]);
+      expect(thread(card.qitemId)).toContain("stored payload is missing or no longer matches");
+    });
+
+    it("refuses an RFC Message-ID given as the Gmail id, a thread that is not the message's, a changed subject and an unreadable original", async () => {
+      const refusal = async (payload: Record<string, unknown>) => { const res = await post({ humanSend: payload }); expect(res.status).toBe(400); return (await res.json()).error as string; };
+      expect(await refusal({ ...reply, replyToGmailId: original.messageId })).toMatch(/Gmail id .* not the RFC Message-ID/);
+      expect(await refusal({ ...reply, threadId: "1a15a2e4aeb6ffff" })).toMatch(/is in thread 1a15a2e4aeb6fdcc, not 1a15a2e4aeb6ffff/);
+      expect(await refusal({ ...reply, subject: "Something else" })).toMatch(/keep the thread's subject/);
+      expect(await refusal({ ...email, threadId: original.threadId })).toMatch(/threadId needs replyToGmailId/);
+      found = { ...original, messageId: "<a@b>\r\nBcc: evil@attacker.test" };
+      expect(await refusal(reply)).toMatch(/no usable Message-ID/);
+      found = { ...original, id: "1a169783c408ffff" };
+      expect(await refusal(reply)).toMatch(/different message/);
+      found = null;
+      expect(await refusal(reply)).toMatch(/could not read Gmail message 1a169783c408881c: Requested entity was not found/);
+      expect(repo.list({ limit: 50 })).toEqual([]);
+    });
+
+    it("a subject that keeps the thread's subject is kept as written; injected References entries are dropped", async () => {
+      found = { ...original, references: "<ok.1@x.example> <bad\r\nBcc: evil@attacker.test> junk <CAOrig.42@mail.example.com>" };
+      await ask({ ...reply, subject: "RE: NY collection case – missed RFI" });
+      const payload = JSON.parse(readFileSync(join(paths.storeDir, readdirSync(paths.storeDir)[0]!), "utf8"));
+      expect(payload.subject).toBe("RE: NY collection case – missed RFI");
+      expect(payload.reply.references).toEqual(["<ok.1@x.example>", "<CAOrig.42@mail.example.com>"]);
+    });
   });
 
   describe("auto-send rules", () => {

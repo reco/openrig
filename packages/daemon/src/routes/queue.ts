@@ -843,7 +843,8 @@ export function queueRoutes(): Hono {
           humanDetail: `File: ${paths.rulesPath}\nRules sha256: ${digest}\n\`\`\`\n${text}\n\`\`\``, tags: [...extraTags, send.HUMAN_SEND_RULES_TAG] });
       } else {
         let payload: import("../domain/human-send.js").SendPayload;
-        try { payload = send.buildPayload(body.humanSend!); } catch (e) {
+        const lookup = (c.get("humanSendLookup" as never) as import("../domain/human-send.js").MessageLookup | undefined) ?? send.gwsLookup;
+        try { payload = send.buildPayload(body.humanSend!, undefined, await send.originalFor(body.humanSend!, lookup)); } catch (e) {
           if (e instanceof send.HumanSendError) return c.json({ error: e.message, code: "invalid_human_send" }, 400);
           throw e;
         }
