@@ -105,7 +105,7 @@ function threadSubject(given: unknown, original: string): string {
   const expected = /^\s*re\s*:/i.test(original) ? original.trim() : `Re: ${original.trim()}`;
   if (given === undefined) return expected;
   if (typeof given === "string" && bareSubject(given) === bareSubject(original)) return given;
-  throw new HumanSendError(`a reply must keep the thread's subject (${JSON.stringify(expected)}) or leave subject out; Gmail starts a new thread otherwise`);
+  throw new HumanSendError("a reply must keep the thread's subject (optionally with Re:) or leave subject out; Gmail starts a new thread otherwise");
 }
 
 function replyOf(input: SendRequest, original: OriginalMessage | undefined): { reply: ReplyHeaders; subject: string } {
