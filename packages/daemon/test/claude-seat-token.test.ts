@@ -1,7 +1,7 @@
 import { ClaudeCodeAdapter } from "../src/adapters/claude-code-adapter.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -90,6 +90,23 @@ describe.skipIf(process.platform === "win32")("a Claude seat's own subscription 
     expect(JSON.parse((await f.run(prepared.command([]))).stdout)).toEqual({ API: SYNTHETIC, TOKEN: "absent" });
     writeFileSync(path.join(selected, "settings.json"), JSON.stringify({ env: { ANTHROPIC_AUTH_TOKEN: "synthetic-conflict" } }));
     expect(() => prepared.command([])).toThrow(/credential settings could override/);
+  });
+
+  it("a staged successor moving the seat to a new folder starts there while the seat keeps its saved folder", async () => {
+    const f = fixture();
+    const moved = path.join(f.root, "next-project"); mkdirSync(moved);
+    f.db.exec("UPDATE nodes SET runtime = 'codex'");
+    writeFileSync(path.join(f.root, "bin", "claude"), `#!/bin/sh
+if [ "$1" = --help ]; then printf '%s\\n' '--permission-mode <mode> (choices: "auto", "default")'; exit 0; fi
+pwd -P
+`);
+    const prepared = await f.managed.prepare({ nodeId: "node", cwd: moved, session: "staging", pane: "%2", generation: "next-gen",
+      runtimeSwitch: { fromRuntime: "codex", session: "seat@rig", pane: "%1", generation: "gen" } }, "auto");
+    expect((await f.run(prepared.command([]))).stdout.trim()).toBe(realpathSync(moved));
+    expect(f.db.prepare("SELECT cwd FROM nodes").get()).toEqual({ cwd: path.join(f.root, "work") });
+    f.db.exec("UPDATE nodes SET runtime = 'claude-code'");
+    await expect(f.managed.prepare({ nodeId: "node", cwd: moved, session: "seat@rig", pane: "%1" }, "auto"))
+      .rejects.toThrow(/disagrees with the current binding/);
   });
 
   it("an API-key reference works inside a persisted account home without losing its allowed helper", async () => {

@@ -315,7 +315,6 @@ export class ClaudeManagedLaunch {
     const target = Object.freeze({ ...request, ...(request.runtimeSwitch ? { runtimeSwitch: Object.freeze({ ...request.runtimeSwitch }) } : {}) });
     const switching = target.runtimeSwitch;
     const before = this.target(target.nodeId, switching?.fromRuntime);
-    const cwd = before.cwd!;
     if (target.session !== undefined && (!before.pane || !before.generation)) {
       throw new Error("Claude managed launch context is unresolved: a bound pane and current occupant are required.");
     }
@@ -324,6 +323,8 @@ export class ClaudeManagedLaunch {
       && switching.pane === before.pane && switching.generation === before.generation
       && !!target.session && target.session !== before.session && !!target.pane && target.pane !== before.pane
       && !!target.generation && target.generation !== before.generation;
+    // A switch that also moves the seat starts its successor in the new folder; the seat's saved folder changes at commit.
+    const cwd = staged && target.cwd !== undefined ? target.cwd : before.cwd!;
     if ((target.cwd !== undefined && target.cwd !== cwd) || (switching && !staged)
       || (!staged && target.session !== undefined && target.session !== before.session)
       || (!staged && target.pane != null && target.pane !== before.pane)) {
