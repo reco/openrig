@@ -7,7 +7,7 @@ import { resolveRegisteredHumanAddress } from "../human-registry.js";
 import { callWebApi, type FetchImpl, type WebApiResult } from "./slack-api.js";
 import { budgetLeft, HISTORY, REPLIES, MethodBackoff, newRecoveryBudget } from "./recovery-budget.js";
 import { parsePostedStamp } from "./thread-seat-map.js";
-import { TYPED_REPLY_HINT, CHANNEL_REPLY_HINT, HUMAN_REQUIRED_REPLY_HINT, QUESTION_BLOCK_PREFIX, recommendationLabel, escapeSlackText, redactSecrets } from "./message.js";
+import { TYPED_REPLY_HINT, CHANNEL_REPLY_HINT, HUMAN_REQUIRED_REPLY_HINT, CONFIRM_BLOCK_PREFIX, QUESTION_BLOCK_PREFIX, recommendationLabel, escapeSlackText, redactSecrets } from "./message.js";
 import { CARD_CLOSED_PREFIX, CARD_CLOSE_FAILED_PREFIX, REQUEST_CLOSED_PREFIX } from "./request-lifecycle.js";
 
 const UPDATE = "chat.update";
@@ -31,7 +31,7 @@ function handledMessage(message: { text: string; blocks: Block[] }, status: stri
   const previousStatus = message.blocks.find((b) => b.block_id === STATUS_BLOCK)?.elements?.[0]?.text;
   if (previousStatus && text.startsWith(previousStatus + "\n")) text = text.slice(previousStatus.length + 1);
   const blocks = message.blocks.flatMap((block): Block[] => {
-    if (block.block_id === STATUS_BLOCK) return [];
+    if (block.block_id === STATUS_BLOCK || (block.type === "actions" && block.block_id?.startsWith(CONFIRM_BLOCK_PREFIX))) return [];
     if (block.type === "actions" && block.block_id?.startsWith(QUESTION_BLOCK_PREFIX)) {
       // The labels remain history after their controls disappear, as in the resolved-notice render.
       const buttons = block.elements as unknown as Array<{ text?: { text?: string }; style?: string }>;

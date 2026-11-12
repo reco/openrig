@@ -1804,7 +1804,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       return false;
     }
     const repositoryCopy = codexRepositoryCopy(this.fs, cwd, file);
-    if (repositoryCopy !== null) mergeManagedBlock(this.fs, targetPath, CODEX_REPOSITORY_COPY_BLOCK, repositoryCopy, { warnings });
+    if (repositoryCopy !== null) writeManagedGuidanceBlock(this.fs, targetPath, CODEX_REPOSITORY_COPY_BLOCK, repositoryCopy, { records: this.managedBlockRecords, unrecorded: "refresh", warnings });
     // #2456: a block a person edited since OpenRig wrote it is kept and named, not counted as merged.
     return writeManagedGuidanceBlock(this.fs, targetPath, blockId, content, {
       records: this.managedBlockRecords, sourcePath, warnings,

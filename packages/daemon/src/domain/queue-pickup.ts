@@ -133,7 +133,7 @@ function deriveClaimPickup(facts: PickupFacts): PickupReceipt {
   //     the current shell's start, so a shell that never ends, or one restarted each turn, cannot hold a claim forever.
   // (c) a pending managed restore: counted from when the daemon began owing it (one bounded episode it owns).
   const past: string[] = [];
-  if (!facts.needsInput) {
+  if (!promptConfirmed) {
     for (const g of [
       { on: !!facts.backgroundWork, sinceMs: anchor, grace: "background-shell" as const,
         ceiling: facts.backgroundShellGraceMinutes ?? BACKGROUND_SHELL_GRACE_MINUTES,

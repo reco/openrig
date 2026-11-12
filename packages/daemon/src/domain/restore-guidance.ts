@@ -292,7 +292,7 @@ export function restoreMissingGuidance(guidance: SeatGuidance, fs: ManagedBlockM
       let source: string;
       try {
         if (!fs.exists(item.sourcePath)) continue;
-        source = fs.readFile(item.sourcePath);
+        source = item.repositoryCopy ? stripManagedBlocks(fs.readFile(item.sourcePath)) : fs.readFile(item.sourcePath);
       } catch { continue; }
       // Without records the block's text stays as it is; only its exact repeats and rewrapped markers are tidied.
       if (!records) {

@@ -96,6 +96,20 @@ describe("posted asks follow settlement outside Slack", () => {
     return item;
   }
 
+  it("a seat-canceled decision with a Confirm button loses that button when its card is settled", async () => {
+    saveConfig({ ...DEFAULT_CONFIG, enabled: true, channel: "C-ASKS", secretsEnvFile: join(home, "fake.env"), explicitAnswersOnly: true }, home);
+    wire.stop(); start();
+    const item = await repo.create({ sourceSession: "author@rig", destinationSession: human, summary: "Merge it?", body: "The branch is green.", nudge: false });
+    const [alert] = await makeQueuePorts(repo, { loadHumanRegistry: () => registry }).listHumanAlerts({});
+    expect(wire.dispatcher.dispatch("post_message", human, alert)).toMatchObject({ ok: true });
+    await vi.waitFor(() => expect(repo.currentHumanRequiredEpisode(item.qitemId)?.receipt?.messageTs).toBeTruthy());
+    expect(messages[0]!.blocks.some((b) => b.type === "actions")).toBe(true);
+    repo.update({ qitemId: item.qitemId, actorSession: "author@rig", state: "canceled", transitionNote: "Not needed any more." });
+    await vi.waitFor(() => expect(updates).toHaveLength(1));
+    expect(updates[0]!.text).toContain("Canceled");
+    expect((updates[0]!.blocks as Array<{ type: string }>).some((b) => b.type === "actions")).toBe(false);
+  });
+
   it.each(["done", "canceled"] as const)("edits the original primary after a CLI-style %s transition, preserving its content and marker", async (state) => {
     const item = await postAsk();
     const original = structuredClone(messages[0]!);
