@@ -525,12 +525,12 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     };
     // First install grants declarations; Codex0.164 also requires full-bundle content approval. Existing declaration
     // choices are never rewritten. No cache files or native baseline files are rewritten here.
-    const grantOwnHooks = (): number => {
+    const grantOwnHooks = (): boolean => {
       const grantLayers = readLayers();
-      if (codexCorePluginEnablement(grantLayers).decision !== "allow" || !matchesShippedTree(cachedDir)) return 0;
+      if (codexCorePluginEnablement(grantLayers).decision !== "allow" || !matchesShippedTree(cachedDir)) return false;
       // An existing install is granted only while no layer records a choice for any of these hooks, decided on this read.
-      if (!firstInstall && !noOwnHookChoice(grantLayers)) return 0;
-      let freshGrants = 0;
+      if (!firstInstall && !noOwnHookChoice(grantLayers)) return false;
+      let freshGrants = 0, ownHooks = 0;
       const configPath = this.resolveCodexConfigPath(home);
       const before = this.fs.readFile(configPath);
       let content = before;
@@ -538,6 +538,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       try {
         for (const [event, groups] of Object.entries(hookManifest.hooks) as Array<[string, Array<{ matcher?: string; hooks: Array<{ command: string; timeout: number }> }>]> ) {
           groups.forEach((group, groupIndex) => group.hooks.forEach((handler, handlerIndex) => {
+            ownHooks++;
             const { key, hash } = codexHookTrust.computeCodexHookTrust(event, {
               ...handler, timeoutSec: handler.timeout, matcher: group.matcher,
               keySource: `${CODEX_CORE_PLUGIN_KEY}:hooks/codex.json`, groupIndex, handlerIndex,
@@ -554,13 +555,13 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
             }
           }));
         }
-      } catch { return 0; } // A config the line writer can't extend (an inline hooks table, say) gets no grant; review stays.
-      if (freshGrants === 0 || this.fs.readFile(configPath) !== before) return 0; // A concurrent native choice wins.
+      } catch { return false; } // A config the line writer can't extend (an inline hooks table, say) gets no grant; review stays.
+      if (freshGrants === 0 || this.fs.readFile(configPath) !== before) return false; // A concurrent native choice wins.
       this.fs.writeFile(configPath, content);
-      return freshGrants;
+      return freshGrants === ownHooks;
     };
     if (cached && recorded !== undefined && userLayerEnablesCorePlugin(userConfig)) {
-      renewContentApproval(noOwnHookChoice(layers) && grantOwnHooks() === 6);
+      renewContentApproval(noOwnHookChoice(layers) && grantOwnHooks());
       return report("current", `${CODEX_CORE_PLUGIN_KEY} ${version} is installed and registered`);
     }
     const manifestPath = nodePath.join(pluginsDir, CODEX_MARKETPLACE_MANIFEST_PATH);
@@ -576,7 +577,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     }
     const installed = await this.runCodexCli(["plugin", "add", CODEX_CORE_PLUGIN_KEY], env);
     if (installed.status !== 0) return report("skipped", `codex plugin add failed: ${(installed.stderr || installed.stdout).trim() || `exit ${installed.status}`}`);
-    renewContentApproval((firstInstall || noOwnHookChoice(layers)) && grantOwnHooks() === 6);
+    renewContentApproval((firstInstall || noOwnHookChoice(layers)) && grantOwnHooks());
     return report("installed", `${CODEX_CORE_PLUGIN_KEY} ${version} through Codex's own install (${enablement.reason})`);
   }
 

@@ -100,7 +100,7 @@ export function planOwnedCodexContentApproval(input: {
         declarations[key] = hash;
       }));
     }
-    if (Object.keys(declarations).length !== 6) return;
+    if (Object.keys(declarations).length === 0) return;
     const docs = input.layers.map(layer => {
       if (layer.state === "unreadable") throw new Error("unknown config layer");
       return { ...layer, doc: layer.state === "read" ? parse(layer.content) : {} };
@@ -126,7 +126,7 @@ export function planOwnedCodexContentApproval(input: {
     const parseRecord = (saved: string): OwnedApproval | undefined => {
       const previous: OwnedApproval = JSON.parse(saved);
       return previous.schema === 1 && previous.plugin === CODEX_CORE_PLUGIN_KEY && /^sha256:[a-f0-9]{64}$/.test(previous.contentHash)
-        && Object.keys(previous.declarations).length === 6 ? previous : undefined;
+        && Object.keys(previous.declarations).length > 0 ? previous : undefined;
     };
     if (changed.length > 0) {
       // Only OpenRig's own saved record proves these approvals are its earlier grant; the legacy fallback below doesn't.
