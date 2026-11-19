@@ -9,7 +9,7 @@
 // delivers payloads of type `message`), so the mapping is explicit and checked.
 // The constructor imports no configuration: it cannot load files or read the environment.
 import { stringify } from "yaml";
-import { ADMITTED_EVENT_TYPES, BASELINE_REQUIRED_SCOPES, EVENT_SUBSCRIPTIONS, FEATURE_SCOPES, MEMBER_EVENT_TYPES, PRIVATE_CHANNEL_MESSAGE_SUBSCRIPTION, REACTION_EVENT_TYPES } from "./capabilities.js";
+import { ADMITTED_EVENT_TYPES, BASELINE_REQUIRED_SCOPES, EVENT_SUBSCRIPTIONS, FEATURE_SCOPES, MEMBER_EVENT_TYPES, PRIVATE_CHANNEL_MESSAGE_SUBSCRIPTION, PRIVATE_CHANNEL_SCOPES, REACTION_EVENT_TYPES } from "./capabilities.js";
 
 export const MANIFEST_DISPLAY_NAME = "OpenRig";
 export const SLACK_CREATE_APP_URL = "https://api.slack.com/apps?new_app=1&manifest_yaml=";

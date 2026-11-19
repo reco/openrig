@@ -682,7 +682,7 @@ export function buildOutboundMessage(q: QitemLike, opts: OutboundMessageOpts): S
     opts.attribution && !opts.attribution.host && value ? ` on ${inert(value)}` : "";
   // No summary, no headline: the body starts the message (a mention still leads it).
   const headline = q.summary?.trim()
-    ? bounded(`${mention}*${summary}*`, SLACK_SECTION_CAP, "subject")
+    ? bounded(`${mention}*${inert(q.summary)}*`, SLACK_SECTION_CAP, "subject")
     : mention.trim() || null;
   const imageBlocks = buildImageBlocks(opts.mediaRefs);
   const attachmentText = imageBlocks.map((b) => `Image: ${(b as { alt_text: string }).alt_text}`).join("\n");
