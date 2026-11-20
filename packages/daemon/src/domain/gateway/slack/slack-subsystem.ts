@@ -911,7 +911,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const receiptChains = new Map<string, Promise<void>>();
   const syncMessageReceipt = (origin: QueueItem, message: { channel: string; ts: string }): Promise<void> => {
     const key = `${message.channel}:${message.ts}`;
-    const run = (receiptChains.get(key) ?? Promise.resolve()).catch(() => {}).then(async () => {
+    const run = (receiptChains.get(key) ?? Promise.resolve()).then(async () => {
+      if (!opts.queueRepo.db.open) return;
       const row = opts.queueRepo.getById(origin.qitemId);
       if (!bot || !row) return;
       const wanted = wantedReceipt(row);
@@ -927,7 +928,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         if (!r.ok) { cleared = false; log(`receipt ${name} not removed ts=${message.ts}: ${r.error}`); }
       }
       if (cleared) appliedReceipt.set(key, wanted);
-    });
+    }).catch((e) => log(`receipt sync failed ts=${message.ts}: ${(e as Error).message}`));
     receiptChains.set(key, run);
     void run.finally(() => { if (receiptChains.get(key) === run) receiptChains.delete(key); });
     return run;
@@ -948,7 +949,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   const rootDone = new Map<string, boolean>(); // root threadTs -> whether it shows the done reaction
   const rootChains = new Map<string, Promise<void>>();
   const syncRootDone = (qitemId: string): Promise<void> => {
-    const run = (rootChains.get(qitemId) ?? Promise.resolve()).catch(() => {}).then(async () => {
+    const run = (rootChains.get(qitemId) ?? Promise.resolve()).then(async () => {
+      if (!opts.queueRepo.db.open) return;
       const row = opts.queueRepo.getById(qitemId);
       if (!bot || !row) return;
       const done = !(["pending", "in-progress", "blocked"].includes(row.state) && askedHumanOf(qitemId) !== null);
@@ -962,7 +964,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         if (!r.ok) { log(`root ${done ? "done mark" : "done unmark"} failed ts=${root.threadTs}: ${r.error}`); continue; }
         rootDone.set(root.threadTs, done);
       }
-    });
+    }).catch((e) => log(`root done sync failed qitem=${qitemId}: ${(e as Error).message}`));
     rootChains.set(qitemId, run);
     void run.finally(() => { if (rootChains.get(qitemId) === run) rootChains.delete(qitemId); });
     return run;

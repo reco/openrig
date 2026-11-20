@@ -40,10 +40,10 @@ function fixture(config = "", corruptCache = false, duringPluginAdd?: () => void
   const read = () => parse(fs.readFileSync(file,"utf8")) as any;
   return {adapter, read, file, plugin, cache, calls, home};
 }
-it("a fresh install has all six exact plugin hooks trusted before the first seat starts", async () => {
+it("a fresh install has all seven exact plugin hooks (the fork adds approval-request) trusted before the first seat starts", async () => {
   const f = fixture(); await f.adapter().ensureCodexCorePlugin();
   const states = f.read().hooks?.state ?? {};
-  expect(Object.keys(states)).toHaveLength(6);
+  expect(Object.keys(states)).toHaveLength(7);
   // Source-derived Codex0.163 normalized identities, independently calculated with Python sorted JSON/SHA256.
   const expected = {
   "openrig-core@openrig:hooks/codex.json:session_start:0:0": "sha256:a746b5abb568d50725b08bf39660bbf08d15fa3d3a5961208862e7beaadba43d",
@@ -51,7 +51,8 @@ it("a fresh install has all six exact plugin hooks trusted before the first seat
   "openrig-core@openrig:hooks/codex.json:user_prompt_submit:1:0": "sha256:c648714b3a02675ba4ea029b8e62dbcd77569afc317ad4f1bc3e8cbfbe7b34ee",
   "openrig-core@openrig:hooks/codex.json:stop:0:0": "sha256:bb444b151db38aff570d0ceadc2cc84b21afb021f00b15b326aef55a27d87d40",
   "openrig-core@openrig:hooks/codex.json:post_compact:0:0": "sha256:f4dd49518599c67ac23c80daef3537bb03b02e23a1e8c1da1210534766afefae",
-  "openrig-core@openrig:hooks/codex.json:permission_request:0:0": "sha256:75c66b08f505a22f84def73ecf6d61e98dd1b24ed8ecdcc05306eba3013e64d4"
+  "openrig-core@openrig:hooks/codex.json:permission_request:0:0": "sha256:75c66b08f505a22f84def73ecf6d61e98dd1b24ed8ecdcc05306eba3013e64d4",
+  "openrig-core@openrig:hooks/codex.json:permission_request:0:1": "sha256:72caddf8e259f6901546a8c40418d2e86f7a2c457e10d139639b0030fe2ff53d"
 };
   expect(Object.fromEntries(Object.entries(states).map(([key,value]:[string,any])=>[key,value.trusted_hash]))).toEqual(expected);
   expect(Object.values(states).every((state: any) => state.trusted_content_hash === codexPluginContentHash(shipped))).toBe(true);
@@ -211,7 +212,7 @@ it("an already-installed owned upgrade renews all six content approvals without 
   const expectedContent = codexPluginContentHash(shipped);
   await f.adapter().ensureCodexCorePlugin();
   const states = Object.entries(f.read().hooks.state).filter(([key]) => key.startsWith("openrig-core@openrig:"));
-  expect(states).toHaveLength(6);
+  expect(states).toHaveLength(7);
   for (const [, state] of states as Array<[string, any]>) {
     expect(state.trusted_content_hash).toBe(expectedContent);
   }
@@ -236,7 +237,7 @@ it("an owned upgrade renews content approval on tables Codex saved single-quoted
   await f.adapter().ensureCodexCorePlugin();
   const text = fs.readFileSync(f.file, "utf8");
   const states = Object.entries(f.read().hooks.state).filter(([key]) => key.startsWith("openrig-core@openrig:"));
-  expect(states).toHaveLength(6);
+  expect(states).toHaveLength(7);
   for (const [key, state] of states as Array<[string, any]>) {
     expect(state.trusted_content_hash).toBe(codexPluginContentHash(shipped));
     expect(text.split("\n").filter(line => line.includes(key) && line.trim().startsWith("[hooks.state."))).toHaveLength(1);
@@ -273,7 +274,7 @@ it("the owned receipt carries approval into a later bundle while preserving the 
   const plan = planOwnedCodexContentApproval({ configPath: f.file, content: fs.readFileSync(f.file, "utf8"),
     layers: [{ name: "user config", path: f.file, state: "read", content: fs.readFileSync(f.file, "utf8") }], shipped: next, installed: f.cache });
   expect(plan).toBeDefined();
-  expect(Object.values(plan!.hashes)).toEqual(Array(6).fill(codexPluginContentHash(next)));
+  expect(Object.values(plan!.hashes)).toEqual(Array(7).fill(codexPluginContentHash(next)));
   expect(f.read().hooks.state["openrig-core@openrig:hooks/codex.json:stop:0:0"].trusted_hash).toBe(plan!.approval.declarations["openrig-core@openrig:hooks/codex.json:stop:0:0"]);
 });
 
@@ -453,7 +454,7 @@ it("the planner names exactly the changed declaration to rewrite, from the earli
   const plan = planOwnedCodexContentApproval({ configPath: f.file, content: earlier.config,
     layers: [{ name: "user config", path: f.file, state: "read", content: earlier.config }], shipped, installed: f.cache });
   expect(plan?.trustedHashes).toEqual({ [stopKey]: (await freshInstallStates())[stopKey].trusted_hash });
-  expect(Object.values(plan!.hashes)).toEqual(Array(6).fill(codexPluginContentHash(shipped)));
+  expect(Object.values(plan!.hashes)).toEqual(Array(7).fill(codexPluginContentHash(shipped)));
 });
 
 // Codex records a person's decline of another OpenRig hook after the planner fingerprinted the installed bundle and
