@@ -759,10 +759,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         // #192: with a channel map a root in another channel than this attempt's cannot carry the post.
         if (cfg.channelMap?.length && root.channel !== channel) return { kind: "fallback", reason: "root-other-channel", threadTs: root.threadTs };
         if (!isConfiguredChannel(root.channel) && root.origin !== "person" && !isHumanStartedRoot(root)) return { kind: "fallback", reason: "root-other-channel", threadTs: root.threadTs };
-        // A reply row (a reaction, an answer) names its ask's root: that ask's own live gate still keeps the thread.
-        const owner = root.seat === p.sourceSession && root.conversationId !== item.qitemId ? opts.queueRepo.getById(root.conversationId) : null;
-        const ownerGateHere = owner && threadMap.resolveByConversation(owner.qitemId)?.threadTs === root.threadTs;
-        if (!cfg.explicitAnswersOnly && owner && ownerGateHere && hasLiveHumanGate(owner)) return { kind: "fallback", reason: "reference-has-live-gate", qitemId: owner.qitemId };
+        const referenced = item.replyTo ? opts.queueRepo.getById(item.replyTo) : null;
+        if (!cfg.explicitAnswersOnly && referenced && hasLiveHumanGate(referenced)) return { kind: "fallback", reason: "reference-has-live-gate", qitemId: referenced.qitemId };
         return { kind: "thread", threadTs: root.threadTs };
       }
       // A human-started message has no root of ours: answer in that message's own thread, in the

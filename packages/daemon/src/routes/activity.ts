@@ -1304,7 +1304,7 @@ activityRoutes.post("/approvals", async (c) => {
   if (!expectedToken || !approvals) return c.json({ ok: true, decision: null, pending: false });
   const authHeader = c.req.header("authorization");
   const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice("Bearer ".length).trim() : null;
-  if (bearerToken !== expectedToken) return c.json({ ok: false, code: "activity_hook_unauthorized" }, 401);
+  if (!constantTimeEqual(bearerToken ?? "", expectedToken)) return c.json({ ok: false, code: "activity_hook_unauthorized" }, 401);
   let body: Record<string, unknown>;
   try { body = await c.req.json() as Record<string, unknown>; } catch { return c.json({ ok: false, code: "invalid_json" }, 400); }
   // Each call waits at most one slice: the hook repeats the call with the request id until an answer.

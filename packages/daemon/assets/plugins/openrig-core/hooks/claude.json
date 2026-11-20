@@ -155,7 +155,7 @@
           },
           {
             "type": "command",
-            "command": "\"${OPENRIG_NODE:-node}\" \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/approval-request.cjs\"",
+            "command": "exec \"${OPENRIG_NODE:-node}\" \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/approval-request.cjs\"",
             "timeout": 3660
           }
         ]
