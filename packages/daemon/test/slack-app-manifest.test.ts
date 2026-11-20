@@ -26,10 +26,10 @@ const PUBLIC_MANIFEST = {
   features: { bot_user: { display_name: "OpenRig", always_online: false } },
   oauth_config: { scopes: { bot: [
     "app_mentions:read", "channels:history", "channels:read", "chat:write",
-    "files:read", "files:write", "reactions:read", "users:read",
+    "files:read", "files:write", "groups:history", "groups:read", "reactions:read", "reactions:write", "users:read",
   ] } },
   settings: {
-    event_subscriptions: { bot_events: ["app_mention", "message.channels", "reaction_added"] },
+    event_subscriptions: { bot_events: ["app_mention", "member_joined_channel", "member_left_channel", "message.channels", "message.groups", "reaction_added"] },
     interactivity: { is_enabled: true },
     org_deploy_enabled: false,
     socket_mode_enabled: true,
@@ -53,13 +53,19 @@ const PUBLIC_MANIFEST_YAML = [
   "      - chat:write",
   "      - files:read",
   "      - files:write",
+  "      - groups:history",
+  "      - groups:read",
   "      - reactions:read",
+  "      - reactions:write",
   "      - users:read",
   "settings:",
   "  event_subscriptions:",
   "    bot_events:",
   "      - app_mention",
+  "      - member_joined_channel",
+  "      - member_left_channel",
   "      - message.channels",
+  "      - message.groups",
   "      - reaction_added",
   "  interactivity:",
   "    is_enabled: true",
@@ -78,12 +84,12 @@ describe("shipped Slack app manifest — canonical sources", () => {
     expect(bundle.url).toBe("https://api.slack.com/apps?new_app=1&manifest_yaml=" + encodeURIComponent(PUBLIC_MANIFEST_YAML));
     expect(bundle.scopes).toEqual([
       "app_mentions:read", "channels:history", "channels:read", "chat:write",
-      "files:read", "files:write", "reactions:read", "users:read",
+      "files:read", "files:write", "groups:history", "groups:read", "reactions:read", "reactions:write", "users:read",
     ]);
-    expect(bundle.events).toEqual(["app_mention", "message.channels", "reaction_added"]);
+    expect(bundle.events).toEqual(["app_mention", "member_joined_channel", "member_left_channel", "message.channels", "message.groups", "reaction_added"]);
     expect(bundle.manifest.oauth_config.scopes.bot).toEqual(bundle.scopes);
     expect(bundle.manifest.settings.event_subscriptions.bot_events).toEqual(bundle.events);
-    expect(JSON.stringify(bundle.manifest)).not.toMatch(/groups:|message\.groups|im:history|im:read/);
+    expect(JSON.stringify(bundle.manifest)).not.toMatch(/im:history|im:read/);
   });
 
   it("requests exactly the baseline required scopes plus the feature scopes (order-independent)", () => {
@@ -149,9 +155,9 @@ describe("shipped Slack app manifest — mutation controls", () => {
     const bundle = buildSlackAppManifest(undefined, { privateChannel: true });
     expect(bundle.scopes).toEqual([
       "app_mentions:read", "channels:history", "channels:read", "chat:write",
-      "files:read", "files:write", "groups:history", "groups:read", "reactions:read", "users:read",
+      "files:read", "files:write", "groups:history", "groups:read", "reactions:read", "reactions:write", "users:read",
     ]);
-    expect(bundle.events).toEqual(["app_mention", "message.channels", "message.groups", "reaction_added"]);
+    expect(bundle.events).toEqual(["app_mention", "member_joined_channel", "member_left_channel", "message.channels", "message.groups", "reaction_added"]);
     expect(bundle.manifest.oauth_config.scopes.bot).toEqual(bundle.scopes);
     expect(bundle.manifest.settings.event_subscriptions.bot_events).toEqual(bundle.events);
     expect(bundle.scopes).toEqual(expect.arrayContaining(["groups:read", "groups:history"]));
@@ -169,7 +175,7 @@ describe("shipped Slack app manifest — mutation controls", () => {
     }, { privateChannel: true });
     expect(bundle.scopes).toEqual([
       "app_mentions:read", "channels:history", "channels:read", "chat:write",
-      "files:read", "files:write", "groups:history", "groups:read", "reactions:read", "users:read",
+      "files:read", "files:write", "groups:history", "groups:read", "reactions:read", "reactions:write", "users:read",
     ]);
     expect(bundle.events).toEqual(["app_mention", "reaction_added"]);
   });

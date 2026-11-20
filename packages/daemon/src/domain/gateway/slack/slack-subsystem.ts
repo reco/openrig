@@ -761,7 +761,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         if (!isConfiguredChannel(root.channel) && root.origin !== "person" && !isHumanStartedRoot(root)) return { kind: "fallback", reason: "root-other-channel", threadTs: root.threadTs };
         // A reply row (a reaction, an answer) names its ask's root: that ask's own live gate still keeps the thread.
         const owner = root.seat === p.sourceSession && root.conversationId !== item.qitemId ? opts.queueRepo.getById(root.conversationId) : null;
-        if (!cfg.explicitAnswersOnly && owner && hasLiveHumanGate(owner)) return { kind: "fallback", reason: "reference-has-live-gate", qitemId: owner.qitemId };
+        const ownerGateHere = owner && threadMap.resolveByConversation(owner.qitemId)?.threadTs === root.threadTs;
+        if (!cfg.explicitAnswersOnly && owner && ownerGateHere && hasLiveHumanGate(owner)) return { kind: "fallback", reason: "reference-has-live-gate", qitemId: owner.qitemId };
         return { kind: "thread", threadTs: root.threadTs };
       }
       // A human-started message has no root of ours: answer in that message's own thread, in the
@@ -776,23 +777,20 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         opts.queueRepo.update({ qitemId: item.qitemId, actorSession: "daemon@kernel", transitionNote: formatPostedStamp({ ...root, messageTs: humanMessage.ts }) });
         return { kind: "thread", threadTs: humanMessage.ts };
       }
+      // #2990: a reply with no gate correlation had its arrival thread recorded when it landed.
+      // Its answer returns there; the conversation's gate still recognizes only the newest root.
+      const arrival = item.replyTo ? null : opts.queueRepo.arrivalThreadFor(item.qitemId);
+      const arrivalRoot = arrival ? threadMap.resolveByThread(arrival.threadTs, arrival.channel) : null;
+      if (arrivalRoot) {
+        if (arrivalRoot.state === "closed") return { kind: "fallback", reason: "root-closed", threadTs: arrivalRoot.threadTs };
+        if (arrivalRoot.human !== (p.destinationSession ?? "")) return { kind: "fallback", reason: "root-other-human", threadTs: arrivalRoot.threadTs };
+        if (arrivalRoot.seat !== (p.sourceSession ?? "")) return { kind: "fallback", reason: "root-other-seat", threadTs: arrivalRoot.threadTs };
+        if (arrivalRoot.channel !== channel) return { kind: "fallback", reason: "root-other-channel", threadTs: arrivalRoot.threadTs };
+        return { kind: "thread", threadTs: arrivalRoot.threadTs };
+      }
       // An inbound reply inside a thread names its conversation by tag, not by the replyTo field.
       const next = item.replyTo ?? item.tags?.find((t) => t.startsWith("reply-to:"))?.slice("reply-to:".length);
-      if (!next) {
-        // #2990: this reply has no gate correlation, but its arrival thread was recorded when
-        // it landed. Its answer returns there; the conversation's gate still recognizes only
-        // the newest root. Consult this record only at the end of the replyTo chain.
-        const arrival = opts.queueRepo.arrivalThreadFor(item.qitemId);
-        const root = arrival ? threadMap.resolveByThread(arrival.threadTs, arrival.channel) : null;
-        if (root) {
-          if (root.state === "closed") return { kind: "fallback", reason: "root-closed", threadTs: root.threadTs };
-          if (root.human !== (p.destinationSession ?? "")) return { kind: "fallback", reason: "root-other-human", threadTs: root.threadTs };
-          if (root.seat !== (p.sourceSession ?? "")) return { kind: "fallback", reason: "root-other-seat", threadTs: root.threadTs };
-          if (root.channel !== channel) return { kind: "fallback", reason: "root-other-channel", threadTs: root.threadTs };
-          return { kind: "thread", threadTs: root.threadTs };
-        }
-        return { kind: "fallback", reason: "root-missing", qitemId: item.qitemId };
-      }
+      if (!next) return { kind: "fallback", reason: "root-missing", qitemId: item.qitemId };
       item = opts.queueRepo.getById(next);
     }
     return item

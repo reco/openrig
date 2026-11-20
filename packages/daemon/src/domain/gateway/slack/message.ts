@@ -249,8 +249,8 @@ function buildQuestionBlocks(questions: readonly HumanQuestion[], hint: string |
     }
     // A recommendation is said in words: a green button reads as already selected.
     const label = (o: HumanQuestion["options"][number]) => {
-      const suffix = o.recommended ? " (recommended)" : "";
       const text = inert(o.label);
+      const suffix = recommendationLabel(text, o.recommended).slice(text.length);
       // The suffix fits within Slack's button limit by shortening the label, never by dropping it.
       return text.length + suffix.length <= MAX_OPTION_LABEL ? `${text}${suffix}` : `${text.slice(0, MAX_OPTION_LABEL - suffix.length - 1)}…${suffix}`;
     };
