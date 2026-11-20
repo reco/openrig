@@ -81,8 +81,9 @@ export function buildSlackAppManifest(
     if (!scopes.includes(mapped.scope)) {
       throw new Error(`slack manifest: event "${mapped.subscription}" needs scope "${mapped.scope}", which is not requested`);
     }
-    if (!events.includes(mapped.subscription)) events.push(mapped.subscription);
+    events.push(mapped.subscription);
   }
+  events.splice(0, events.length, ...new Set(events));
   events.sort();
   const manifest: SlackAppManifest = {
     display_information: {

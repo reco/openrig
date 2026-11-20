@@ -281,7 +281,7 @@ describe("Slack verify reports optional capabilities from granted scopes", () =>
           const warnings = logs.filter(line => line.startsWith("⚠") && !line.startsWith("⚠ private channel"));
           expect(warnings).toHaveLength(missing?.length ?? 0);
           for (const feature of missing ?? []) expect(warnings.join("\n")).toContain(`${feature.scope} missing: ${feature.usedBy}`);
-          const privateLines = logs.filter(line => line.toLowerCase().includes("private channel"));
+          const privateLines = logs.filter(line => line.toLowerCase().includes("private channel") && !/^⚠ \S+ missing: /.test(line));
           if (privateStatus === "missing") {
             expect(privateLines).toHaveLength(1);
             expect(privateLines[0]).toContain(missingPrivateScopes.join(", "));

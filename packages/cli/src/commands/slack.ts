@@ -375,7 +375,7 @@ export function slackCommand(deps: SlackDeps = {}): Command {
         for (const scope of surface.BASELINE_REQUIRED_SCOPES) reasons[scope] = "baseline: checked by `rig slack verify`";
         for (const f of surface.FEATURE_SCOPES) reasons[f.scope] = `feature, not checked by verify: ${f.usedBy}`;
         for (const scope of surface.PRIVATE_CHANNEL_SCOPES) {
-          reasons[scope] = "optional private-channel access; request with `rig slack manifest --private-channel`";
+          reasons[scope] ??= "optional private-channel access; request with `rig slack manifest --private-channel`";
         }
         log(JSON.stringify({
           manifest: bundle.manifest, url: bundle.url, scopes: bundle.scopes, events: bundle.events,

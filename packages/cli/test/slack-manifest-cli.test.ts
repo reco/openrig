@@ -41,10 +41,10 @@ const PUBLIC_MANIFEST = {
   features: { bot_user: { display_name: "OpenRig", always_online: false } },
   oauth_config: { scopes: { bot: [
     "app_mentions:read", "channels:history", "channels:read", "chat:write",
-    "files:read", "files:write", "reactions:read", "users:read",
+    "files:read", "files:write", "groups:history", "groups:read", "reactions:read", "reactions:write", "users:read",
   ] } },
   settings: {
-    event_subscriptions: { bot_events: ["app_mention", "message.channels", "reaction_added"] },
+    event_subscriptions: { bot_events: ["app_mention", "member_joined_channel", "member_left_channel", "message.channels", "message.groups", "reaction_added"] },
     interactivity: { is_enabled: true },
     org_deploy_enabled: false,
     socket_mode_enabled: true,
@@ -53,9 +53,9 @@ const PUBLIC_MANIFEST = {
 };
 const PUBLIC_SCOPES = [
   "app_mentions:read", "channels:history", "channels:read", "chat:write",
-  "files:read", "files:write", "reactions:read", "users:read",
+  "files:read", "files:write", "groups:history", "groups:read", "reactions:read", "reactions:write", "users:read",
 ];
-const PUBLIC_EVENTS = ["app_mention", "message.channels", "reaction_added"];
+const PUBLIC_EVENTS = ["app_mention", "member_joined_channel", "member_left_channel", "message.channels", "message.groups", "reaction_added"];
 const PUBLIC_MANIFEST_YAML = [
   "display_information:",
   "  name: OpenRig",
@@ -73,13 +73,19 @@ const PUBLIC_MANIFEST_YAML = [
   "      - chat:write",
   "      - files:read",
   "      - files:write",
+  "      - groups:history",
+  "      - groups:read",
   "      - reactions:read",
+  "      - reactions:write",
   "      - users:read",
   "settings:",
   "  event_subscriptions:",
   "    bot_events:",
   "      - app_mention",
+  "      - member_joined_channel",
+  "      - member_left_channel",
   "      - message.channels",
+  "      - message.groups",
   "      - reaction_added",
   "  interactivity:",
   "    is_enabled: true",
@@ -95,8 +101,11 @@ const PUBLIC_SCOPE_WHY = {
   "chat:write": "baseline: checked by `rig slack verify`",
   "files:read": "feature, not checked by verify: inbound attachments: authenticated url_private download (slack-subsystem inbound file port)",
   "files:write": "feature, not checked by verify: outbound attachments: files.getUploadURLExternal / files.completeUploadExternal (slack-api)",
-  "reactions:read": "feature, not checked by verify: the reaction_added event the inbound path admits: a reaction on an ask reaches the asking seat (InboundRouter.routeReaction)",
-  "users:read": "feature, not checked by verify: named-bot delivery: bots.info names the app a bot's post in the bot inbox belongs to (InboundRouter.routeBot)",
+  "groups:history": "feature, not checked by verify: a private channel: message.groups events, history recovery and reconcile reads (conversations.history/replies)",
+  "groups:read": "feature, not checked by verify: a private channel: rig slack verify's membership check (conversations.info)",
+  "reactions:read": "feature, not checked by verify: the reaction_added event: a ✅ resolving a decision, and any other reaction on an ask reaching the asking seat (InboundRouter.routeReaction)",
+  "reactions:write": "feature, not checked by verify: the done mark on a top-level message to a human once its row no longer waits on them (reactions.add/remove)",
+  "users:read": "feature, not checked by verify: named-bot delivery (bots.info names the app a bot's post in the bot inbox belongs to, InboundRouter.routeBot) and the addressed-only rule (users.info tells humans from bots among a channel's members)",
 };
 
 describe("rig slack manifest (offline)", () => {
@@ -126,11 +135,8 @@ describe("rig slack manifest (offline)", () => {
     const yaml = offline();
     await runWithExitOverride(yaml.deps, ["manifest", "--private-channel"]);
     const privateBundle = buildSlackAppManifest(undefined, { privateChannel: true });
-    expect(privateBundle.scopes).toEqual([
-      "app_mentions:read", "channels:history", "channels:read", "chat:write",
-      "files:read", "files:write", "groups:history", "groups:read", "reactions:read", "users:read",
-    ]);
-    expect(privateBundle.events).toEqual(["app_mention", "message.channels", "message.groups", "reaction_added"]);
+    expect(privateBundle.scopes).toEqual(PUBLIC_SCOPES);
+    expect(privateBundle.events).toEqual(PUBLIC_EVENTS);
     expect(yaml.logs).toEqual([privateBundle.yaml.trimEnd()]);
     expect(parse(yaml.logs[0]!)).toEqual(privateBundle.manifest);
 
@@ -150,7 +156,6 @@ describe("rig slack manifest (offline)", () => {
     expect(out.events).toContain("message.groups");
     expect(out.why["groups:history"]).not.toBe("unexplained");
     expect(out.why["groups:read"]).not.toBe("unexplained");
-    for (const scope of ["groups:history", "groups:read"]) expect(out.why[scope]).toContain("rig slack manifest --private-channel");
   });
 
   it("help routes to the setup doc and states verify checks only the baseline", () => {
